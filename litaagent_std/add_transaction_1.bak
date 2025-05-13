@@ -1,0 +1,89 @@
+    def add_transaction(self, contract: Contract) -> bool:
+        """
+        添加新交易并更新库存预期
+
+        Args:
+            contract: 合同信息
+
+        Returns:
+            bool: 是否成功添加
+        """
+        # 检查交易时间是否合法
+        if contract.delivery_time < self.current_day:
+            return False
+
+        # 创建订单记录
+        self.orders[contract.contract_id] = OrderStatus(contract=contract)
+
+        # 确保从当前日期到交割日期的库存记录都存在
+        inventory = (self.raw_inventory if contract.material_type == MaterialType.RAW
+                    else self.product_inventory)
+        storage_rate = (self.raw_storage_cost
+                   if contract.material_type == MaterialType.RAW
+                   else self.product_storage_cost)
+
+        # 初始化或更新库存记录
+        for day in range(self.current_day, contract.delivery_time + 1):
+            if day not in inventory:
+                # 复制前一天的状态
+                prev_status = inventory[day - 1]
+                inventory[day] = InventoryStatus(
+                    quantity=prev_status.quantity,
+                    avg_cost=prev_status.avg_cost,
+                    storage_cost=prev_status.avg_cost * storage_rate,
+                    consumed=0,  # 新的一天重置消耗量
+                    ordered=0    # 新的一天重置订单量
+                )
+
+        # 根据合同类型更新库存预期
+        curr_status = inventory[contract.delivery_time]
+
+        if contract.type == ContractType.SUPPLY:
+            if contract.material_type == MaterialType.PRODUCT:
+                # 产品不能通过采购获得
+                self.orders.pop(contract.contract_id)
+                return False
+
+            # 更新原料库存预期
+            new_quantity = curr_status.quantity + contract.quantity
+            new_total_value = (curr_status.quantity * curr_status.avg_cost +
+                              contract.quantity * contract.price)
+            new_avg_cost = new_total_value / new_quantity if new_quantity > 0 else 0
+
+            inventory[contract.delivery_time] = InventoryStatus(
+                quantity=new_quantity,
+                avg_cost=new_avg_cost,
+                storage_cost=new_avg_cost * storage_rate,
+                consumed=curr_status.consumed,
+                ordered=curr_status.ordered
+            )
+
+        else:  # ContractType.SALES
+            # 检查预估可用量是否足够
+            summary = self.get_inventory_summary(contract.delivery_time,
+                                              contract.material_type)
+            if summary["estimated_available"] < contract.quantity:
+                # 预估可用量不足，取消订单
+                self.orders.pop(contract.contract_id)
+                return False
+
+            # 更新库存预期
+            inventory[contract.delivery_time] = InventoryStatus(
+                quantity=curr_status.quantity,
+                avg_cost=curr_status.avg_cost,
+                storage_cost=curr_status.storage_cost,
+                consumed=curr_status.consumed,
+                ordered=curr_status.ordered + contract.quantity
+            )
+
+            # 如果是原料销售，检查是否会影响生产计划
+            if (contract.material_type == MaterialType.RAW and
+                summary["estimated_available"] - contract.quantity <
+                self.production_schedule.get(contract.delivery_time, 0) * self.production_rate):
+                # 会影响生产计划，取消订单
+                self.orders.pop(contract.contract_id)
+                self._restore_inventory_status(contract.delivery_time, curr_status,
+                                            contract.material_type)
+                return False
+
+        return True
