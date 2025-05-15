@@ -174,7 +174,7 @@ class InventoryManager:
             return self._compute_summary(
                 day, self.product_batches, self.product_storage_cost, self._pending_demand
             )
-    def get_get_today_insufficient(self, day: int) -> int:
+    def get_today_insufficient(self, day: int) -> int:
         """
         获取当天的不足原料量。
         Returns the amount of raw material shortage for the day.
@@ -671,3 +671,60 @@ class InventoryManager:
             
         # 按生产时间排序（FIFO顺序）
         return sorted(details, key=lambda x: x['production_time'])
+
+    def execute_production(im, day):
+        """模拟执行生产过程"""
+        production_plan = im.get_production_plan()
+        production_qty = production_plan.get(day, 0)
+
+        if production_qty <= 0:
+            print("今天没有计划生产")
+            return
+
+        # 检查原材料库存是否足够
+        raw_summary = im.get_inventory_summary(day, MaterialType.RAW)
+
+        if raw_summary['current_stock'] >= production_qty:
+            # 模拟生产批次创建
+            batch_id = f"PROD_{day}"
+            unit_cost = raw_summary['average_cost'] + im.processing_cost
+
+            # 创建产品批次
+            batch = Batch(
+                batch_id=batch_id,
+                remaining=production_qty,
+                unit_cost=unit_cost,
+                production_time=day
+            )
+
+            # 减少原材料库存（模拟FIFO减少）
+            remaining_to_reduce = production_qty
+            raw_batches_copy = im.raw_batches.copy()
+
+            for i, batch in enumerate(raw_batches_copy):
+                if batch.remaining <= 0:
+                    continue
+
+                if batch.remaining >= remaining_to_reduce:
+                    im.raw_batches[i].remaining -= remaining_to_reduce
+                    remaining_to_reduce = 0
+                    break
+                else:
+                    remaining_to_reduce -= batch.remaining
+                    im.raw_batches[i].remaining = 0
+
+            # 清理剩余量为0的批次
+            im.raw_batches = [b for b in im.raw_batches if b.remaining > 0]
+
+            # 添加产品批次
+            im.product_batches.append(batch)
+
+            print(f"执行生产: 生产了 {production_qty} 单位产品")
+        else:
+            print(f"原材料不足，无法执行计划生产量 {production_qty}")
+            # 记录原材料不足情况
+            if day not in im.insufficient_raw:
+                im.insufficient_raw[day] = {"daily": production_qty, "total": production_qty}
+            else:
+                im.insufficient_raw[day]["daily"] += production_qty
+                im.insufficient_raw[day]["total"] += production_qty

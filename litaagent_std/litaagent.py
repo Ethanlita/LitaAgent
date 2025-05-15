@@ -196,6 +196,6 @@ class LitaAgent(StdRLAgent):
 if __name__ == "__main__":
     import sys
 
-    from .helpers.runner import run
+    from scml.runner import run
 
     run([LitaAgent], sys.argv[1] if len(sys.argv) > 1 else "std")

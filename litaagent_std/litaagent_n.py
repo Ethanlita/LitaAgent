@@ -31,9 +31,10 @@ from __future__ import annotations
 from typing import Any, Iterable, Dict, List, Tuple
 import random
 
-from tensorflow.python.eager.execute import must_record_gradient
+from scml import RandDistOneShotAgent, OneShotRLAgent
+# from tensorflow.python.eager.execute import must_record_gradient
 
-import inventory_manager_n
+from litaagent_std import inventory_manager_n
 from itertools import chain, combinations, repeat
 from collections import Counter
 
@@ -42,22 +43,21 @@ from scml.std import (
     StdAWI,
     TIME,
     QUANTITY,
-    UNIT_PRICE,
-
+    UNIT_PRICE, StdSyncAgent,
 )
 from negmas import SAOState, SAOResponse, Outcome, Contract, ResponseType
 
 from scml.oneshot.rl.action import FlexibleActionManager
 from scml.oneshot.rl.common import model_wrapper
 
-from common import MODEL_PATH, MyObservationManager, TrainingAlgorithm, make_context
+from litaagent_std.common import MODEL_PATH, MyObservationManager, TrainingAlgorithm, make_context
 
 # numpy 的随机分配在 distribute() 中使用；仅在运行时导入以避免训练阶段缺少依赖
 from numpy.random import choice as np_choice  # type: ignore
 
 __all__ = ["LitaAgentN"]
 
-from .inventory_manager_n import IMContract, MaterialType
+from litaagent_std.inventory_manager_n import IMContract, MaterialType
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ def _powerset(iterable: Iterable[Any]):
 # ---------------------------------------------------------------------------
 
 
-class LitaAgentN(StdRLAgent):
+class LitaAgentN(StdSyncAgent):
 
     # =====================
     # Initialization
@@ -113,8 +113,12 @@ class LitaAgentN(StdRLAgent):
         ----------
         ptoday : float, optional
             当期报价时选取的伙伴比例（默认 70%），与 PenguinAgent `_ptoday` 对应。
+
+        RL相关的东西暂时全部注释
         """
         # --------- 1. RL 相关: 模型路径 / 加载 ---------
+
+        """
         base_name = MODEL_PATH.name
         self.paths = [
             MODEL_PATH.parent / f"{base_name}_supplier",
@@ -136,20 +140,15 @@ class LitaAgentN(StdRLAgent):
                     FlexibleActionManager(context=contexts[1]),
                 ),
             )
-        )
+        )   
+        """
 
-        # --------- 2. 调用父类：保留原 production_level / future_concession ---------
-        super().__init__(*args, production_level=0.25, future_concession=0.10, **kwargs)
 
         # --------- 3. Penguin 策略相关参数 ---------
         self._ptoday: float = ptoday  # 当期挑选伙伴比例
         # 生产效率：此处沿用 RLAgent 的 production_level，故不额外定义 _productivity
         # 每日超量接受阈值将在 step() 中根据 future_concession 动态计算
         self._threshold: float = 1.0  # 占位，step() 时更新
-
-        # 记录角色（买/卖）以加速判断
-        self.is_buyer_negotiator = not self.awi.is_first_level
-        self.is_seller_negotiator = not self.awi.is_last_level
 
         # 记录当前库存管理器
         self.im = None # initialize in init()
@@ -161,6 +160,15 @@ class LitaAgentN(StdRLAgent):
         # 记录今天已签约的，且今天就要交割的交易量，用于保证最低购买
         self.today_signed_sale = None
         self.today_signed_supply = None
+
+        # 设置一个fallback agent TODO： 做一个好点的fallback agent 现在用RandDistOneShotAgent
+        # self._fallback_agent = RandDistOneShotAgent()
+        self._fallback_type = RandDistOneShotAgent
+
+        self.future_concession = None
+        # --------- 2. 调用父类：保留原 production_level / future_concession ---------
+        super().__init__(*args, **kwargs)
+        # super().__init__(*args, production_level=0.25, future_concession=0.10, **kwargs)
     # ---------------------------------------------------------------------
     # 常用快捷判断 & 价格工具
     # ---------------------------------------------------------------------
@@ -211,7 +219,9 @@ class LitaAgentN(StdRLAgent):
 
     def _day_production(self) -> float:
         """根据生产线数量与 production_level 估计当日产量。"""
-        return self.awi.n_lines * self.production_level
+        # return self.awi.n_lines * self.production_level
+        # 这里使用IM的值
+        return self.im.get_max_possible_production(self.awi.current_step)
 
     def _needs_today(self) -> Tuple[int, int]:
         """返回 (待采购原料量, 可销售产品量)。如为 0 则无需该方向谈判。"""
@@ -447,18 +457,22 @@ class LitaAgentN(StdRLAgent):
                 continue
 
             # ------------ 1. 计算当前需求量 ------------
-            prod = self._day_production()
             if is_supplier_side:  # 我买, 对方卖
-                needs = int(prod - awi.current_inventory_input - awi.total_supplies_at(awi.current_step))
+                needs = self.im.get_total_insufficient(self.awi.current_step)
+                # needs = int(prod - awi.current_inventory_input - awi.total_supplies_at(awi.current_step))
             else:  # 我卖, 对方买
+                """
                 if awi.total_sales_at(awi.current_step) < awi.n_lines:
                     needs = int(
                         max(0.0, min(awi.n_lines, prod + awi.current_inventory_input) - awi.total_sales_at(awi.current_step))
                     )
                 else:
                     needs = 0
+                """
+                needs = prod = self._day_production() # 计算到今天为止的最大产量
 
             # ------------ 2. 拆分类别报价 ------------
+            # 将报价氛围分为当前报价与未来报价，然后过滤掉不符合系统条件的报价
             current_offers: Dict[str, Outcome] = {}
             future_offers: Dict[str, Outcome] = {}
             active_partners = {p for p in all_partners if p in offers and offers[p] is not None}
@@ -466,13 +480,27 @@ class LitaAgentN(StdRLAgent):
             for p in active_partners:
                 offer = offers[p]
                 if not self._is_valid_price(offer[UNIT_PRICE], p):
-                    continue  # 跳过法外价格
+                    continue  # 跳过法外价格 TODO：跳过不合规价格的功能沿用了 需要在之后再实现这个功能（因为LitaAgent合规价格是和日期相关的）
                 if offer[TIME] == awi.current_step:
                     current_offers[p] = offer
                 else:
                     future_offers[p] = offer
+            # TODO：改到这里了 这里其实还相当于啥也没做，除了排序了一下
+            # ----------- 2-a. 优先锁定今天必须购买的数量 ------------
+            must_buy = self.today_insufficient
+            purchased_today = 0
+            # 将offer根据价格由低到高排序
+            current_offers = dict(sorted(current_offers.items(), key=lambda x: x[1][UNIT_PRICE]))
 
+            for p, offer in current_offers.items():
+                print(f"当前报价：{offer}")
+                # 判断价格和罚款比起来哪个比较贵 如果罚款比较贵，则准备counter offer
+                penalty = self.awi.current_shortfall_penalty
+                if offer[UNIT_PRICE] > penalty:
+                    # TODO：改进这个consession_price
+                    counter_offer = (offer[QUANTITY], offer[TIME], self._concession_price(p))
             # ------------ 3. 先锁定所有合理的未来报价 ------------
+
             duplicate_quantity = [0] * awi.n_steps  # 防重计数表
             for p, offer in future_offers.items():
                 step = offer[TIME]
@@ -500,7 +528,9 @@ class LitaAgentN(StdRLAgent):
                         best_minus_diff, best_minus_idx = diff, idx
 
             # 阈值 = future_concession * 产能
-            self._threshold = self.future_concession * awi.n_lines
+            # self._threshold = self.future_concession * awi.n_lines
+            # TODO：阈值 = 总需求不足量 * fc 总需求不足量基于订单交付日，由im计算
+            self._threshold = max(0, self.im.get_total_insufficient(self.awi.current_step) * self.future_concession)
             accepted_subset = None
             if best_plus_idx != -1 and best_plus_diff <= self._threshold and needs > 0:
                 accepted_subset = ps_list[best_plus_idx]
@@ -569,6 +599,12 @@ class LitaAgentN(StdRLAgent):
         # 可选：最大仿真天数，默认100天 Should be initialized while the instance is created
         max_day: int = 100,
         """
+
+        # 记录角色（买/卖）以加速判断
+        self.is_buyer_negotiator = not self.awi.is_first_level
+        self.is_seller_negotiator = not self.awi.is_last_level
+
+
         self.im = inventory_manager_n.InventoryManager(
             raw_storage_cost=self.awi.current_storage_cost,
             product_storage_cost=self.awi.current_storage_cost,
@@ -585,15 +621,19 @@ class LitaAgentN(StdRLAgent):
         self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
         self.today_signed_supply = 0
         self.today_signed_sale = 0
+        self.future_concession = self.awi.current_shortfall_penalty / self.awi.current_storage_cost
 
 
     def step(self):
         """每天 **结束** 调用。这里更新超量阈值等。"""
-        self._threshold = self.future_concession * self.awi.n_lines
+        # self._threshold = self.future_concession * self.awi.n_lines
+        # TODO: 我总觉得这里的future_concession算法有点问题，但反正是AI推荐的，就先不管了
+        self.future_concession = self.awi.current_shortfall_penalty / self.awi.current_storage_cost
+        self._threshold = max(0, self.im.get_max_possible_production(self.awi.current_step) * self.future_concession)
         # 1. 更新库存管理器
         self.im.receive_materials()
         self.im.plan_production(self.awi.current_step + self.awi.horizon)
-        self.im.execute_production()
+        self.im.execute_production(self.awi.current_step)
         self.im.deliver_products()
         self.im.update_day()
 
@@ -637,8 +677,12 @@ class LitaAgentN(StdRLAgent):
 # ----------------------------------------------------------------------------
 # CLI 入口：用于本地测试 (与官方 runner 兼容)
 # ----------------------------------------------------------------------------
+"""
+别管这个倒霉代码 这是AI干的
 if __name__ == "__main__":
     import sys
-    from .helpers.runner import run  # type: ignore
+    from scml.helpers.runner import run  # type: ignore
 
     run([LitaAgentN], sys.argv[1] if len(sys.argv) > 1 else "std")
+"""
+
