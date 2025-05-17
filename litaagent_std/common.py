@@ -14,7 +14,7 @@ TrainingAlgorithm: type[BaseAlgorithm] = A2C
 """The algorithm used for training. You can use any stable_baselines3 algorithm or develop your own"""
 
 MODEL_PATH = Path(__file__).parent / "models" / "mymodel"
-"""The path in which train.py saves the trained model and from which litaagent.py loads it"""
+"""The path in which train.py saves the trained model and from which litaagent_y.py loads it"""
 
 
 def make_context(as_supplier: bool) -> GeneralContext:
