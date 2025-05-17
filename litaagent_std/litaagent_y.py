@@ -38,6 +38,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple, Iterable
 from dataclasses import dataclass
 import random
+from collections import Counter
+from numpy.random import choice as np_choice  # type: ignore
 
 from scml.std import (
     StdSyncAgent,
@@ -67,6 +69,21 @@ def _split_partners(partners: List[str]) -> Tuple[List[str], List[str], List[str
         partners[int(n * 0.8):],
     )
 
+def _distribute(q: int, n: int) -> List[int]:
+    """随机将 ``q`` 单位分配到 ``n`` 个桶，保证每桶至少 1（若可行）。"""
+    if n <= 0:
+        return []
+
+    if q < n:
+        lst = [0] * (n - q) + [1] * q
+        random.shuffle(lst)
+        return lst
+    if q == n:
+        return [1] * n
+
+    r = Counter(np_choice(n, q - n))
+    return [r.get(i, 0) + 1 for i in range(n)]
+
 # ------------------ 主代理实现 ------------------
 
 class LitaAgentY(StdSyncAgent):
@@ -81,6 +98,7 @@ class LitaAgentY(StdSyncAgent):
         *args,
         min_profit_margin: float = 0.10,
         cheap_price_discount: float = 0.70,
+        ptoday: float = 1.00,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -96,6 +114,7 @@ class LitaAgentY(StdSyncAgent):
         self._market_price_avg: float = 0.0                 # 最近报价平均价 (估算市场均价)
         self._recent_prices: List[float] = []               # 用滚动窗口估计市场价
         self._avg_window: int = 30                          # 均价窗口大小
+        self._ptoday: float = ptoday  # 当期挑选伙伴比例
 
     # ------------------------------------------------------------------
     # 🌟 2. World / 日常回调
@@ -152,25 +171,6 @@ class LitaAgentY(StdSyncAgent):
     # ------------------------------------------------------------------
     # 🌟 3-a. 需求计算和需求分配
     # ------------------------------------------------------------------
-    # TODO： 弃用之 —— 已经弃用了
-    # Note: This method has been deprecated
-    def _needs_today(self) -> Tuple[int, int]:
-        """返回 (待采购原料量, 可销售产品量)。如为 0 则无需该方向谈判。"""
-        awi = self.awi
-        # 这是今天的产量
-        prod = self.im.get_max_possible_production(self.awi.current_step)
-        # 1) 采购需求（向供应商买）
-        # TODO: 这里有问题，这里的购买量是简单的根据最大产量*production_level，应该优化为IM的值
-        # buy_need = int(max(0.0, prod - awi.current_inventory_input - awi.total_supplies_at(awi.current_step)))
-        buy_need = int(
-            self.total_insufficient * 1.1 #我们使用总提不足量的1.1倍来作为采购需求，姑且
-        )
-        # 2) 销售需求（向顾客卖）
-        # 仅当当前累计销售未超过产能上限才继续卖
-        # TODO: 之后最好是接入IM，现在暂且用awi的值
-        sell_need = prod - self.im.get_production_plan()[self.awi.current_step] + self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)
-        return buy_need, sell_need
-    # TODO: 这里有关于获取需求的方法要大改
 
     def _get_sales_demand_first_layer(self) -> int:
         """
@@ -201,18 +201,24 @@ class LitaAgentY(StdSyncAgent):
         future_inventory_product = self.im.get_inventory_summary(day, MaterialType.PRODUCT)["estimated_available"]
         return future_inventory_product
 
-    def _get_supply_demand_middle_last_layer(self) -> (int, int, int):
+    def _get_supply_demand_middle_last_layer(self) -> tuple[int, int, float]:
         # 这个方法计算的是中间层和最后层 * 今天 * 的购买需求
-        # return 紧急需求 计划需求 超额需求
-        return self.im.get_today_insufficient(self.awi.current_step), self.im.get_total_insufficient(self.awi.current_step), self.im.get_total_insufficient(self.awi.current_step) * 0.2
+        # return 紧急需求 计划需求 超额需求(超额需求是计划需求的20%)
+        return (self.im.get_today_insufficient(self.awi.current_step),
+                self.im.get_total_insufficient(self.awi.current_step),
+                self.im.get_total_insufficient(self.awi.current_step) * 0.2)
 
-    def _get_supply_demand_middle_last_layer(self, day: int) -> (int, int, int):
+    def _get_supply_demand_middle_last_layer(self, day: int) -> tuple[int, int, float]:
         # 这个方法计算的是中间层和最后层 * 在day的 * 购买需求
         # 对于最后一层，这方法其实，没什么意义，因为外生协议都是当天的（不过我觉得如果未来外生协议扩展到包括期货的话，这样也能兼容）
-        # return 紧急需求 计划需求 超额需求.
-        return self.im.get_total_insufficient(day), self.im.get_total_insufficient(day), self.im.get_total_insufficient(day) * 0.2
+        # return 紧急需求 计划需求 超额需求(超额需求是计划需求的20%)
+        return (
+            self.im.get_total_insufficient(day),
+            self.im.get_total_insufficient(day),
+            self.im.get_total_insufficient(day) * 0.2,
+        )
 
-    def _get_supply_demand_first_layer(self) -> (int, int, int):
+    def _get_supply_demand_first_layer(self) -> Tuple[int, int, int]:
         # 第一层没有采购需求，统统外生
         # 但是协议还是要录入im的
         return 0,0,0
@@ -244,9 +250,9 @@ class LitaAgentY(StdSyncAgent):
         else:
             buy_need = self._get_supply_demand_middle_last_layer()
             sell_need = self._get_sales_demand_middle_layer()
-        # TODO：需要增加一个_distribute_to_partners方法，用于分配到其他层级的伙伴，可以参考LitaAgentN
+
         # --- 1) 分配采购需求给供应商 ---
-        if suppliers and buy_need > 0:
+        if suppliers and isinstance(buy_need, tuple):
             response.update(self._distribute_to_partners(suppliers, buy_need))
 
         # --- 2) 分配销售需求给顾客 ---
@@ -255,6 +261,22 @@ class LitaAgentY(StdSyncAgent):
             response.update(self._distribute_to_partners(consumers, sell_need))
 
         return response
+
+    def _distribute_to_partners(self, partners: List[str], needs: int) -> Dict[str, int]:
+        """核心分配：随机挑选 ``_ptoday`` 比例伙伴分配 ``needs``。"""
+        if needs <= 0 or not partners:
+            return {p: 0 for p in partners}
+
+        random.shuffle(partners)
+        k = max(1, int(len(partners) * self._ptoday))
+        chosen = partners[:k]
+
+        if needs < len(chosen):
+            chosen = random.sample(chosen, random.randint(1, needs))
+
+        quantities = _distribute(needs, len(chosen))
+        distribution = dict(zip(chosen, quantities))
+        return {p: distribution.get(p, 0) for p in partners}
     # ------------------------------------------------------------------
     # 🌟 4. first_proposals — 首轮报价（可简化）
     # ------------------------------------------------------------------
