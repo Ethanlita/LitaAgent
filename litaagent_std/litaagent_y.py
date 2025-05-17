@@ -121,7 +121,8 @@ class LitaAgentY(StdSyncAgent):
         self._ptoday: float = ptoday                        # 当期挑选伙伴比例
         self.model = None                                   # 预留的决策模型
         # 记录每天的采购/销售完成量 {day: quantity}
-        self.sales_completed: Dict[int, int] = {}           # 销售完成量
+        self.sales_completed: Dict[int, int] = {}
+        self.purchase_completed: Dict[int, int] = {}# 销售完成量
 
     # ------------------------------------------------------------------
     # 🌟 2. World / 日常回调
@@ -694,9 +695,9 @@ class LitaAgentY(StdSyncAgent):
             contract_id=contract.id,
             partner_id=partner,
             type=im_type,
-            quantity=contract.issues[QUANTITY],
-            price=contract.issues[UNIT_PRICE],
-            delivery_time=contract.issues[TIME],
+            quantity=contract.agreement["quantity"],
+            price=contract.agreement["unit_price"],
+            delivery_time=contract.agreement["time"],
             bankruptcy_risk=0.0,
             material_type=mat_type,
         )
@@ -706,6 +707,14 @@ class LitaAgentY(StdSyncAgent):
         # 更新不足原材料数据
         self.today_insufficient = self.im.get_today_insufficient(self.awi.current_step)
         self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
+
+        # 这里是今天达成的，今天交付的协议，主要用于保障紧急需求
+        if is_supply:
+            if contract.agreement["time"] == self.awi.current_step:
+                self.purchase_completed[self.awi.current_step] += contract.agreement["quantity"]
+        elif not is_supply:
+            if contract.agreement["time"] == self.awi.current_step:
+                self.sales_completed[self.awi.current_step] += contract.agreement["quantity"]
 
         # 日志
         if os.path.exists("env.test"):
