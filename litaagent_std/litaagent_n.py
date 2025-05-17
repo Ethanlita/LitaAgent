@@ -57,7 +57,7 @@ from numpy.random import choice as np_choice  # type: ignore
 
 __all__ = ["LitaAgentN"]
 
-from litaagent_std.inventory_manager_n import IMContract, MaterialType
+from litaagent_std.inventory_manager_n import IMContract, MaterialType, IMContractType
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +493,7 @@ class LitaAgentN(StdSyncAgent):
             current_offers = dict(sorted(current_offers.items(), key=lambda x: x[1][UNIT_PRICE]))
 
             for p, offer in current_offers.items():
-                print(f"当前报价：{offer}")
+                print(f"代理{self.id}当前收到来自{p}的报价：单位价格：{offer[UNIT_PRICE]}, 数量：{offer[QUANTITY]}, 交割日期：{offer[TIME]}, 交易类型：{IMContractType.SUPPLY if p in awi.my_suppliers else IMContractType.DEMAND}")
                 # 判断价格和罚款比起来哪个比较贵 如果罚款比较贵，则准备counter offer
                 penalty = self.awi.current_shortfall_penalty
                 if offer[UNIT_PRICE] > penalty:
@@ -654,14 +654,15 @@ class LitaAgentN(StdSyncAgent):
         """谈判成功时触发，可打印日志或更新内部模型。"""
 
         # 1. 将协议加入库存管理器
+        print(f"{self.id}准备调用库存管理器的add_transaction方法，合同ID：{contract.id}, 交易伙伴：{contract.partners}, 交易类型：{IMContractType.SUPPLY if contract.partners in self.awi.my_suppliers else IMContractType.DEMAND}, 数量：{contract.agreement["quantity"]}, 单价：{contract.agreement["unit_price"]}, 交割日期：{contract.agreement["time"]}, RAW：{contract}")
         self.im.add_transaction(
             contract = IMContract(
                 contract_id= contract.id,
                 partner_id= contract.partners,
-                type= IMContract.type.SUPPLY if contract.partners in self.awi.my_suppliers else IMContract.type.CONSUME,
-                quantity= contract.issues[QUANTITY],
-                price= contract.issues[UNIT_PRICE],
-                delivery_time= contract.issues[TIME],
+                type= IMContractType.SUPPLY if contract.partners in self.awi.my_suppliers else IMContractType.DEMAND,
+                quantity= contract.agreement["quantity"],
+                price= contract.agreement["unit_price"],
+                delivery_time= contract.agreement["time"],
                 bankruptcy_risk= 0,
                 material_type= MaterialType.RAW if contract.partners in self.awi.my_suppliers else MaterialType.PRODUCT,
             )

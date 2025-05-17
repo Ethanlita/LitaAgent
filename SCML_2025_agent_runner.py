@@ -29,14 +29,7 @@ full_market_runner = WorldRunner.from_runner(
 )
 
 
-#%% create a world with a number of agents and run it
-full_market_runner(LitaAgentN)
-full_market_runner.draw_worlds_of(LitaAgentN)
 
-#%% plot the results
-full_market_runner.plot_stats(agg=False)
-plt.show()
-print("Plotting stats")
 
 #%% create a world with a single agent and run it
 single_agent_runner(LitaAgentN)
@@ -45,5 +38,14 @@ single_agent_runner.draw_worlds_of(LitaAgentN)
 
 #%% plot the results
 single_agent_runner.plot_stats(agg=False)
+plt.show()
+print("Plotting stats")
+
+#%% create a world with a number of agents and run it
+full_market_runner(LitaAgentN)
+full_market_runner.draw_worlds_of(LitaAgentN)
+
+#%% plot the results
+full_market_runner.plot_stats(agg=False)
 plt.show()
 print("Plotting stats")

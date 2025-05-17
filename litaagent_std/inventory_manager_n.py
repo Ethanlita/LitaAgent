@@ -125,7 +125,8 @@ class InventoryManager:
         day: int,
         batches: List[Batch],
         storage_cost_per_unit: float,
-        pending: List[IMContract]
+        pending: List[IMContract],
+        mtype: MaterialType
     ):
         """通用：计算指定 day 的真实库存 & 预期库存摘要。"""
         # 真实库存 Real inventory
@@ -144,9 +145,15 @@ class InventoryManager:
 
         avg_cost = total_cost / total_qty if total_qty > 0 else 0.0
 
-        # 预期可用：真实 + 当日及未来到货 Estimated available inventory, = real + future(contracted)
-        future_qty = sum(c.quantity for c in pending if c.delivery_time >= day)
-        total_est = total_qty + future_qty
+        # 预期可用：
+        # [可用于生产的原材料]真实库存 + 当日及未来到货 Estimated available inventory, = real + future(contracted)
+        if mtype == MaterialType.RAW:
+            future_qty = sum(c.quantity for c in pending if c.delivery_time >= day)
+            total_est = total_qty + future_qty
+        # [可用于交割的产品]真实库存 - 当日及未来交割 + 当日及未来生产计划 Estimated available inventory, = real - future(contracted) + production_plan
+        elif mtype == MaterialType.PRODUCT:
+            future_qty = sum(c.quantity for c in pending if c.delivery_time >= day)
+            total_est = total_qty - future_qty + self.get_total_future_production_plan()
         # 预期成本：真实（含存储）+ 未来（仅入库价，不含后续存储） Estimated cost = real (including storage) + future (only inbound price, excluding subsequent storage)
         future_cost = sum(c.price * c.quantity for c in pending if c.delivery_time >= day)
         est_avg_cost = (total_cost + future_cost) / total_est if total_est > 0 else 0.0
@@ -168,11 +175,11 @@ class InventoryManager:
         """
         if mtype == MaterialType.RAW:
             return self._compute_summary(
-                day, self.raw_batches, self.raw_storage_cost, self._pending_supply
+                day, self.raw_batches, self.raw_storage_cost, self._pending_supply, MaterialType.RAW
             )
         else:
             return self._compute_summary(
-                day, self.product_batches, self.product_storage_cost, self._pending_demand
+                day, self.product_batches, self.product_storage_cost, self._pending_demand, MaterialType.PRODUCT
             )
     def get_today_insufficient(self, day: int) -> int:
         """
@@ -196,21 +203,10 @@ class InventoryManager:
 
     def update_day(self):
         """
-        仅将当前日期推进到下一天。
-        注意：
-        - 不会自动接收材料
-        - 不会自动执行生产
-        - 不会自动交付产品
-        - 不会自动规划生产
-        这些操作需要代理在适当的时机显式调用。
-        Advances the current date to the next day only.
-        Caution:
-        - Will not automatically receive material
-        - Production will not be performed automatically
-        - Does not automatically deliver products
-        - Does not automatically plan production
-        These operations need to be explicitly called by the agent at the appropriate time.
+        将当前日期推进到下一天。
+        Advances the current date to the next day.
         """
+        self.process_day_operations()
         self.current_day += 1
 
     # ----------------------------------------------------------------
@@ -489,6 +485,19 @@ class InventoryManager:
     def get_production_plan(self) -> Dict[int, float]:
         """返回已经排定的生产计划：{day: quantity, ...}"""
         return self.production_plan
+
+    def get_production_plan(self, day:int) -> float:
+        """返回指定日期已经排定的生产计划：quantity"""
+        return self.get_production_plan()[day]
+
+    def get_total_future_production_plan(self) -> float:
+        """
+        返回未来的生产计划之和（当前日期之后的计划）。
+        Returns the future production plan (the plan after the current date).
+        """
+        return sum(
+            qty for day, qty in self.production_plan.items() if day > self.current_day
+        )
     
     def get_max_possible_production(self, day: int) -> float:
         """
