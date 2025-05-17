@@ -86,6 +86,7 @@ class InventoryManager:
     def add_transaction(self, contract: IMContract) -> bool:
         """签订一份采购（上游）或销售（下游）合同。"""
         # Sign a supply (upstream) or demand (downstream) contract.
+        print(f"Add contract: {contract.contract_id} ({contract.type.name}), contract_raw:{contract}")
         if contract.delivery_time < self.current_day:
             return False
         if contract.type == IMContractType.SUPPLY:
