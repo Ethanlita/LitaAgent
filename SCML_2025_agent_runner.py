@@ -34,7 +34,6 @@ full_market_runner = WorldRunner.from_runner(
 
 #%% create a world with a single agent and run it
 single_agent_runner(LitaAgentY)
-single_agent_runner.runall()
 single_agent_runner.draw_worlds_of(LitaAgentY)
 
 #%% plot the results

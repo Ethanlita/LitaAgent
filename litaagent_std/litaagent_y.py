@@ -446,6 +446,7 @@ class LitaAgentY(StdSyncAgent):
         em_res = self._process_emergency_supply_offers(offer_deliver_today)
         res.update(em_res)
         # 如果这样还满足不了今天的紧急需求，就拿一些未来报价来改日期
+        # 若仍有紧急需求未满足, 尝试从未来的报价中提前交付
         today_need = self.im.get_today_insufficient(self.awi.current_step)
         today_supplied = sum(o[QUANTITY] for o in offer_deliver_today.values())
         if today_need > today_supplied:
