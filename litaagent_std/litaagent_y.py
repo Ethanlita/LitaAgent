@@ -244,7 +244,7 @@ class LitaAgentY(StdSyncAgent):
         else:
             buy_need = self._get_supply_demand_middle_last_layer()
             sell_need = self._get_sales_demand_middle_layer()
-
+        # TODO：需要增加一个_distribute_to_partners方法，用于分配到其他层级的伙伴，可以参考LitaAgentN
         # --- 1) 分配采购需求给供应商 ---
         if suppliers and buy_need > 0:
             response.update(self._distribute_to_partners(suppliers, buy_need))
