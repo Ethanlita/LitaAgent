@@ -114,7 +114,11 @@ class LitaAgentY(StdSyncAgent):
         self._market_price_avg: float = 0.0                 # 最近报价平均价 (估算市场均价)
         self._recent_prices: List[float] = []               # 用滚动窗口估计市场价
         self._avg_window: int = 30                          # 均价窗口大小
-        self._ptoday: float = ptoday  # 当期挑选伙伴比例
+        self._ptoday: float = ptoday                        # 当期挑选伙伴比例
+        self.model = None                                   # 预留的决策模型
+        # 记录每天的采购/销售完成量 {day: quantity}
+        self.sales_completed: Dict[int, int] = {}           # 销售完成量
+        self.purchase_completed: Dict[int, int] = {}        # 采购完成量 TODO：由于每次达成协议，im都会重新安排生产和计算不足量，因此应该不会用到这个
 
     # ------------------------------------------------------------------
     # 🌟 2. World / 日常回调
@@ -135,6 +139,10 @@ class LitaAgentY(StdSyncAgent):
         assert self.im, "InventoryManager 尚未初始化!"
         self.today_insufficient = self.im.get_today_insufficient(self.awi.current_step)
         self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
+
+        # 初始化当日的完成量记录
+        self.sales_completed.setdefault(self.awi.current_step, 0)
+        self.purchase_completed.setdefault(self.awi.current_step, 0)
 
     def step(self) -> None:
         """每天结束时调用：执行 IM 的日终操作并刷新市场均价。"""
@@ -167,6 +175,11 @@ class LitaAgentY(StdSyncAgent):
         if self._is_supplier(pid):
             return price > issue.max_value  # 采购价过高
         return price < issue.min_value      # 销售价过低
+
+    def _clamp_price(self, pid: str, price: float) -> float:
+        """确保价格在议题允许范围内。"""
+        issue = self.get_nmi(pid).issues[UNIT_PRICE]
+        return max(issue.min_value, min(issue.max_value, price))
 
     # ------------------------------------------------------------------
     # 🌟 3-a. 需求计算和需求分配
@@ -552,4 +565,4 @@ class LitaAgentY(StdSyncAgent):
 # ----------------- (可选) CLI 调试入口 -----------------
 # 用于本地 quick‑run，仅在教学 / 测试阶段开启。
 if __name__ == "__main__":
-    print("模块加载成功，可在竞赛框架中使用 LitaAgentN。")
+    print("模块加载成功，可在竞赛框架中使用 LitaAgentY。")
