@@ -660,7 +660,7 @@ class LitaAgentN(StdSyncAgent):
         # 1. 将协议加入库存管理器
         if os.path.exists("env.test"):
             print(
-                f"{self.id}准备调用库存管理器的add_transaction方法，合同ID：{contract.id}, 交易伙伴：{contract.partners}, 交易类型：{IMContractType.SUPPLY if contract.partners in self.awi.my_suppliers else IMContractType.DEMAND}, 数量：{contract.agreement['quantity']}, 单价：{contract.agreement['unit_price']}, 交割日期：{contract.agreement['time']}, RAW：{contract}"
+                f"{self.id}准备调用库存管理器的add_transaction方法，合同ID：{contract.id}, 交易伙伴：{contract.partners}, 交易类型：{IMContractType.SUPPLY if contract.partners in self.awi.my_suppliers else IMContractType.DEMAND}, 数量: {contract.agreement['quantity']}, 单价: {contract.agreement['unit_price']}, 交割日期: {contract.agreement['time']}, RAW: {contract}"
             )
         self.im.add_transaction(
             contract = IMContract(
