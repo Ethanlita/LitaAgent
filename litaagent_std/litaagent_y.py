@@ -445,7 +445,29 @@ class LitaAgentY(StdSyncAgent):
         # —— 紧急需求：仅当今日仍有不足量时处理 ——
         em_res = self._process_emergency_supply_offers(offer_deliver_today)
         res.update(em_res)
-        # TODO 如果这样还满足不了今天的紧急需求，就拿一些未来报价来改日期
+        # 如果这样还满足不了今天的紧急需求，就拿一些未来报价来改日期
+        today_need = self.im.get_today_insufficient(self.awi.current_step)
+        today_supplied = sum(o[QUANTITY] for o in offer_deliver_today.values())
+        if today_need > today_supplied:
+            shortage = today_need - today_supplied
+            future_offers = sorted(
+                offer_deliver_later_planned.items(), key=lambda x: x[1][UNIT_PRICE]
+            )
+            for pid, offer in future_offers:
+                if shortage <= 0:
+                    break
+                qty, price = offer[QUANTITY], offer[UNIT_PRICE]
+                take = min(qty, shortage)
+                new_price = min(price, self.awi.current_shortfall_penalty)
+                counter_offer = (take, today, new_price)
+                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
+                shortage -= take
+                remaining = qty - take
+                if remaining > 0:
+                    offer_deliver_later_planned[pid] = (remaining, offer[TIME], price)
+                else:
+                    offer_deliver_later_planned.pop(pid, None)
+
         # —— 计划性需求 ——
         plan_res = self._process_planned_supply_offers(offer_deliver_later_planned)
         res.update(plan_res)
@@ -478,18 +500,24 @@ class LitaAgentY(StdSyncAgent):
 
             if price > penalty:  # 比罚金贵，先拒绝并压价
                 new_price = min(price * 0.9, penalty)  # 小幅压价（10%）
-                counter = (qty, offer[TIME], new_price)
+                counter = (qty, self.awi.current_step, new_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
                 continue
             accept_qty = min(qty, remain_needed)
-            accept_offer = (accept_qty, offer[TIME], price)
-            res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, accept_offer)
-            remain_needed -= accept_qty
+            # 如果日期是今天,并且没有数量问题，则直接接受
+            if offer[TIME] == self.awi.current_step and accept_qty == qty:
+                accept_offer = (accept_qty, offer[TIME], price)
+                res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, accept_offer)
+                remain_needed -= accept_qty
+            else:
+                # 如果日期不是今天，或者数量太多，则将日期改为今天，并减少数量
+                counter_offer = (accept_qty, self.awi.current_step, price)
+                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             # 若还有余量未用，可压价重新还价
             if qty > accept_qty and remain_needed <= 0:
                 counter_qty = qty - accept_qty
                 counter_price = min(price * 0.9, penalty)
-                counter_offer = (counter_qty, offer[TIME], counter_price)
+                counter_offer = (counter_qty, self.awi.current_step, counter_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             if remain_needed <= 0:
                 break

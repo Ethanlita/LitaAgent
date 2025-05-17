@@ -623,13 +623,13 @@ class InventoryManager:
         received_materials = self.receive_materials()
         
         # 执行生产
-        self.execute_production()
+        self.execute_production(self.current_day)
         
         # 交付产品
         delivered_products = self.deliver_products()
-        
+
         # 重新计划生产
-        self.plan_production(self.current_day + 30)
+        self.plan_production(self.current_day + self.max_day)
         
         return {
             "received_materials": received_materials,
