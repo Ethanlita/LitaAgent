@@ -14,6 +14,7 @@ from scml.std import *
 from scml.runner import WorldRunner
 
 from litaagent_std.litaagent_n import LitaAgentN
+from litaagent_std.litaagent_y import LitaAgentY
 
 # create a runner that encapsulates a number of configs to evaluate agents
 # in the same conditions every time
@@ -32,9 +33,9 @@ full_market_runner = WorldRunner.from_runner(
 
 
 #%% create a world with a single agent and run it
-single_agent_runner(LitaAgentN)
+single_agent_runner(LitaAgentY)
 single_agent_runner.runall()
-single_agent_runner.draw_worlds_of(LitaAgentN)
+single_agent_runner.draw_worlds_of(LitaAgentY)
 
 #%% plot the results
 single_agent_runner.plot_stats(agg=False)
