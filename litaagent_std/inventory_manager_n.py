@@ -5,6 +5,7 @@
 from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
+import os
 
 
 class IMContractType(Enum):
@@ -86,7 +87,10 @@ class InventoryManager:
     def add_transaction(self, contract: IMContract) -> bool:
         """签订一份采购（上游）或销售（下游）合同。"""
         # Sign a supply (upstream) or demand (downstream) contract.
-        print(f"Add contract: {contract.contract_id} ({contract.type.name}), contract_raw:{contract}")
+        if os.path.exists("env.test"):
+            print(
+                f"Add contract: {contract.contract_id} ({contract.type.name}), contract_raw:{contract}"
+            )
         if contract.delivery_time < self.current_day:
             return False
         if contract.type == IMContractType.SUPPLY:
@@ -708,7 +712,8 @@ class InventoryManager:
         production_qty = production_plan.get(day, 0)
 
         if production_qty <= 0:
-            print("今天没有计划生产")
+            if os.path.exists("env.test"):
+                print("今天没有计划生产")
             return
 
         # 检查原材料库存是否足够
@@ -749,9 +754,11 @@ class InventoryManager:
             # 添加产品批次
             im.product_batches.append(batch)
 
-            print(f"执行生产: 生产了 {production_qty} 单位产品")
+            if os.path.exists("env.test"):
+                print(f"执行生产: 生产了 {production_qty} 单位产品")
         else:
-            print(f"原材料不足，无法执行计划生产量 {production_qty}")
+            if os.path.exists("env.test"):
+                print(f"原材料不足，无法执行计划生产量 {production_qty}")
             # 记录原材料不足情况
             if day not in im.insufficient_raw:
                 im.insufficient_raw[day] = {"daily": production_qty, "total": production_qty}

@@ -38,6 +38,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple, Iterable
 from dataclasses import dataclass
 import random
+import os
 from collections import Counter
 from uuid import uuid4
 
@@ -707,7 +708,8 @@ class LitaAgentY(StdSyncAgent):
         self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
 
         # 日志
-        print(f"✅ 合同已加入 IM: {new_c}")
+        if os.path.exists("env.test"):
+            print(f"✅ 合同已加入 IM: {new_c}")
 
     # ------------------------------------------------------------------
     # 🌟 7. 动态策略调节接口
@@ -734,4 +736,5 @@ class LitaAgentY(StdSyncAgent):
 # ----------------- (可选) CLI 调试入口 -----------------
 # 用于本地 quick‑run，仅在教学 / 测试阶段开启。
 if __name__ == "__main__":
-    print("模块加载成功，可在竞赛框架中使用 LitaAgentY。")
+    if os.path.exists("env.test"):
+        print("模块加载成功，可在竞赛框架中使用 LitaAgentY。")
