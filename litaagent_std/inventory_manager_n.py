@@ -510,7 +510,27 @@ class InventoryManager:
             return 0.0
         days = day - self.current_day + 1
         return days * self.daily_production_capacity
-    
+
+    def get_available_production_capacity(self, day: int) -> float:
+        """
+        从当前日期到 ``day`` 的剩余可用生产能力。
+
+        该值在 ``get_max_possible_production`` 的上限基础上，扣除了
+        已排定 ``production_plan`` 中的产量，以反映考虑既有合同后的真实
+        可用产能。
+        """
+        if day < self.current_day:
+            return 0.0
+        if self.daily_production_capacity == float("inf"):
+            return float("inf")
+
+        max_prod = self.get_max_possible_production(day)
+        planned = sum(
+            self.production_plan.get(d, 0) for d in range(self.current_day, day + 1)
+        )
+        remaining = max_prod - planned
+        return max(0.0, remaining)
+
     def get_insufficient_raw(self) -> dict[int, dict[str, float]]:
         """
         返回因原料不足未能完成的生产/交割需求情况。

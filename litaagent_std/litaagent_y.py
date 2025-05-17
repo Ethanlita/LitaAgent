@@ -439,14 +439,25 @@ class LitaAgentY(StdSyncAgent):
             qty, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
             # 估算该交货日的产品预计售价（简化：用市场均价占位）
             est_sell_price = max(self._market_price_avg, price * 2)  # 若市场价未知，粗估两倍原料价
+            # TODO 这里是有问题的，如果预估的市场价低于两倍的原料价格怎么办？
+            # 改为显式地使用if...else来判断
             unit_cost = price + self.im.processing_cost
+            # TODO 单位的成本改为：从im获取的产品平均成本
             min_price_allowed = unit_cost * (1 + self.min_profit_margin)
             if est_sell_price >= min_price_allowed:
+                # TODO 这里改为request_qty>=qty，也就是只要不超出需求量就可以接受（不足的量还可以找别人买）
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
             else:
                 # 还价：将单价压到利润可接受范围
                 target_price = min(price, est_sell_price / (1 + self.min_profit_margin))
                 counter = (qty, t, target_price)
+                # TODO 在生成counter offer时，如果对方的价格低于市场均价，则尝试更改交货时间和增加数量：
+                # - 增加的购买数量，可以根据未来数日的最低需求来决定，具体而言：
+                # - 如果现在时间是第t天，市场均价为mean_p，offer价格为p，保存成本为save_c，那么：
+                # - n = mean_p-p， 交割日期改为t+n，数量改为从第t天到第t+n天的紧急需求之和
+                # - 如果对方改变了数量或交货日期，则执行一样的流程重新评估
+                # - 如果对方只改变了价格，则计算是否满足利润条件，如果满足则接受，如果不满足则按照比例逐步在价格上做出让步（每次2%，作为可调节的参数）
+                # 如果对方的价格高于市场均价，则按照比例逐步在价格上做出让步（每次2%，作为可调节的参数）
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
         return res
 
@@ -467,9 +478,12 @@ class LitaAgentY(StdSyncAgent):
             if len(self._recent_prices) > self._avg_window:
                 self._recent_prices.pop(0)
             threshold = self._market_price_avg * self.cheap_price_discount if self._market_price_avg else price * 10
+            # TODO 这里的10倍是不是有点高了，是否应该考虑改低一点
             if price <= threshold:
+                # TODO 到这里也要考虑购买数量的问题，先用超出计划需求量的20%为上限（这里包括其他超额协议，总共不能超过20%），但是预留一个调用，允许未来需求预测模型介入
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
             else:
+                # TODO 否则也不一定立刻拒绝，而是开出一个更低的价格，或者将数量限制到20%内
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
         return res
 
