@@ -1,4 +1,4 @@
-# inventory_manager.py
+# inventory_manager_n.py
 # 这是给Agent使用的库存管理器，用来管理代理的协议、生产、和库存。
 # This is the Inventory Manager for Agents to manage the agent's protocols, production, and inventory.
 
