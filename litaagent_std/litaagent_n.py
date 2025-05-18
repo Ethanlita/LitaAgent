@@ -152,17 +152,21 @@ class LitaAgentN(StdSyncAgent):
         self._threshold: float = 1.0  # 占位，step() 时更新
 
         # 记录当前库存管理器
+        # Record the current inventory manager
         self.im = None # initialize in init()
 
         # 记录当前库存不足量
+        # Record the current inventory shortfall
         self.today_insufficient = None
         self.total_insufficient = None
 
         # 记录今天已签约的，且今天就要交割的交易量，用于保证最低购买
+        # Record deals signed today that deliver today to ensure minimum purchasing
         self.today_signed_sale = None
         self.today_signed_supply = None
 
         # 设置一个fallback agent TODO： 做一个好点的fallback agent 现在用RandDistOneShotAgent
+        # Set up a fallback agent. TODO: create a better one; currently using RandDistOneShotAgent
         # self._fallback_agent = RandDistOneShotAgent()
         self._fallback_type = RandDistOneShotAgent
 
@@ -172,9 +176,11 @@ class LitaAgentN(StdSyncAgent):
         # super().__init__(*args, production_level=0.25, future_concession=0.10, **kwargs)
     # ---------------------------------------------------------------------
     # 常用快捷判断 & 价格工具
+    # Utility checks and pricing helpers
     # ---------------------------------------------------------------------
 
     # 伙伴角色判断 ---------------------------------------------------------
+    # Partner role checks -------------------------------------------------
     def _is_supplier(self, partner: str) -> bool:
         return partner in self.awi.my_suppliers
 
@@ -182,8 +188,10 @@ class LitaAgentN(StdSyncAgent):
         return partner in self.awi.my_consumers
 
     # 价格工具 -------------------------------------------------------------
+    # Pricing utilities ----------------------------------------------------
     def _best_price(self, partner: str) -> float:
         """对 *自己* 最有利的价格：买入 ⇒ 最低价；卖出 ⇒ 最高价"""
+        # Price most favorable to us: buy at minimum, sell at maximum
         issue = self.get_nmi(partner).issues[UNIT_PRICE]
         pmin, pmax = issue.min_value, issue.max_value
         return pmin if self._is_supplier(partner) else pmax
@@ -193,6 +201,9 @@ class LitaAgentN(StdSyncAgent):
         * 若我是买家（对方为供应商），则在最低价基础上 *上浮* 20%
         * 若我是卖家（对方为顾客），      在最高价基础上 *下调* 30%
         该比例与 PenguinAgent 一致。"""
+        # Concession price when countering:
+        # * If I am the buyer, raise 20% above the minimum price
+        # * If I am the seller, cut 30% off the maximum price
         issue = self.get_nmi(partner).issues[UNIT_PRICE]
         pmin, pmax = issue.min_value, issue.max_value
         if self._is_consumer(partner):  # 我卖货，对方买
@@ -252,24 +263,29 @@ class LitaAgentN(StdSyncAgent):
     def _distribute_todays_needs(self, partners: Iterable[str] | None = None) -> Dict[str, int]:
         """随机将今日需求分配给一部分伙伴（按 _ptoday 比例）。"""
         # 暂且先这样
+        # For now we'll keep it simple
         if partners is None:
             partners = self.negotiators.keys()
         partners = list(partners)
 
         # 初始化：默认所有伙伴分配量 0
+        # Initialize distribution: all partners get 0 by default
         response: Dict[str, int] = {p: 0 for p in partners}
 
         # 分类伙伴
+        # Categorize partners
         suppliers = [p for p in partners if self._is_supplier(p)]
         consumers = [p for p in partners if self._is_consumer(p)]
 
         buy_need, sell_need = self._needs_today()
 
         # --- 1) 分配采购需求给供应商 ---
+        # Allocate purchase needs to suppliers
         if suppliers and buy_need > 0:
             response.update(self._distribute_to_partners(suppliers, buy_need))
 
         # --- 2) 分配销售需求给顾客 ---
+        # Allocate sales needs to consumers
         if consumers and sell_need > 0:
             # 由于计算需求时已经做过了限制，所以这里不需要再判断了
             response.update(self._distribute_to_partners(consumers, sell_need))
@@ -283,16 +299,19 @@ class LitaAgentN(StdSyncAgent):
 
         random.shuffle(partners)
         # 取前 ptoday 比例（至少 1 个）
+        # Take the first ptoday proportion (at least one partner)
         k = max(1, int(len(partners) * self._ptoday))
         chosen = partners[:k]
 
         # 若需求小于伙伴数，随机抽 subset
+        # If needs are less than partners, randomly sample a subset
         if needs < len(chosen):
             chosen = random.sample(chosen, random.randint(1, needs))
 
         quantities = _distribute(needs, len(chosen))
         distribution = dict(zip(chosen, quantities))
         # 其余伙伴分配量为 0
+        # All other partners receive 0
         return {p: distribution.get(p, 0) for p in partners}
 
     # ---------------------------------------------------------------------
@@ -415,9 +434,11 @@ class LitaAgentN(StdSyncAgent):
         s = self.awi.current_step  # 当前步骤 (day index)
 
         # 1. 计算并分配当期需求
+        # Step 1: compute and distribute today's requirements
         distribution = self._distribute_todays_needs(partners)
 
         # 2. 构建当前报价 & 未来伙伴列表
+        # Step 2: build today's offers and a list of future partners
         first_dict: Dict[str, Outcome] = {}
         future_suppliers: List[str] = []
         future_consumers: List[str] = []
@@ -431,6 +452,7 @@ class LitaAgentN(StdSyncAgent):
                 future_consumers.append(p)
 
         # 3. 生成未来报价
+        # Step 3: generate offers for future periods
         response: Dict[str, Outcome] = {}
         response.update(first_dict)
         response.update(self._future_supplie_offer(future_suppliers))
@@ -450,6 +472,7 @@ class LitaAgentN(StdSyncAgent):
         awi = self.awi
 
         # 分别处理 [采购] 与 [销售] 两条边
+        # Handle supplier and consumer sides separately
         for all_partners, is_supplier_side in [
             (awi.my_suppliers, True),
             (awi.my_consumers, False),
@@ -474,6 +497,7 @@ class LitaAgentN(StdSyncAgent):
 
             # ------------ 2. 拆分类别报价 ------------
             # 将报价氛围分为当前报价与未来报价，然后过滤掉不符合系统条件的报价
+            # Split offers into current and future ones and filter out invalid bids
             current_offers: Dict[str, Outcome] = {}
             future_offers: Dict[str, Outcome] = {}
             active_partners = {p for p in all_partners if p in offers and offers[p] is not None}
@@ -487,7 +511,9 @@ class LitaAgentN(StdSyncAgent):
                 else:
                     future_offers[p] = offer
             # TODO：改到这里了 这里其实还相当于啥也没做，除了排序了一下
+            # TODO: from here on nothing much happens except sorting
             # ----------- 2-a. 优先锁定今天必须购买的数量 ------------
+            # 2-a. Prioritize locking in the quantity that must be purchased today
             must_buy = self.today_insufficient
             purchased_today = 0
             # 将offer根据价格由低到高排序
@@ -504,8 +530,10 @@ class LitaAgentN(StdSyncAgent):
                     # TODO：改进这个consession_price
                     counter_offer = (offer[QUANTITY], offer[TIME], self._concession_price(p))
             # ------------ 3. 先锁定所有合理的未来报价 ------------
+            # Step 3: lock in all reasonable future offers first
 
             duplicate_quantity = [0] * awi.n_steps  # 防重计数表
+            # Table to avoid double counting
             for p, offer in future_offers.items():
                 step = offer[TIME]
                 if step >= awi.n_steps:
@@ -687,6 +715,7 @@ class LitaAgentN(StdSyncAgent):
 # ----------------------------------------------------------------------------
 """
 别管这个倒霉代码 这是AI干的
+# Ignore this messy code, it was generated by the AI
 if __name__ == "__main__":
     import sys
     from scml.helpers.runner import run  # type: ignore

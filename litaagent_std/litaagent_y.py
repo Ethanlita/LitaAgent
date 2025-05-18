@@ -65,6 +65,7 @@ from litaagent_std.inventory_manager_n import (
 
 def _split_partners(partners: List[str]) -> Tuple[List[str], List[str], List[str]]:
     """按 50 % / 30 % / 20 % 三段切分伙伴列表。"""
+    # Split partners into 50%, 30% and 20% groups
     n = len(partners)
     return (
         partners[: int(n * 0.5)],
@@ -74,6 +75,7 @@ def _split_partners(partners: List[str]) -> Tuple[List[str], List[str], List[str
 
 def _distribute(q: int, n: int) -> List[int]:
     """随机将 ``q`` 单位分配到 ``n`` 个桶，保证每桶至少 1（若可行）。"""
+    # Randomly distribute ``q`` units into ``n`` buckets, each getting at least one if possible
     if n <= 0:
         return []
 
@@ -145,10 +147,12 @@ class LitaAgentY(StdSyncAgent):
         self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
 
         # 初始化当日的完成量记录
+        # Initialize today's completion records
         self.sales_completed.setdefault(self.awi.current_step, 0)
         self.purchase_completed.setdefault(self.awi.current_step, 0)
 
         # 将外生协议写入im
+        # Write exogenous contracts into the inventory manager
         if self.awi.is_first_level:
             exogenous_contract_quantity = self.awi.current_exogenous_input_quantity
             exogenous_contract_price = self.awi.current_exogenous_input_price
@@ -236,37 +240,45 @@ class LitaAgentY(StdSyncAgent):
         *** 注意：由于签署未来协议不会扣减当前可用库存预期，为了防止罚款，当为首层时，只签署当日协议！ ***
         签署销售订单后正常排单，库存管理器会自己扣除库存
         """
+        # For the first layer, sales demand equals available production since exogenous contracts ensure capacity is not exceeded.
+        # Unsold products remain in inventory. We only sign contracts for the current day to avoid penalties.
         today_inventory_material = int(min(self.im.get_inventory_summary(self.awi.current_step, MaterialType.RAW)["estimated_available"], self.im.get_max_possible_production(self.awi.current_step)))
         return today_inventory_material
 
     def _get_sales_demand_last_layer(self) -> int:
         # 最后一层的销售需求为0，销售的外生协议由库存管理器管理，并将数据用于计算购买需求
+        # Last layer has no sales demand; exogenous contracts are handled by the inventory manager and used to compute purchase needs
         return 0
 
     def _get_sales_demand_middle_layer_today(self) -> int:
         # 这个方法计算的是中间层 * 今天 * 的销售需求
-        # 今天的销售需求 = 今天的产能 - 今天的生产计划 + 今天的产品（预期）库存
-        # 今天的产品（预期）库存 = 真库存 + 已排产（包括未来） - 已签署的销售合同（这个可以调用im）
+        # Today's sales demand for middle layers = today's capacity - today's production plan + today's expected inventory
+        # The expected inventory is real stock + scheduled production (including future) - signed contracts (query via IM)
         today_inventory_product = int(self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)["estimated_available"])
         return today_inventory_product
 
     def _get_sales_demand_middle_layer(self, day: int) -> int:
         # 这个方法计算的是中间层 * 在day的 * 销售需求
+        # Sales demand for middle layers on a specific day
         # 在day的销售需求 = 到day为止的产能 + 今天的库存 - 到day为止的销售
         future_inventory_product = int(self.im.get_inventory_summary(day, MaterialType.PRODUCT)["estimated_available"])
         return future_inventory_product
 
     def _get_supply_demand_middle_last_layer_today(self) -> tuple[int, int, float]:
         # 这个方法计算的是中间层和最后层 * 今天 * 的购买需求
+        # Calculate today's purchase demand for middle and last layers
         # return 紧急需求 计划需求 超额需求(超额需求是计划需求的20%)
+        # returns emergency, planned and optional (20% extra) needs
         return (self.im.get_today_insufficient(self.awi.current_step),
                 self.im.get_total_insufficient(self.awi.current_step),
                 self.im.get_total_insufficient(self.awi.current_step) * 0.2)
 
     def _get_supply_demand_middle_last_layer(self, day: int) -> tuple[int, int, float]:
         # 这个方法计算的是中间层和最后层 * 在day的 * 购买需求
-        # 对于最后一层，这方法其实，没什么意义，因为外生协议都是当天的（不过我觉得如果未来外生协议扩展到包括期货的话，这样也能兼容）
+        # For the last layer this is mostly meaningless as exogenous contracts are same-day,
+        # but it is future-proof if such contracts extend to futures
         # return 紧急需求 计划需求 超额需求(超额需求是计划需求的20%)
+        # returns emergency, planned and optional (20% extra) needs
         return (
             self.im.get_total_insufficient(day),
             self.im.get_total_insufficient(day),
@@ -281,38 +293,47 @@ class LitaAgentY(StdSyncAgent):
     def _distribute_todays_needs(self, partners: Iterable[str] | None = None) -> Dict[str, int]:
         """随机将今日需求分配给一部分伙伴（按 _ptoday 比例）。"""
         # 暂且先这样
+        # For now we keep this simple
         if partners is None:
             partners = self.negotiators.keys()
         partners = list(partners)
 
         # 初始化：默认所有伙伴分配量 0
+        # Initialize all partner allocations to zero
         response: Dict[str, int] = {p: 0 for p in partners}
 
         # 分类伙伴
+        # Classify partners
         suppliers = [p for p in partners if self._is_supplier(p)]
         consumers = [p for p in partners if self._is_consumer(p)]
 
         # buy_need, sell_need = self._needs_today()
         # 如果是第一层
+        # If this is the first layer
         if self.awi.is_first_level:
             buy_need : int = sum(self._get_supply_demand_first_layer())
             sell_need : int = self._get_sales_demand_first_layer()
         # 如果是最后一层
+        # If this is the last layer
         elif self.awi.is_last_level:
             buy_need : int = sum(self._get_supply_demand_middle_last_layer_today())
             sell_need : int = self._get_sales_demand_last_layer()
         # 如果在中间
+        # Otherwise we are in the middle layer
         else:
             buy_need : int = sum(self._get_supply_demand_middle_last_layer_today())
             sell_need : int = self._get_sales_demand_middle_layer_today()
 
         # --- 1) 分配采购需求给供应商 ---
+        # Allocate purchase needs to suppliers
         if suppliers and isinstance(buy_need, tuple):
             response.update(self._distribute_to_partners(suppliers, buy_need))
 
         # --- 2) 分配销售需求给顾客 ---
+        # Allocate sales needs to consumers
         if consumers and sell_need > 0:
             # 由于计算需求时已经做过了限制，所以这里不需要再判断了
+            # No further checks needed as demand calculations already apply limits
             response.update(self._distribute_to_partners(consumers, sell_need))
 
         return response

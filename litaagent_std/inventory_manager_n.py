@@ -50,7 +50,8 @@ class InventoryManager:
         max_day: int = 100,
     ):
         # 当前仿真天
-        self.max_day = max_day # 默认100天，可以在初始化时传入
+        # Current simulation day
+        self.max_day = max_day # 默认100天，可以在初始化时传入 Default is 100 days and can be provided at init
         self.current_day: int = 0
 
         # 成本参数 Cose parameters
@@ -295,6 +296,7 @@ class InventoryManager:
                 product_inv_simulation[day] -= demand
             else:
                 # 记录不足，但在后续规划中会尝试生产满足它
+                # Record the deficit and try to meet it in later planning
                 deficit = demand - product_inv_simulation[day]
                 product_inv_simulation[day] = 0
         
@@ -435,8 +437,11 @@ class InventoryManager:
                     self._pending_demand.remove(contract)
                 else:
                     # 部分满足，更新合同需求量
+                    # Partially fulfilled; update the contract quantity
                     # 因为当前实现没有直接更新合同的方式，我们记录不足并保留合同
+                    # Because the current implementation cannot update contracts directly, we record the deficit and keep the contract
                     # 后续可以考虑添加更新合同需求量的功能
+                    # Future work: allow updating the contract quantity
                     pass
 
             # 重新规划生产计划，考虑新的不足量
@@ -553,25 +558,30 @@ class InventoryManager:
         Returns a daily inventory forecast.
         """
         # 创建结果字典
+        # Create a dictionary for results
         result = {}
         
         # 复制当前状态以进行模拟
+        # Copy the current state for simulation
         raw_inventory = sum(batch.remaining for batch in self.raw_batches)
         product_inventory = sum(batch.remaining for batch in self.product_batches)
         
         # 按交割日期排序的需求合同
+        # Demand contracts sorted by delivery date
         demand_contracts = sorted(
             [c for c in self._pending_demand if c.delivery_time <= up_to_day],
             key=lambda c: c.delivery_time
         )
         
         # 按交割日期排序的供应合同
+        # Supply contracts sorted by delivery date
         supply_contracts = sorted(
             [c for c in self._pending_supply if c.delivery_time <= up_to_day],
             key=lambda c: c.delivery_time
         )
         
         # 模拟每天的变化
+        # Simulate day-by-day changes
         for day in range(self.current_day, up_to_day + 1):
             # 添加当天的原料供应
             day_supply = sum(c.quantity for c in supply_contracts if c.delivery_time == day)
@@ -708,6 +718,7 @@ class InventoryManager:
 
     def execute_production(im, day):
         """模拟执行生产过程"""
+        # Simulate the production process
         production_plan = im.get_production_plan_all()
         production_qty = production_plan.get(day, 0)
 
@@ -721,10 +732,12 @@ class InventoryManager:
 
         if raw_summary['current_stock'] >= production_qty:
             # 模拟生产批次创建
+            # Simulate creation of a production batch
             batch_id = f"PROD_{day}"
             unit_cost = raw_summary['average_cost'] + im.processing_cost
 
             # 创建产品批次
+            # Create a product batch
             batch = Batch(
                 batch_id=batch_id,
                 remaining=production_qty,
@@ -733,6 +746,7 @@ class InventoryManager:
             )
 
             # 减少原材料库存（模拟FIFO减少）
+            # Reduce raw material inventory in FIFO order
             remaining_to_reduce = production_qty
             raw_batches_copy = im.raw_batches.copy()
 
@@ -749,9 +763,11 @@ class InventoryManager:
                     im.raw_batches[i].remaining = 0
 
             # 清理剩余量为0的批次
+            # Remove batches with zero remaining quantity
             im.raw_batches = [b for b in im.raw_batches if b.remaining > 0]
 
             # 添加产品批次
+            # Add the product batch to inventory
             im.product_batches.append(batch)
 
             if os.path.exists("env.test"):
@@ -760,6 +776,7 @@ class InventoryManager:
             if os.path.exists("env.test"):
                 print(f"原材料不足，无法执行计划生产量 {production_qty}")
             # 记录原材料不足情况
+            # Record the shortage of raw materials
             if day not in im.insufficient_raw:
                 im.insufficient_raw[day] = {"daily": production_qty, "total": production_qty}
             else:
