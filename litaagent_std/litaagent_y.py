@@ -62,9 +62,11 @@ from litaagent_std.inventory_manager_n import (
 )
 
 # ------------------ 辅助函数 ------------------
+# Helper functions
 
 def _split_partners(partners: List[str]) -> Tuple[List[str], List[str], List[str]]:
     """按 50 % / 30 % / 20 % 三段切分伙伴列表。"""
+    # Split partners into 50%, 30% and 20% groups
     n = len(partners)
     return (
         partners[: int(n * 0.5)],
@@ -74,6 +76,7 @@ def _split_partners(partners: List[str]) -> Tuple[List[str], List[str], List[str
 
 def _distribute(q: int, n: int) -> List[int]:
     """随机将 ``q`` 单位分配到 ``n`` 个桶，保证每桶至少 1（若可行）。"""
+    # Randomly distribute ``q`` units into ``n`` buckets, each getting at least one if possible
     if n <= 0:
         return []
 
@@ -88,12 +91,14 @@ def _distribute(q: int, n: int) -> List[int]:
     return [r.get(i, 0) + 1 for i in range(n)]
 
 # ------------------ 主代理实现 ------------------
+# Main agent implementation
 
 class LitaAgentY(StdSyncAgent):
     """重构后的 LitaAgent N。支持三类采购策略与产能约束销售。"""
 
     # ------------------------------------------------------------------
     # 🌟 1. 初始化
+    # 1. Initialization
     # ------------------------------------------------------------------
 
     def __init__(
@@ -109,20 +114,21 @@ class LitaAgentY(StdSyncAgent):
         # —— 参数 ——
         self.total_insufficient = None
         self.today_insufficient = None
-        self.min_profit_margin = min_profit_margin          # 最低利润率⬆
-        self.cheap_price_discount = cheap_price_discount    # 超低价折扣阈值⬇
+        self.min_profit_margin = min_profit_margin          # 最低利润率⬆ Minimum profit margin
+        self.cheap_price_discount = cheap_price_discount    # 超低价折扣阈值⬇ Threshold for extremely low prices
 
         # —— 运行时变量 ——
-        self.im: InventoryManager | None = None             # 库存管理器实例
-        self._market_price_avg: float = 0.0                 # 最近报价平均价 (估算市场均价)
-        self._recent_material_prices: List[float] = []      # 用滚动窗口估计市场价
+        self.im: InventoryManager | None = None             # 库存管理器实例 Inventory manager instance
+        self._market_price_avg: float = 0.0                 # 最近报价平均价 (估算市场均价) Recent market price average
+        self._recent_material_prices: List[float] = []      # 用滚动窗口估计市场价 Rolling window for market price
         self._recent_product_prices: List[float] = []
-        self._avg_window: int = 30                          # 均价窗口大小
-        self._ptoday: float = ptoday                        # 当期挑选伙伴比例
-        self.model = None                                   # 预留的决策模型
+        self._avg_window: int = 30                          # 均价窗口大小 Average window size
+        self._ptoday: float = ptoday                        # 当期挑选伙伴比例 Proportion of partners selected today
+        self.model = None                                   # 预留的决策模型 Placeholder for decision model
         # 记录每天的采购/销售完成量 {day: quantity}
+        # Track daily completed purchase/sales quantity
         self.sales_completed: Dict[int, int] = {}
-        self.purchase_completed: Dict[int, int] = {}# 销售完成量
+        self.purchase_completed: Dict[int, int] = {}# 销售完成量 Purchase completion count
 
     # ------------------------------------------------------------------
     # 🌟 2. World / 日常回调
@@ -145,10 +151,12 @@ class LitaAgentY(StdSyncAgent):
         self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
 
         # 初始化当日的完成量记录
+        # Initialize today's completion records
         self.sales_completed.setdefault(self.awi.current_step, 0)
         self.purchase_completed.setdefault(self.awi.current_step, 0)
 
         # 将外生协议写入im
+        # Write exogenous contracts into the inventory manager
         if self.awi.is_first_level:
             exogenous_contract_quantity = self.awi.current_exogenous_input_quantity
             exogenous_contract_price = self.awi.current_exogenous_input_price
@@ -199,6 +207,7 @@ class LitaAgentY(StdSyncAgent):
 
     # ------------------------------------------------------------------
     # 🌟 3. 价格工具
+    # Pricing utilities
     # ------------------------------------------------------------------
 
     def _is_supplier(self, pid: str) -> bool:
@@ -216,8 +225,8 @@ class LitaAgentY(StdSyncAgent):
         """简单检查报价是否超出双方议题允许范围。"""
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         if self._is_supplier(pid):
-            return price > issue.max_value  # 采购价过高
-        return price < issue.min_value      # 销售价过低
+            return price > issue.max_value  # 采购价过高 Purchase price too high
+        return price < issue.min_value      # 销售价过低 Selling price too low
 
     def _clamp_price(self, pid: str, price: float) -> float:
         """确保价格在议题允许范围内。"""
@@ -236,37 +245,45 @@ class LitaAgentY(StdSyncAgent):
         *** 注意：由于签署未来协议不会扣减当前可用库存预期，为了防止罚款，当为首层时，只签署当日协议！ ***
         签署销售订单后正常排单，库存管理器会自己扣除库存
         """
+        # For the first layer, sales demand equals available production since exogenous contracts ensure capacity is not exceeded.
+        # Unsold products remain in inventory. We only sign contracts for the current day to avoid penalties.
         today_inventory_material = int(min(self.im.get_inventory_summary(self.awi.current_step, MaterialType.RAW)["estimated_available"], self.im.get_max_possible_production(self.awi.current_step)))
         return today_inventory_material
 
     def _get_sales_demand_last_layer(self) -> int:
         # 最后一层的销售需求为0，销售的外生协议由库存管理器管理，并将数据用于计算购买需求
+        # Last layer has no sales demand; exogenous contracts are handled by the inventory manager and used to compute purchase needs
         return 0
 
     def _get_sales_demand_middle_layer_today(self) -> int:
         # 这个方法计算的是中间层 * 今天 * 的销售需求
-        # 今天的销售需求 = 今天的产能 - 今天的生产计划 + 今天的产品（预期）库存
-        # 今天的产品（预期）库存 = 真库存 + 已排产（包括未来） - 已签署的销售合同（这个可以调用im）
+        # Today's sales demand for middle layers = today's capacity - today's production plan + today's expected inventory
+        # The expected inventory is real stock + scheduled production (including future) - signed contracts (query via IM)
         today_inventory_product = int(self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)["estimated_available"])
         return today_inventory_product
 
     def _get_sales_demand_middle_layer(self, day: int) -> int:
         # 这个方法计算的是中间层 * 在day的 * 销售需求
+        # Sales demand for middle layers on a specific day
         # 在day的销售需求 = 到day为止的产能 + 今天的库存 - 到day为止的销售
         future_inventory_product = int(self.im.get_inventory_summary(day, MaterialType.PRODUCT)["estimated_available"])
         return future_inventory_product
 
     def _get_supply_demand_middle_last_layer_today(self) -> tuple[int, int, float]:
         # 这个方法计算的是中间层和最后层 * 今天 * 的购买需求
+        # Calculate today's purchase demand for middle and last layers
         # return 紧急需求 计划需求 超额需求(超额需求是计划需求的20%)
+        # returns emergency, planned and optional (20% extra) needs
         return (self.im.get_today_insufficient(self.awi.current_step),
                 self.im.get_total_insufficient(self.awi.current_step),
                 self.im.get_total_insufficient(self.awi.current_step) * 0.2)
 
     def _get_supply_demand_middle_last_layer(self, day: int) -> tuple[int, int, float]:
         # 这个方法计算的是中间层和最后层 * 在day的 * 购买需求
-        # 对于最后一层，这方法其实，没什么意义，因为外生协议都是当天的（不过我觉得如果未来外生协议扩展到包括期货的话，这样也能兼容）
+        # For the last layer this is mostly meaningless as exogenous contracts are same-day,
+        # but it is future-proof if such contracts extend to futures
         # return 紧急需求 计划需求 超额需求(超额需求是计划需求的20%)
+        # returns emergency, planned and optional (20% extra) needs
         return (
             self.im.get_total_insufficient(day),
             self.im.get_total_insufficient(day),
@@ -281,38 +298,47 @@ class LitaAgentY(StdSyncAgent):
     def _distribute_todays_needs(self, partners: Iterable[str] | None = None) -> Dict[str, int]:
         """随机将今日需求分配给一部分伙伴（按 _ptoday 比例）。"""
         # 暂且先这样
+        # For now we keep this simple
         if partners is None:
             partners = self.negotiators.keys()
         partners = list(partners)
 
         # 初始化：默认所有伙伴分配量 0
+        # Initialize all partner allocations to zero
         response: Dict[str, int] = {p: 0 for p in partners}
 
         # 分类伙伴
+        # Classify partners
         suppliers = [p for p in partners if self._is_supplier(p)]
         consumers = [p for p in partners if self._is_consumer(p)]
 
         # buy_need, sell_need = self._needs_today()
         # 如果是第一层
+        # If this is the first layer
         if self.awi.is_first_level:
             buy_need : int = sum(self._get_supply_demand_first_layer())
             sell_need : int = self._get_sales_demand_first_layer()
         # 如果是最后一层
+        # If this is the last layer
         elif self.awi.is_last_level:
             buy_need : int = sum(self._get_supply_demand_middle_last_layer_today())
             sell_need : int = self._get_sales_demand_last_layer()
         # 如果在中间
+        # Otherwise we are in the middle layer
         else:
             buy_need : int = sum(self._get_supply_demand_middle_last_layer_today())
             sell_need : int = self._get_sales_demand_middle_layer_today()
 
         # --- 1) 分配采购需求给供应商 ---
+        # Allocate purchase needs to suppliers
         if suppliers and isinstance(buy_need, tuple):
             response.update(self._distribute_to_partners(suppliers, buy_need))
 
         # --- 2) 分配销售需求给顾客 ---
+        # Allocate sales needs to consumers
         if consumers and sell_need > 0:
             # 由于计算需求时已经做过了限制，所以这里不需要再判断了
+            # No further checks needed as demand calculations already apply limits
             response.update(self._distribute_to_partners(consumers, sell_need))
 
         return response
@@ -412,6 +438,7 @@ class LitaAgentY(StdSyncAgent):
 
     # ------------------------------------------------------------------
     # 🌟 5‑1. 供应报价拆分三类
+    # Split supply offers into three categories
     # ------------------------------------------------------------------
 
     def _process_supply_offers(self, offers: Dict[str, Outcome]) -> Dict[str, SAOResponse]:
@@ -451,6 +478,7 @@ class LitaAgentY(StdSyncAgent):
         em_res = self._process_emergency_supply_offers(offer_deliver_today)
         res.update(em_res)
         # 如果这样还满足不了今天的紧急需求，就拿一些未来报价来改日期
+        # If emergency demand is still unmet, shift some future offers to today
         # 若仍有紧急需求未满足, 尝试从未来的报价中提前交付
         today_need = self.im.get_today_insufficient(self.awi.current_step)
         today_supplied = sum(o[QUANTITY] for o in offer_deliver_today.values())
@@ -638,6 +666,7 @@ class LitaAgentY(StdSyncAgent):
 
     # ------------------------------------------------------------------
     # 🌟 5‑2. 销售报价处理
+    # Processing of sales offers
     # ------------------------------------------------------------------
 
     def _process_sales_offers(self, offers: Dict[str, Outcome]) -> Dict[str, SAOResponse]:
@@ -670,7 +699,9 @@ class LitaAgentY(StdSyncAgent):
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
                 continue
             # 2) 利润检查
+            # Profit check
             # 估算单位成本：用最近平均原料价 + 加工
+            # Estimate unit cost: recent average raw price plus processing
             avg_raw_cost = self._market_price_avg or price * 0.5
             unit_cost = avg_raw_cost + self.im.processing_cost
             min_sell_price = unit_cost * (1 + self.min_profit_margin)
@@ -684,6 +715,7 @@ class LitaAgentY(StdSyncAgent):
 
     # ------------------------------------------------------------------
     # 🌟 6. 合同成功回调
+    # Callback when a contract succeeds
     # ------------------------------------------------------------------
 
     def on_negotiation_success(self, contract: Contract, mechanism: StdAWI) -> None:
@@ -725,6 +757,7 @@ class LitaAgentY(StdSyncAgent):
 
     # ------------------------------------------------------------------
     # 🌟 7. 动态策略调节接口
+    # Dynamic strategy adjustment API
     # ------------------------------------------------------------------
 
     def update_profit_strategy(
@@ -738,6 +771,7 @@ class LitaAgentY(StdSyncAgent):
 
     # ------------------------------------------------------------------
     # 🌟 8. 预留模型决策钩子（示例）
+    # Reserved model decision hook (example)
     # ------------------------------------------------------------------
 
     def decide_with_model(self, obs: Any) -> Any:  # noqa: ANN401
