@@ -236,27 +236,27 @@ class LitaAgentY(StdSyncAgent):
         *** 注意：由于签署未来协议不会扣减当前可用库存预期，为了防止罚款，当为首层时，只签署当日协议！ ***
         签署销售订单后正常排单，库存管理器会自己扣除库存
         """
-        today_inventory_material = min(self.im.get_inventory_summary(self.awi.current_step, MaterialType.RAW)["estimated_available"], self.im.get_max_possible_production(self.awi.current_step))
+        today_inventory_material = int(min(self.im.get_inventory_summary(self.awi.current_step, MaterialType.RAW)["estimated_available"], self.im.get_max_possible_production(self.awi.current_step)))
         return today_inventory_material
 
     def _get_sales_demand_last_layer(self) -> int:
         # 最后一层的销售需求为0，销售的外生协议由库存管理器管理，并将数据用于计算购买需求
         return 0
 
-    def _get_sales_demand_middle_layer(self) -> int:
+    def _get_sales_demand_middle_layer_today(self) -> int:
         # 这个方法计算的是中间层 * 今天 * 的销售需求
         # 今天的销售需求 = 今天的产能 - 今天的生产计划 + 今天的产品（预期）库存
         # 今天的产品（预期）库存 = 真库存 + 已排产（包括未来） - 已签署的销售合同（这个可以调用im）
-        today_inventory_product = self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)["estimated_available"]
+        today_inventory_product = int(self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)["estimated_available"])
         return today_inventory_product
 
     def _get_sales_demand_middle_layer(self, day: int) -> int:
         # 这个方法计算的是中间层 * 在day的 * 销售需求
         # 在day的销售需求 = 到day为止的产能 + 今天的库存 - 到day为止的销售
-        future_inventory_product = self.im.get_inventory_summary(day, MaterialType.PRODUCT)["estimated_available"]
+        future_inventory_product = int(self.im.get_inventory_summary(day, MaterialType.PRODUCT)["estimated_available"])
         return future_inventory_product
 
-    def _get_supply_demand_middle_last_layer(self) -> tuple[int, int, float]:
+    def _get_supply_demand_middle_last_layer_today(self) -> tuple[int, int, float]:
         # 这个方法计算的是中间层和最后层 * 今天 * 的购买需求
         # return 紧急需求 计划需求 超额需求(超额需求是计划需求的20%)
         return (self.im.get_today_insufficient(self.awi.current_step),
@@ -295,16 +295,16 @@ class LitaAgentY(StdSyncAgent):
         # buy_need, sell_need = self._needs_today()
         # 如果是第一层
         if self.awi.is_first_level:
-            buy_need = self._get_supply_demand_first_layer()
-            sell_need = self._get_sales_demand_first_layer()
+            buy_need : int = sum(self._get_supply_demand_first_layer())
+            sell_need : int = self._get_sales_demand_first_layer()
         # 如果是最后一层
         elif self.awi.is_last_level:
-            buy_need = self._get_supply_demand_middle_last_layer()
-            sell_need = self._get_sales_demand_last_layer()
+            buy_need : int = sum(self._get_supply_demand_middle_last_layer_today())
+            sell_need : int = self._get_sales_demand_last_layer()
         # 如果在中间
         else:
-            buy_need = self._get_supply_demand_middle_last_layer()
-            sell_need = self._get_sales_demand_middle_layer()
+            buy_need : int = sum(self._get_supply_demand_middle_last_layer_today())
+            sell_need : int = self._get_sales_demand_middle_layer_today()
 
         # --- 1) 分配采购需求给供应商 ---
         if suppliers and isinstance(buy_need, tuple):
@@ -321,6 +321,9 @@ class LitaAgentY(StdSyncAgent):
         """核心分配：随机挑选 ``_ptoday`` 比例伙伴分配 ``needs``。"""
         if needs <= 0 or not partners:
             return {p: 0 for p in partners}
+
+        # 确保needs是整数
+        needs = int(needs)  # 将needs转换为整数
 
         random.shuffle(partners)
         k = max(1, int(len(partners) * self._ptoday))
@@ -617,7 +620,7 @@ class LitaAgentY(StdSyncAgent):
             if price <= threshold:
                 # TODO 这个地方的实现还是有一些混乱，设想是以往签署的可选需求之和不超过对应日的计划外需求的20%， 但是现在好像只是计算这一单不超过20%。我怀疑会买很多很多
                 # TODO 姑且先做成当日总预期库存不能超过计划需求的120%的形式吧
-                estimated_material_inventory= self.im.get_inventory_summary(offer[TIME], MaterialType.MATERIAL)["estimated_available"]
+                estimated_material_inventory= self.im.get_inventory_summary(offer[TIME], MaterialType.RAW)["estimated_available"]
                 inventory_limit = self.im.get_total_insufficient(offer[TIME]) * 1.2
                 accept_qty = inventory_limit - estimated_material_inventory if inventory_limit > 0 else 0
                 if accept_qty > 0:

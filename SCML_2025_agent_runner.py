@@ -3,8 +3,6 @@ import pandas as pd
 import matplotlib
 from matplotlib import pyplot as plt
 
-#  matplotlib.use('TkAgg')  # 或者使用 'Qt5Agg'
-
 import math
 from typing import Iterable
 from rich.jupyter import print
@@ -28,9 +26,6 @@ single_agent_runner = WorldRunner(
 full_market_runner = WorldRunner.from_runner(
     single_agent_runner, control_all_agents=True
 )
-
-
-
 
 #%% create a world with a single agent and run it
 single_agent_runner(LitaAgentY)

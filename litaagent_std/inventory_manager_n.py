@@ -487,13 +487,13 @@ class InventoryManager:
         # Clean up batches with remaining quantity of 0
         self.product_batches = [b for b in self.product_batches if b.remaining > 0]
     
-    def get_production_plan(self) -> Dict[int, float]:
+    def get_production_plan_all(self) -> Dict[int, float]:
         """返回已经排定的生产计划：{day: quantity, ...}"""
         return self.production_plan
 
     def get_production_plan(self, day:int) -> float:
         """返回指定日期已经排定的生产计划：quantity"""
-        return self.get_production_plan()[day]
+        return self.get_production_plan_all()[day]
 
     def get_total_future_production_plan(self) -> float:
         """
@@ -708,7 +708,7 @@ class InventoryManager:
 
     def execute_production(im, day):
         """模拟执行生产过程"""
-        production_plan = im.get_production_plan()
+        production_plan = im.get_production_plan_all()
         production_qty = production_plan.get(day, 0)
 
         if production_qty <= 0:
