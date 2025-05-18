@@ -33,9 +33,29 @@ single_agent_runner.draw_worlds_of(LitaAgentY)
 
 #%% plot the results
 single_agent_runner.plot_stats(agg=False)
+single_agent_runner.score_summary()
 plt.show()
-print("Plotting stats")
+def analyze_contracts(worlds, exogenous_only=False):
+    """
+    Analyzes the contracts signed in the given world
+    """
+    dfs = []
+    for world in worlds:
+        dfs.append(pd.DataFrame.from_records(world.saved_contracts))
+    data = pd.concat(dfs)
+    if exogenous_only:
+        data = data.loc[
+            (data["seller_name"] == "SELLER") | (data["buyer_name"] == "BUYER"), :
+        ]
+    return data.groupby(["seller_name", "buyer_name"])[["quantity", "unit_price"]].agg(
+        dict(quantity=("sum", "count"), unit_price="mean")
+    )
 
+
+print(analyze_contracts(single_agent_runner.worlds_of()))
+
+
+"""
 #%% create a world with a number of agents and run it
 full_market_runner(LitaAgentN)
 full_market_runner.draw_worlds_of(LitaAgentN)
@@ -44,3 +64,4 @@ full_market_runner.draw_worlds_of(LitaAgentN)
 full_market_runner.plot_stats(agg=False)
 plt.show()
 print("Plotting stats")
+"""
