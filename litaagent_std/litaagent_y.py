@@ -125,6 +125,8 @@ class LitaAgentY(StdSyncAgent):
         self._avg_window: int = 30                          # 均价窗口大小 Average window size
         self._ptoday: float = ptoday                        # 当期挑选伙伴比例 Proportion of partners selected today
         self.model = None                                   # 预留的决策模型 Placeholder for decision model
+        self.concession_model = None                        # 让步幅度模型接口
+        self._last_offer_price: Dict[str, float] = {}
         # 记录每天的采购/销售完成量 {day: quantity}
         # Track daily completed purchase/sales quantity
         self.sales_completed: Dict[int, int] = {}
@@ -232,6 +234,47 @@ class LitaAgentY(StdSyncAgent):
         """确保价格在议题允许范围内。"""
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         return max(issue.min_value, min(issue.max_value, price))
+
+    # ------------------------------------------------------------------
+    # 🌟 3-b. 动态让步策略
+    # ------------------------------------------------------------------
+
+    def _calc_opponent_concession(self, pid: str, price: float) -> float:
+        """估算对手的让步速度（相邻报价差异比例）。"""
+        last = self._last_offer_price.get(pid)
+        self._last_offer_price[pid] = price
+        if last is None or last == 0:
+            return 0.0
+        return abs(price - last) / abs(last)
+
+    def _concession_multiplier(self, rel_time: float, opp_rate: float = 0.0) -> float:
+        """根据时间和对手让步速度计算让步幅度。"""
+        if self.concession_model:
+            return self.concession_model(rel_time, opp_rate)
+        base = rel_time * (1 + opp_rate)
+        return max(0.0, min(1.0, base))
+
+    def _apply_concession(
+        self,
+        pid: str,
+        target_price: float,
+        state: SAOState | None,
+        current_price: float,
+    ) -> float:
+        """根据协商进度计算让步后的价格。"""
+        start = self._best_price(pid)
+        opp_rate = self._calc_opponent_concession(pid, current_price)
+        rel = state.relative_time if state else 0.0
+        mult = self._concession_multiplier(rel, opp_rate)
+        if self._is_consumer(pid):
+            # 我是卖家，价格从高到低
+            price = start - (start - target_price) * mult
+            price = max(target_price, price)
+        else:
+            # 我是买家，价格从低到高
+            price = start + (target_price - start) * mult
+            price = min(target_price, price)
+        return self._clamp_price(pid, price)
 
     # ------------------------------------------------------------------
     # 🌟 3-a. 需求计算和需求分配
@@ -430,10 +473,12 @@ class LitaAgentY(StdSyncAgent):
         responses: Dict[str, SAOResponse] = {}
         # -------- 5‑A 供应商报价 --------
         supply_offers = {p: o for p, o in offers.items() if self._is_supplier(p)}
-        responses.update(self._process_supply_offers(supply_offers))
+        supply_states = {p: states[p] for p in supply_offers}
+        responses.update(self._process_supply_offers(supply_offers, supply_states))
         # -------- 5‑B 顾客报价 --------
         demand_offers = {p: o for p, o in offers.items() if self._is_consumer(p)}
-        responses.update(self._process_sales_offers(demand_offers))
+        demand_states = {p: states[p] for p in demand_offers}
+        responses.update(self._process_sales_offers(demand_offers, demand_states))
         return responses
 
     # ------------------------------------------------------------------
@@ -441,7 +486,11 @@ class LitaAgentY(StdSyncAgent):
     # Split supply offers into three categories
     # ------------------------------------------------------------------
 
-    def _process_supply_offers(self, offers: Dict[str, Outcome]) -> Dict[str, SAOResponse]:
+    def _process_supply_offers(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
         """将供应报价拆分三类并整合结果。"""
         res: Dict[str, SAOResponse] = {}
         if not offers:
@@ -475,13 +524,19 @@ class LitaAgentY(StdSyncAgent):
 
 
         # —— 紧急需求：仅当今日仍有不足量时处理 ——
-        em_res = self._process_emergency_supply_offers(offer_deliver_today)
+        em_res = self._process_emergency_supply_offers(
+            offer_deliver_today, {p: states[p] for p in offer_deliver_today}
+        )
         res.update(em_res)
         # 如果这样还满足不了今天的紧急需求，就拿一些未来报价来改日期
         # If emergency demand is still unmet, shift some future offers to today
         # 若仍有紧急需求未满足, 尝试从未来的报价中提前交付
         today_need = self.im.get_today_insufficient(self.awi.current_step)
-        today_supplied = sum(o[QUANTITY] for o in offer_deliver_today.values())
+        today_supplied = sum(
+            resp.offer[QUANTITY]
+            for resp in em_res.values()
+            if resp.offer is not None and resp.offer[TIME] == today
+        )
         if today_need > today_supplied:
             shortage = today_need - today_supplied
             future_offers = sorted(
@@ -503,10 +558,15 @@ class LitaAgentY(StdSyncAgent):
                     offer_deliver_later_planned.pop(pid, None)
 
         # —— 计划性需求 ——
-        plan_res = self._process_planned_supply_offers(offer_deliver_later_planned)
+        plan_res = self._process_planned_supply_offers(
+            offer_deliver_later_planned, {p: states[p] for p in offer_deliver_later_planned}
+        )
         res.update(plan_res)
         # —— 机会性采购 ——
-        optional_res = self._process_optional_supply_offers(offer_deliver_optional_demand)
+        optional_res = self._process_optional_supply_offers(
+            offer_deliver_optional_demand,
+            {p: states[p] for p in offer_deliver_optional_demand},
+        )
         res.update(optional_res)
 
         return res
@@ -515,7 +575,11 @@ class LitaAgentY(StdSyncAgent):
     # 🌟 5‑1‑a 紧急需求处理
     # ------------------------------------------------------------------
 
-    def _process_emergency_supply_offers(self, offers: Dict[str, Outcome]) -> Dict[str, SAOResponse]:
+    def _process_emergency_supply_offers(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
         """处理今日必须到货的原料报价。"""
         res: Dict[str, SAOResponse] = {}
         if not offers or self.today_insufficient <= 0:
@@ -526,6 +590,7 @@ class LitaAgentY(StdSyncAgent):
         penalty = self.awi.current_shortfall_penalty
         for pid, offer in ordered:
             qty, price = offer[QUANTITY], offer[UNIT_PRICE]
+            state = states.get(pid)
 
             # 更新均价窗口
             self._recent_material_prices.append(price)
@@ -533,7 +598,7 @@ class LitaAgentY(StdSyncAgent):
                 self._recent_material_prices.pop(0)
 
             if price > penalty:  # 比罚金贵，先拒绝并压价
-                new_price = min(price * 0.9, penalty)  # 小幅压价（10%）
+                new_price = self._apply_concession(pid, penalty, state, price)
                 counter = (qty, self.awi.current_step, new_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
                 continue
@@ -545,12 +610,13 @@ class LitaAgentY(StdSyncAgent):
                 remain_needed -= accept_qty
             else:
                 # 如果日期不是今天，或者数量太多，则将日期改为今天，并减少数量
-                counter_offer = (accept_qty, self.awi.current_step, price)
+                new_price = self._apply_concession(pid, penalty, state, price)
+                counter_offer = (accept_qty, self.awi.current_step, new_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             # 若还有余量未用，可压价重新还价
             if qty > accept_qty and remain_needed <= 0:
                 counter_qty = qty - accept_qty
-                counter_price = min(price * 0.9, penalty)
+                counter_price = self._apply_concession(pid, penalty, state, price)
                 counter_offer = (counter_qty, self.awi.current_step, counter_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             if remain_needed <= 0:
@@ -561,11 +627,16 @@ class LitaAgentY(StdSyncAgent):
     # 🌟 5‑1‑b 计划性需求处理
     # ------------------------------------------------------------------
 
-    def _process_planned_supply_offers(self, offers: Dict[str, Outcome]) -> Dict[str, SAOResponse]:
+    def _process_planned_supply_offers(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
         """为未来生产需求采购原料：保证利润并智能调整采购量。"""
         res: Dict[str, SAOResponse] = {}
         for pid, offer in offers.items():
             qty, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+            state = states.get(pid)
 
             # 更新均价窗口
             self._recent_material_prices.append(price)
@@ -600,39 +671,53 @@ class LitaAgentY(StdSyncAgent):
                         # 如果有提前买多一点的必要，那就提前买多一点吧
                         offer_qty = self.im.get_total_insufficient(t - n_days_earlier)
                         offer_day = t - n_days_earlier
-                        offer_price = price
-                        res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price))
+                        offer_price = self._apply_concession(pid, max_price_allowed, state, price)
+                        res[pid] = SAOResponse(
+                            ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
+                        )
                     else:
                         # 如果没有提前买的必要,那就减量吧
                         offer_qty = request_qty
                         offer_day = t
-                        offer_price = price
-                        res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price))
+                        offer_price = self._apply_concession(pid, max_price_allowed, state, price)
+                        res[pid] = SAOResponse(
+                            ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
+                        )
                 else:
                     # 如果也不是那么便宜，那就减量吧
                     offer_qty = request_qty
                     offer_day = t
-                    offer_price = price
-                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price))
+                    offer_price = self._apply_concession(pid, max_price_allowed, state, price)
+                    res[pid] = SAOResponse(
+                        ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
+                    )
             elif price >= max_price_allowed and qty <= request_qty:
                 # 如果太贵了，但是数量还可以的话，那就降价
                 offer_qty = qty
                 offer_day = t
-                offer_price = max_price_allowed
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price))
+                offer_price = self._apply_concession(pid, max_price_allowed, state, price)
+                res[pid] = SAOResponse(
+                    ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
+                )
             else:
                 # 如果又贵又超出需求量，就要求降价
                 offer_qty = request_qty
                 offer_day = t
-                offer_price = max_price_allowed
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price))
+                offer_price = self._apply_concession(pid, max_price_allowed, state, price)
+                res[pid] = SAOResponse(
+                    ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
+                )
         return res
 
     # ------------------------------------------------------------------
     # 🌟 5‑1‑c 机会性采购处理
     # ------------------------------------------------------------------
 
-    def _process_optional_supply_offers(self, offers: Dict[str, Outcome]) -> Dict[str, SAOResponse]:
+    def _process_optional_supply_offers(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
         """仅在超低价时囤货。"""
         res: Dict[str, SAOResponse] = {}
         if not offers:
@@ -640,6 +725,7 @@ class LitaAgentY(StdSyncAgent):
         # 当前市场平均价（若为0则先记录报价再处理）
         for pid, offer in offers.items():
             qty, price = offer[QUANTITY], offer[UNIT_PRICE]
+            state = states.get(pid)
             # 更新均价窗口
             self._recent_material_prices.append(price)
             if len(self._recent_material_prices) > self._avg_window:
@@ -656,12 +742,15 @@ class LitaAgentY(StdSyncAgent):
                     res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (qty, offer[TIME], price))
                 else:
                     # 如果价格够低，但是数量太大 - 减少数量
-                    counter = (accept_qty, offer[TIME], price)
+                    new_price = self._apply_concession(pid, threshold, state, price)
+                    counter = (accept_qty, offer[TIME], new_price)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
             else:
                 # 如果太贵了 - 要求降价
-                counter_price = threshold
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (qty, offer[TIME], counter_price))
+                counter_price = self._apply_concession(pid, threshold, state, price)
+                res[pid] = SAOResponse(
+                    ResponseType.REJECT_OFFER, (qty, offer[TIME], counter_price)
+                )
         return res
 
     # ------------------------------------------------------------------
@@ -669,7 +758,11 @@ class LitaAgentY(StdSyncAgent):
     # Processing of sales offers
     # ------------------------------------------------------------------
 
-    def _process_sales_offers(self, offers: Dict[str, Outcome]) -> Dict[str, SAOResponse]:
+    def _process_sales_offers(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
         """确保不超产能且满足利润率。"""
         # TODO: 有一个问题：如果达成了一笔当天的协议。那么这笔协议的不足量就会瞬间变成当天必须实现的采购量，需要根据这个重新规划生产、重新计算所需库存量来提出购买要求
         res: Dict[str, SAOResponse] = {}
@@ -678,6 +771,7 @@ class LitaAgentY(StdSyncAgent):
         assert self.im, "InventoryManager 未初始化"
         for pid, offer in offers.items():
             qty, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+            state = states.get(pid)
 
             # 更新均价窗口
             self._recent_product_prices.append(price)
@@ -693,7 +787,8 @@ class LitaAgentY(StdSyncAgent):
                 # 超产能：部分接受或拒绝（简化：拒绝并还价减量）
                 accept_qty = max_prod - signed_qty
                 if accept_qty > 0:
-                    counter_offer = (accept_qty, t, price)
+                    counter_price = self._apply_concession(pid, price, state, price)
+                    counter_offer = (accept_qty, t, counter_price)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
                 else:
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
@@ -708,7 +803,7 @@ class LitaAgentY(StdSyncAgent):
             if price >= min_sell_price:
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
             else:
-                counter_price = max(min_sell_price, price * 1.05)  # 小幅抬价
+                counter_price = self._apply_concession(pid, min_sell_price, state, price)
                 counter = (qty, t, counter_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
         return res

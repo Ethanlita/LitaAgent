@@ -500,9 +500,11 @@ class InventoryManager:
         """返回已经排定的生产计划：{day: quantity, ...}"""
         return self.production_plan
 
-    def get_production_plan(self, day:int) -> float:
-        """返回指定日期已经排定的生产计划：quantity"""
-        return self.get_production_plan_all()[day]
+    def get_production_plan(self, day: int | None = None):
+        """返回指定日期的生产计划量，或全部计划。"""
+        if day is None:
+            return self.get_production_plan_all()
+        return self.get_production_plan_all().get(day, 0)
 
     def get_total_future_production_plan(self) -> float:
         """
