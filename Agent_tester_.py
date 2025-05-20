@@ -173,7 +173,7 @@ if not points:
     print("警告: 没有找到代理之间的协议数据，无法绘制帕累托图")
     # 创建一个空的图表，显示警告信息
     plt.figure(figsize=(10, 6))
-    plt.text(0.5, 0.5, "没有代理之间的协议数据可供分析",
+    plt.text(0.5, 0.5, "No contract data available",
              horizontalalignment='center', verticalalignment='center',
              fontsize=16, color='red')
     plt.savefig("agreements_pareto.png")
@@ -186,7 +186,7 @@ else:
     # 绘制所有协议点
     bp_vals = [p[0] for p in points]
     sp_vals = [p[1] for p in points]
-    plt.scatter(bp_vals, sp_vals, color="blue", alpha=0.6, label="代理协议", s=80)
+    plt.scatter(bp_vals, sp_vals, color="blue", alpha=0.6, label="Agreements", s=80)
 
     # 为每个数据点添加标签
     for i, (bp, sp) in enumerate(points):
@@ -204,7 +204,7 @@ else:
     if pareto_points:
         bp_p = [p[0] for p in pareto_points]
         sp_p = [p[1] for p in pareto_points]
-        plt.scatter(bp_p, sp_p, color="red", edgecolors="black", marker="D", s=100, label="帕累托最优")
+        plt.scatter(bp_p, sp_p, color="red", edgecolors="black", marker="D", s=100, label="Pareto optimal Point")
 
         # 为帕累托最优点添加突出标签
         for i, (bp, sp) in enumerate(pareto_points):
@@ -225,11 +225,11 @@ else:
         sorted_pareto = sorted(pareto_points, key=lambda x: x[0])
         bp_sorted = [p[0] for p in sorted_pareto]
         sp_sorted = [p[1] for p in sorted_pareto]
-        plt.plot(bp_sorted, sp_sorted, 'r--', lw=2, alpha=0.7, label="帕累托前沿")
+        plt.plot(bp_sorted, sp_sorted, 'r--', lw=2, alpha=0.7, label="Paretro frontier")
 
-    plt.xlabel("买方利润", fontsize=12)
-    plt.ylabel("卖方利润", fontsize=12)
-    plt.title("代理协议与帕累托最优前沿", fontsize=14, fontweight='bold')
+    plt.xlabel("Buyer Profit", fontsize=12)
+    plt.ylabel("Seller Profit", fontsize=12)
+    plt.title("Contracts and Pareto frontier", fontsize=14, fontweight='bold')
     plt.legend(fontsize=10)
     plt.grid(True, alpha=0.3)
 
@@ -238,6 +238,7 @@ else:
     plt.axvline(x=0, color='k', linestyle='-', alpha=0.3)
 
     plt.tight_layout()  # 自动调整布局，防止标签被裁剪
+    plt.show()
     plt.savefig("agreements_pareto.png", dpi=200)  # 增加分辨率
     plt.close()
 
@@ -293,14 +294,18 @@ for bar, agent in zip(bars, agents):
         bar.set_hatch("//")
         ax1.text(bar.get_x()+bar.get_width()/2, bar.get_height(), "Bankrupt",
                  ha="center", va="bottom", fontsize=8, color="red")
+plt.show()
 plt.savefig("agent_stats.png")
 plt.close()
 
 world.plot_stats()
+plt.show()
 world.plot_stats("n_negotiations", ylegend=1.25)
+plt.show()
 world.plot_stats("bankrupt", ylegend=1.25)
+plt.show()
 world.plot_stats("n_contracts")
+plt.show()
 world.plot_stats("score")
-
 plt.show()
 
