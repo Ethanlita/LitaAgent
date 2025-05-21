@@ -121,6 +121,7 @@ for (buyer, seller, trace) in negotiation_traces:
 points = []
 point_labels = []  # 存储每个点的买方和卖方信息
 agent_contracts = []  # 存储所有涉及代理的合约
+lita_agent_y_contracts = []  # 存储所有与LitaAgentY相关的合约
 
 # 首先打印所有合约的基本信息，用于调试
 print("合约总数:", len(contracts_df))
@@ -132,11 +133,15 @@ for _, ct in contracts_df.iterrows():
     # 如果至少一方是代理(非BUYER/SELLER)，则添加到代理合约列表
     if b != "BUYER" or s != "SELLER":
         agent_contracts.append(ct)
+    # 如果至少一方是LitaAgentY，则添加到LitaAgentY合约列表
+    if "Li" in b or "Li" in s:
+        lita_agent_y_contracts.append(ct)
 
 print(f"\n代理参与的合约数: {len(agent_contracts)}")
+print(f"LitaAgentY参与的合约数: {len(lita_agent_y_contracts)}")
 
-# 对于每个涉及代理的合约，计算利润并添加到帕累托分析中
-for ct in agent_contracts:
+# 只分析与LitaAgentY相关的合约
+for ct in lita_agent_y_contracts:
     buyer = ct["buyer_name"]; seller = ct["seller_name"]
     price = ct["unit_price"]; qty = ct["quantity"]
 
@@ -153,12 +158,11 @@ for ct in agent_contracts:
     if seller == "SELLER":
         seller_profit = 0  # 外部卖家利润未知，设为0
 
-    # 只有当至少一方是代理时才添加
-    if buyer != "BUYER" or seller != "SELLER":
-        points.append((buyer_profit, seller_profit))
-        point_labels.append(f"{buyer} → {seller}")
+    # 添加所有与LitaAgentY相关的点
+    points.append((buyer_profit, seller_profit))
+    point_labels.append(f"{buyer} → {seller}")
 
-# Determine Pareto-optimal agreements
+# 确定帕累托最优解
 pareto_mask = [True]*len(points)
 for i, (bp, sp) in enumerate(points):
     for j, (bp2, sp2) in enumerate(points):
@@ -170,23 +174,23 @@ pareto_labels = [label for label, m in zip(point_labels, pareto_mask) if m]
 
 # 检查是否有足够的数据点来画图
 if not points:
-    print("警告: 没有找到代理之间的协议数据，无法绘制帕累托图")
+    print("警告: 没有找到LitaAgentY的协议数据，无法绘制帕累托图")
     # 创建一个空的图表，显示警告信息
     plt.figure(figsize=(10, 6))
-    plt.text(0.5, 0.5, "No contract data available",
+    plt.text(0.5, 0.5, "No LitaAgentY contract data available",
              horizontalalignment='center', verticalalignment='center',
              fontsize=16, color='red')
     plt.savefig("agreements_pareto.png")
     plt.close()
 else:
-    print(f"绘制帕累托图: 共有 {len(points)} 个协议点")
+    print(f"绘制LitaAgentY帕累托图: 共有 {len(points)} 个协议点")
 
     plt.figure(figsize=(12, 10))  # 增大图表尺寸，为标签腾出更多空间
 
     # 绘制所有协议点
     bp_vals = [p[0] for p in points]
     sp_vals = [p[1] for p in points]
-    plt.scatter(bp_vals, sp_vals, color="blue", alpha=0.6, label="Agreements", s=80)
+    plt.scatter(bp_vals, sp_vals, color="blue", alpha=0.6, label="LitaAgentY Agreements", s=80)
 
     # 为每个数据点添加标签
     for i, (bp, sp) in enumerate(points):
@@ -221,10 +225,14 @@ else:
 
     # 绘制帕累托前沿线 (如果有多个帕累托点)
     if len(pareto_points) > 1:
-        # 按买方利润排序
+        # 按买方利润排序，确保连线正确
         sorted_pareto = sorted(pareto_points, key=lambda x: x[0])
+
+        # 使用插值方法绘制更平滑的帕累托前沿
         bp_sorted = [p[0] for p in sorted_pareto]
         sp_sorted = [p[1] for p in sorted_pareto]
+
+        # 绘制帕累托前沿
         plt.plot(bp_sorted, sp_sorted, 'r--', lw=2, alpha=0.7, label="Paretro frontier")
 
     plt.xlabel("Buyer Profit", fontsize=12)
@@ -244,7 +252,7 @@ else:
 
     # 打印帕累托最优协议的详细信息
     if pareto_points:
-        print("\n帕累托最优协议:")
+        print("\nLitaAgentY的帕累托最优协议:")
         for i, (bp, sp) in enumerate(pareto_points):
             print(f"  {pareto_labels[i]}: 买方利润={bp:.2f}, 卖方利润={sp:.2f}")
 
@@ -309,3 +317,12 @@ plt.show()
 world.plot_stats("score")
 plt.show()
 
+# I cannot retrive a mechanism from the world
+mechanisms = world.mechanisms
+for mechanism in mechanisms:
+    mechanism.plot()
+    plt.show()
+
+for i, mech in enumerate(world.mechanisms):
+        mech.plot(mark_pareto_points=True, save_fig=f"mechanism_{i}.png")
+        plt.show()
