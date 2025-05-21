@@ -225,13 +225,5 @@ agent.update_profit_strategy(min_profit_margin=0.12,
 5. **InventoryManager performance** — greedy backward planning is $O(days·contracts)$; for >1000 contracts could lag.
 6. **No penalty anticipation** — relies on current `shortfall_penalty` but doesn’t forecast aggregated penalties across steps.
 
-**Planned enhancements**
-
-* Integrate **non‑linear concession model** (e.g., square‑root time, dynamic β).
-* Add **Bayesian opponent modelling**: estimate reservation price & quantity elasticity.
-* Improve **production planning** by using MILP to balance storage cost vs. capacity.
-* Introduce **risk‑aware stock‑up** with predictive price signals (ARIMA / LSTM).
-* Parallelize `InventoryManager.plan_production` for large‑scale tournaments.
-* Embed **reinforcement learning** in `decide_with_model()` to adapt margin & discount parameters.
 
 > Continuous profiling & simulation on SCML2025 benchmark worlds will guide iterative tuning.
