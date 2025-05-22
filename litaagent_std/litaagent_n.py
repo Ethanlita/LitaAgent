@@ -35,7 +35,7 @@ import os
 from scml import RandDistOneShotAgent, OneShotRLAgent
 # from tensorflow.python.eager.execute import must_record_gradient
 
-from litaagent_std import inventory_manager_n
+from . import inventory_manager_n
 from itertools import chain, combinations, repeat
 from collections import Counter
 
