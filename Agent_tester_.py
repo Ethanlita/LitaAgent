@@ -317,12 +317,59 @@ plt.show()
 world.plot_stats("score")
 plt.show()
 
-# I cannot retrive a mechanism from the world
-mechanisms = world.mechanisms
-for mechanism in mechanisms:
-    mechanism.plot()
-    plt.show()
+# Plot negotiations between every pair of agents with Pareto frontier
+from collections import defaultdict
+pair_negotiations = defaultdict(list)
+for neg in world.saved_negotiations:
+    buyer = neg.get("buyer")
+    seller = neg.get("seller")
+    if not buyer or not seller:
+        continue
+    pair_negotiations[(buyer, seller)].append(neg)
 
-for i, mech in enumerate(world.mechanisms):
-        mech.plot(mark_pareto_points=True, save_fig=f"mechanism_{i}.png")
-        plt.show()
+def pareto_frontier(points):
+    mask = [True] * len(points)
+    for i, (bp, sp) in enumerate(points):
+        for j, (bp2, sp2) in enumerate(points):
+            if i != j and bp2 >= bp and sp2 >= sp and (bp2 > bp or sp2 > sp):
+                mask[i] = False
+                break
+    return [p for p, m in zip(points, mask) if m]
+
+for (buyer, seller), negotiations in pair_negotiations.items():
+    all_points = []
+    plt.figure(figsize=(8, 6))
+    for idx, neg in enumerate(negotiations):
+        product = neg.get("product", 0)
+        env_price = float(world.trading_prices[product]) if hasattr(world, "trading_prices") else None
+        trace_points = []
+        for step in neg.get("history", []):
+            for agent_id, offer in step.get("new_offers", []):
+                if not offer:
+                    continue
+                qty, _time, price = offer
+                seller_profit = price * qty
+                if env_price is None:
+                    env_price = 1.5 * price
+                buyer_profit = env_price * qty - price * qty
+                trace_points.append((buyer_profit, seller_profit))
+                all_points.append((buyer_profit, seller_profit))
+        if trace_points:
+            tp = list(zip(*trace_points))
+            plt.plot(tp[0], tp[1], marker="o", label=f"Negotiation {idx+1}")
+
+    if all_points:
+        pareto = pareto_frontier(all_points)
+        pareto.sort(key=lambda x: x[0])
+        pp = list(zip(*pareto))
+        plt.scatter(pp[0], pp[1], color="red", marker="D", label="Pareto frontier")
+        plt.plot(pp[0], pp[1], "r--", alpha=0.7)
+
+    plt.xlabel("Buyer Profit")
+    plt.ylabel("Seller Profit")
+    plt.title(f"{seller} vs {buyer}")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f"negotiation_{seller}_{buyer}.png")
+    plt.show()
