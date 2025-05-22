@@ -54,7 +54,7 @@ from scml.std import (
 from negmas import SAOState, SAOResponse, Outcome, Contract, ResponseType
 
 # 内部工具 & manager
-from litaagent_std.inventory_manager_n import (
+from .inventory_manager_n import (
     InventoryManager,
     IMContract,
     IMContractType,
