@@ -124,16 +124,31 @@ for contract in world.saved_contracts:
 
     # Compute utility from the perspective of each party
     # 根据买卖双方各自的效用函数计算效用
-    buyer_u = (
-        buyer_agent.ufun.from_offers((offer,), (False,))
-        if buyer_agent and hasattr(buyer_agent, "ufun")
-        else 0
-    )
-    seller_u = (
-        seller_agent.ufun.from_offers((offer,), (True,))
-        if seller_agent and hasattr(seller_agent, "ufun")
-        else 0
-    )
+    if not buyer_agent:
+        print(
+            f"[DEBUG] Buyer agent '{buyer}' not found when evaluating offer {offer}"
+        )
+        buyer_u = 0
+    elif not hasattr(buyer_agent, "ufun") or buyer_agent.ufun is None:
+        print(
+            f"[DEBUG] Buyer agent '{buyer}' has no ufun when evaluating offer {offer}"
+        )
+        buyer_u = 0
+    else:
+        buyer_u = buyer_agent.ufun.from_offers((offer,), (False,))
+
+    if not seller_agent:
+        print(
+            f"[DEBUG] Seller agent '{seller}' not found when evaluating offer {offer}"
+        )
+        seller_u = 0
+    elif not hasattr(seller_agent, "ufun") or seller_agent.ufun is None:
+        print(
+            f"[DEBUG] Seller agent '{seller}' has no ufun when evaluating offer {offer}"
+        )
+        seller_u = 0
+    else:
+        seller_u = seller_agent.ufun.from_offers((offer,), (True,))
 
     points.append((buyer_u, seller_u))
 
@@ -194,14 +209,31 @@ for neg in world.saved_negotiations:
                 continue
             qty, dtime, price = offer
             offer_t = (qty, dtime, price)
-            bu = (
-                world.agents[buyer].ufun.from_offers((offer_t,), (False,))
-                if buyer in world.agents else 0
-            )
-            su = (
-                world.agents[seller].ufun.from_offers((offer_t,), (True,))
-                if seller in world.agents else 0
-            )
+            if buyer not in world.agents:
+                print(
+                    f"[DEBUG] Buyer '{buyer}' missing when evaluating step offer {offer_t}"
+                )
+                bu = 0
+            elif not hasattr(world.agents[buyer], "ufun") or world.agents[buyer].ufun is None:
+                print(
+                    f"[DEBUG] Buyer '{buyer}' has no ufun for offer {offer_t}"
+                )
+                bu = 0
+            else:
+                bu = world.agents[buyer].ufun.from_offers((offer_t,), (False,))
+
+            if seller not in world.agents:
+                print(
+                    f"[DEBUG] Seller '{seller}' missing when evaluating step offer {offer_t}"
+                )
+                su = 0
+            elif not hasattr(world.agents[seller], "ufun") or world.agents[seller].ufun is None:
+                print(
+                    f"[DEBUG] Seller '{seller}' has no ufun for offer {offer_t}"
+                )
+                su = 0
+            else:
+                su = world.agents[seller].ufun.from_offers((offer_t,), (True,))
             trace.append((bu, su))
 
     if not trace:
