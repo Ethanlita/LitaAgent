@@ -120,6 +120,8 @@ class LitaAgentY(StdSyncAgent):
         # —— 运行时变量 ——
         self.im: InventoryManager | None = None             # 库存管理器实例 Inventory manager instance
         self._market_price_avg: float = 0.0                 # 最近报价平均价 (估算市场均价) Recent market price average
+        self._market_material_price_avg: float = 0.0        # 原料均价 Rolling window average for raw materials
+        self._market_product_price_avg: float = 0.0         # 产品均价 Rolling window average for products
         self._recent_material_prices: List[float] = []      # 用滚动窗口估计市场价 Rolling window for market price
         self._recent_product_prices: List[float] = []
         self._avg_window: int = 30                          # 均价窗口大小 Average window size
@@ -130,7 +132,11 @@ class LitaAgentY(StdSyncAgent):
         # 记录每天的采购/销售完成量 {day: quantity}
         # Track daily completed purchase/sales quantity
         self.sales_completed: Dict[int, int] = {}
-        self.purchase_completed: Dict[int, int] = {}# 销售完成量 Purchase completion count
+        self.purchase_completed: Dict[int, int] = {}  # 销售完成量 Purchase completion count
+
+        # Opponent modeling statistics
+        # {pid: {"avg_price": float, "contracts": int, "success": int}}
+        self.partner_stats: Dict[str, Dict[str, float]] = {}
 
     # ------------------------------------------------------------------
     # 🌟 2. World / 日常回调
@@ -235,6 +241,13 @@ class LitaAgentY(StdSyncAgent):
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         return max(issue.min_value, min(issue.max_value, price))
 
+    def _expected_price(self, pid: str, default: float) -> float:
+        """Return the average agreed price with this partner if available."""
+        stats = self.partner_stats.get(pid)
+        if stats and stats.get("avg_price", 0) > 0:
+            return stats["avg_price"]
+        return default
+
     # ------------------------------------------------------------------
     # 🌟 3-b. 动态让步策略
     # ------------------------------------------------------------------
@@ -265,7 +278,13 @@ class LitaAgentY(StdSyncAgent):
         start = self._best_price(pid)
         opp_rate = self._calc_opponent_concession(pid, current_price)
         rel = state.relative_time if state else 0.0
-        mult = self._concession_multiplier(rel, opp_rate)
+        # 加入短缺罚金影响，罚金越高让步越快
+        penalty_factor = min(1.0, self.awi.current_shortfall_penalty / 10.0)
+        mult = self._concession_multiplier(rel, opp_rate) + penalty_factor
+        mult = max(0.0, min(1.0, mult))
+
+        # 结合对手历史平均价作为期望目标价
+        target_price = (target_price + self._expected_price(pid, target_price)) / 2
         if self._is_consumer(pid):
             # 我是卖家，价格从高到低
             price = start - (start - target_price) * mult
@@ -394,7 +413,14 @@ class LitaAgentY(StdSyncAgent):
         # 确保needs是整数
         needs = int(needs)  # 将needs转换为整数
 
+        # 根据过往成功率为伙伴排序, 成功率高的优先分配
+        partners.sort(
+            key=lambda p: self.partner_stats.get(p, {}).get("success", 0)
+            / max(1, self.partner_stats.get(p, {}).get("contracts", 0)),
+            reverse=True,
+        )
         random.shuffle(partners)
+
         k = max(1, int(len(partners) * self._ptoday))
         chosen = partners[:k]
 
@@ -594,6 +620,7 @@ class LitaAgentY(StdSyncAgent):
             qty, price = offer[QUANTITY], offer[UNIT_PRICE]
             state = states.get(pid)
             best_price = self.get_nmi(pid).issues[UNIT_PRICE].min_value
+            expected = self._expected_price(pid, best_price)
             # 更新均价窗口
             self._recent_material_prices.append(price)
             if len(self._recent_material_prices) > self._avg_window:
@@ -601,7 +628,7 @@ class LitaAgentY(StdSyncAgent):
 
             if price > penalty:  # 比罚金贵，先拒绝并压价
                 # 现在是采购，要求降价，降价的目标价格是  你
-                new_price = self._apply_concession(pid, best_price, state, price)
+                new_price = self._apply_concession(pid, expected, state, price)
                 counter = (qty, self.awi.current_step, new_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
                 continue
@@ -613,13 +640,13 @@ class LitaAgentY(StdSyncAgent):
                 remain_needed -= accept_qty
             else:
                 # 如果日期不是今天，或者数量太多，则将日期改为今天，并减少数量
-                new_price = self._apply_concession(pid, best_price, state, price)
+                new_price = self._apply_concession(pid, expected, state, price)
                 counter_offer = (accept_qty, self.awi.current_step, new_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             # 若还有余量未用，可压价重新还价
             if qty > accept_qty and remain_needed <= 0:
                 counter_qty = qty - accept_qty
-                counter_price = self._apply_concession(pid, best_price, state, price)
+                counter_price = self._apply_concession(pid, expected, state, price)
                 counter_offer = (counter_qty, self.awi.current_step, counter_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             if remain_needed <= 0:
@@ -663,9 +690,10 @@ class LitaAgentY(StdSyncAgent):
             # 4. 检查需求量
             request_qty = self.im.get_total_insufficient(t)
 
+            expected = self._expected_price(pid, best_price)
             # 5. 决策逻辑
+            penalty = self.awi.current_shortfall_penalty
             if price <= max_price_allowed and qty <= request_qty:
-                # 价格满足利润要求且数量不超出需求 - 直接接受
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
 
             elif price <= max_price_allowed and qty > request_qty:
@@ -709,7 +737,7 @@ class LitaAgentY(StdSyncAgent):
                 # 如果又贵又超出需求量，就要求降价
                 offer_qty = request_qty
                 offer_day = t
-                offer_price = self._apply_concession(pid, best_price, state, price)
+                offer_price = self._apply_concession(pid, expected, state, price)
                 res[pid] = SAOResponse(
                     ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                 )
@@ -737,6 +765,7 @@ class LitaAgentY(StdSyncAgent):
             if len(self._recent_material_prices) > self._avg_window:
                 self._recent_material_prices.pop(0)
             best_price = self.get_nmi(pid).issues[UNIT_PRICE].min_value
+            expected = self._expected_price(pid, best_price)
             threshold = self._market_price_avg * self.cheap_price_discount if self._market_price_avg else price * 2
             if price <= threshold:
                 # TODO 这个地方的实现还是有一些混乱，设想是以往签署的可选需求之和不超过对应日的计划外需求的20%， 但是现在好像只是计算这一单不超过20%。我怀疑会买很多很多
@@ -817,9 +846,22 @@ class LitaAgentY(StdSyncAgent):
         return res
 
     # ------------------------------------------------------------------
-    # 🌟 6. 合同成功回调
-    # Callback when a contract succeeds
+    # 🌟 6. 谈判回调
     # ------------------------------------------------------------------
+
+    def on_negotiation_failure(
+        self,
+        partners: List[str],
+        annotation: Dict[str, Any],
+        mechanism: StdAWI,
+        state: SAOState,
+    ) -> None:
+        """谈判失败时更新伙伴统计信息"""
+        for pid in partners:
+            if pid == self.id:
+                continue
+            stats = self.partner_stats.setdefault(pid, {"avg_price": 0.0, "contracts": 0, "success": 0})
+            stats["contracts"] += 1
 
     def on_negotiation_success(self, contract: Contract, mechanism: StdAWI) -> None:
         """合同达成时，将其录入 InventoryManager。"""
@@ -841,6 +883,14 @@ class LitaAgentY(StdSyncAgent):
         )
         added = self.im.add_transaction(new_c)
         assert added, f"❌ IM.add_transaction 失败! contract={contract.id}"
+
+        # ---- update partner statistics ----
+        stats = self.partner_stats.setdefault(partner, {"avg_price": 0.0, "contracts": 0, "success": 0})
+        stats["contracts"] += 1
+        stats["success"] += 1
+        stats["avg_price"] = (
+            stats["avg_price"] * (stats["contracts"] - 1) + contract.agreement["unit_price"]
+        ) / stats["contracts"]
 
         # 更新不足原材料数据
         self.today_insufficient = self.im.get_today_insufficient(self.awi.current_step)
