@@ -171,36 +171,6 @@ class LitaAgentY(StdSyncAgent):
         self.today_insufficient = self.im.get_today_insufficient(self.awi.current_step)
         self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
 
-        # 根据库存与进度动态调整囤货折扣阈值
-        raw_summary = self.im.get_inventory_summary(self.awi.current_step, MaterialType.RAW)
-        available = raw_summary["estimated_available"]
-        needed = max(1, self.total_insufficient)
-        ratio = available / needed
-        progress = self.awi.current_step / max(1, self.awi.n_steps)
-        
-        # Step 1: Determine base discount based on progress
-        if progress >= 0.66:
-            progress_discount = 0.5
-        elif progress >= 0.33:
-            progress_discount = 0.6
-        else:
-            progress_discount = 0.7
-        
-        # Step 2: Adjust discount based on inventory ratio
-        if ratio >= 1.0:
-            ratio_discount = 0.5
-        elif ratio < 0.8:
-            ratio_discount = 0.8
-        else:
-            ratio_discount = progress_discount
-        
-        # Step 3: Combine discounts, prioritizing the stricter condition
-        self.cheap_price_discount = max(progress_discount, ratio_discount)
-        
-        # Inline comments explaining thresholds:
-        # - Progress thresholds: Encourage higher discounts earlier in the timeline.
-        # - Ratio thresholds: Ensure sufficient inventory by prioritizing higher discounts when inventory is low.
-
         # 初始化当日的完成量记录
         # Initialize today's completion records
         self.sales_completed.setdefault(self.awi.current_step, 0)
@@ -791,56 +761,97 @@ class LitaAgentY(StdSyncAgent):
         offers: Dict[str, Outcome],
         states: Dict[str, SAOState],
     ) -> Dict[str, SAOResponse]:
-        """为未来生产需求采购原料：全局控制每天的采购量。"""
+        """为未来生产需求采购原料：保证利润并智能调整采购量。"""
         res: Dict[str, SAOResponse] = {}
-        if not offers:
-            return res
-
-        # 计算各交货日仍可采购的上限 (需求量 120% 减去已签/预计库存)
-        days = {o[TIME] for o in offers.values()}
-        remain_need = {}
-        for d in days:
-            limit = self.im.get_total_insufficient(d) * 1.2
-            est_inv = self.im.get_inventory_summary(d, MaterialType.RAW)["estimated_available"]
-            remain_need[d] = max(0, int(limit - est_inv))
-
-        # 按单价从低到高依次处理
-        ordered = sorted(offers.items(), key=lambda x: x[1][UNIT_PRICE])
-        for pid, offer in ordered:
+        for pid, offer in offers.items():
             qty, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
             self._last_partner_offer[pid] = price
             state = states.get(pid)
 
+            # 更新均价窗口
             self._recent_material_prices.append(price)
             if len(self._recent_material_prices) > self._avg_window:
                 self._recent_material_prices.pop(0)
 
+            # 1. 估算该交货日的产品预计售价（简化：用市场均价占位）
             est_sell_price = self._market_price_avg if self._market_price_avg > 0 else price * 2
+
+            # 2. 获取产品单位成本（从IM获取预计产品平均成本）
+            avg_product_cost = self.im.get_inventory_summary(t, MaterialType.PRODUCT)["estimated_average_cost"]
+            # 如果没有产品成本记录，则使用当前报价 + 加工费估算
+            unit_cost = avg_product_cost if avg_product_cost > 0 else price + self.im.processing_cost
+
+            # 3. 计算最低可接受售价（满足利润率要求）
             max_price_allowed = est_sell_price / (1 + self.min_profit_margin)
 
-            need = remain_need.get(t, 0)
-            if need <= 0:
-                counter = self._pareto_counter_offer(pid, 0, t, price, state)
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
-                continue
+            # 3-a 拿到最好的报价
+            best_price = self.get_nmi(pid).issues[UNIT_PRICE].min_value
 
-            accept_qty = min(qty, need)
-            if price <= max_price_allowed:
+            # 4. 检查需求量
+            request_qty = self.im.get_total_insufficient(t)
+
+            expected = self._expected_price(pid, best_price)
+            penalty = self.awi.current_shortfall_penalty
+            # 提前采购: 若罚金低且未来需求较大时适度多买
+            if penalty < 1.0 and request_qty > 0 and price <= max_price_allowed * 1.05:
+                accept_qty = min(qty, int(request_qty * 1.2))
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, t, price))
-            else:
-                counter = self._pareto_counter_offer(pid, accept_qty, t, price, state)
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
+                continue
+            # 5. 决策逻辑
+            if price <= max_price_allowed and qty <= request_qty:
+                res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
 
-            remain_need[t] = max(0, remain_need[t] - accept_qty)
-
-            if qty > accept_qty:
-                counter_qty = qty - accept_qty
-                counter_offer = self._pareto_counter_offer(pid, counter_qty, t, price, state)
-                if pid in res and res[pid].response_type == ResponseType.ACCEPT_OFFER:
-                    # Combine ACCEPT_OFFER with counter-offer for remaining quantity
-                    res[pid].outcome = (accept_qty, t, price, counter_offer)
+            elif price <= max_price_allowed and qty > request_qty:
+                if penalty > price and qty <= request_qty * 1.5:
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                elif price < max_price_allowed * 0.9:
+                    n_days_earlier = (self._market_material_price_avg - price) / self.im.raw_storage_cost
+                    if n_days_earlier > 0:
+                        offer_qty = self.im.get_total_insufficient(t - n_days_earlier)
+                        offer_day = t - n_days_earlier
+                        counter = self._pareto_counter_offer(
+                            pid, offer_qty, offer_day, price, state
+                        )
+                        res[pid] = SAOResponse(
+                            ResponseType.REJECT_OFFER, counter
+                        )
+                    else:
+                        offer_qty = request_qty
+                        offer_day = t
+                        counter = self._pareto_counter_offer(
+                            pid, offer_qty, offer_day, price, state
+                        )
+                        res[pid] = SAOResponse(
+                            ResponseType.REJECT_OFFER, counter
+                        )
                 else:
-                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, t, price, counter_offer))
+                    # 如果也不是那么便宜，那就减量吧
+                    offer_qty = request_qty
+                    offer_day = t
+                    counter = self._pareto_counter_offer(
+                        pid, offer_qty, offer_day, price, state
+                    )
+                    res[pid] = SAOResponse(
+                        ResponseType.REJECT_OFFER, counter
+                    )
+            elif price >= max_price_allowed and qty <= request_qty:
+                offer_qty = qty
+                offer_day = t
+                counter = self._pareto_counter_offer(
+                    pid, offer_qty, offer_day, price, state
+                )
+                res[pid] = SAOResponse(
+                    ResponseType.REJECT_OFFER, counter
+                )
+            else:
+                offer_qty = request_qty
+                offer_day = t
+                counter = self._pareto_counter_offer(
+                    pid, offer_qty, offer_day, price, state
+                )
+                res[pid] = SAOResponse(
+                    ResponseType.REJECT_OFFER, counter
+                )
         return res
 
     # ------------------------------------------------------------------
@@ -856,35 +867,39 @@ class LitaAgentY(StdSyncAgent):
         res: Dict[str, SAOResponse] = {}
         if not offers:
             return res
-
-        days = {o[TIME] for o in offers.values()}
-        remain_need: Dict[int, int] = {}
-        for d in days:
-            limit = self.im.get_total_insufficient(d) * 1.2
-            est_inv = self.im.get_inventory_summary(d, MaterialType.RAW)["estimated_available"]
-            remain_need[d] = max(0, int(limit - est_inv))
-
-        ordered = sorted(offers.items(), key=lambda x: x[1][UNIT_PRICE])
-        for pid, offer in ordered:
-            qty, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+        # 当前市场平均价（若为0则先记录报价再处理）
+        for pid, offer in offers.items():
+            qty, price = offer[QUANTITY], offer[UNIT_PRICE]
             self._last_partner_offer[pid] = price
             state = states.get(pid)
+            # 更新均价窗口
             self._recent_material_prices.append(price)
             if len(self._recent_material_prices) > self._avg_window:
                 self._recent_material_prices.pop(0)
+            best_price = self.get_nmi(pid).issues[UNIT_PRICE].min_value
+            expected = self._expected_price(pid, best_price)
             threshold = self._market_price_avg * self.cheap_price_discount if self._market_price_avg else price * 2
-            need = remain_need.get(t, 0)
-            if price <= threshold and need > 0:
-                accept_qty = min(qty, need)
-                res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, t, price))
-                remain_need[t] = max(0, remain_need[t] - accept_qty)
-                if qty > accept_qty:
-                    counter_qty = qty - accept_qty
-                    counter_offer = self._pareto_counter_offer(pid, counter_qty, t, price, state)
-                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
+            if price <= threshold:
+                # TODO 这个地方的实现还是有一些混乱，设想是以往签署的可选需求之和不超过对应日的计划外需求的20%， 但是现在好像只是计算这一单不超过20%。我怀疑会买很多很多
+                # TODO 姑且先做成当日总预期库存不能超过计划需求的120%的形式吧
+                estimated_material_inventory= self.im.get_inventory_summary(offer[TIME], MaterialType.RAW)["estimated_available"]
+                inventory_limit = self.im.get_total_insufficient(offer[TIME]) * 1.2
+                accept_qty = inventory_limit - estimated_material_inventory if inventory_limit > 0 else 0
+                if accept_qty > 0:
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (qty, offer[TIME], price))
+                else:
+                    counter = self._pareto_counter_offer(
+                        pid, accept_qty, offer[TIME], price, state
+                    )
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
             else:
-                counter = self._pareto_counter_offer(pid, min(qty, need), t, price, state)
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
+                # 如果太贵了 - 要求降价
+                counter = self._pareto_counter_offer(
+                    pid, qty, offer[TIME], price, state
+                )
+                res[pid] = SAOResponse(
+                    ResponseType.REJECT_OFFER, counter
+                )
         return res
 
     # ------------------------------------------------------------------
