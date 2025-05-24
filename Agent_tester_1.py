@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover - fallback for older library
 # Import commonly used agents
 from scml.oneshot.agents import GreedyOneShotAgent
 from scml.std.agents import RandomStdAgent, SyncRandomStdAgent, GreedyStdAgent
+from litaagent_std.team_miyajima_oneshot.cautious import CautiousOneShotAgent
 
 # Import local agents defined in this repository
 from litaagent_std.litaagent_y import LitaAgentY
@@ -34,6 +35,7 @@ AVAILABLE_AGENTS = {
     "RandomStdAgent": RandomStdAgent,
     "SyncRandomStdAgent": SyncRandomStdAgent,
     "GreedyStdAgent": GreedyStdAgent,
+    "CautiousOneShotAgent": CautiousOneShotAgent,
 }
 
 # ---------------------------------------------------------------------------
