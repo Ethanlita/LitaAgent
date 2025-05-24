@@ -626,7 +626,7 @@ class LitaAgentY(StdSyncAgent):
             if len(self._recent_material_prices) > self._avg_window:
                 self._recent_material_prices.pop(0)
 
-            if price > penalty * 1.1:  # 比罚金贵太多，先拒绝并压价
+            if price > penalty:  # 比罚金贵，先拒绝并压价
                 # 现在是采购，要求降价，降价的目标价格是  你
                 new_price = self._apply_concession(pid, expected, state, price)
                 counter = (qty, self.awi.current_step, new_price)
@@ -705,7 +705,7 @@ class LitaAgentY(StdSyncAgent):
                         # 如果有提前买多一点的必要，那就提前买多一点吧
                         offer_qty = self.im.get_total_insufficient(t - n_days_earlier)
                         offer_day = t - n_days_earlier
-                        offer_price = self._apply_concession(pid, expected, state, price)
+                        offer_price = self._apply_concession(pid, best_price, state, price)
                         res[pid] = SAOResponse(
                             ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                         )
@@ -713,7 +713,7 @@ class LitaAgentY(StdSyncAgent):
                         # 如果没有提前买的必要,那就减量吧
                         offer_qty = request_qty
                         offer_day = t
-                        offer_price = self._apply_concession(pid, expected, state, price)
+                        offer_price = self._apply_concession(pid, best_price, state, price)
                         res[pid] = SAOResponse(
                             ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                         )
@@ -721,7 +721,7 @@ class LitaAgentY(StdSyncAgent):
                     # 如果也不是那么便宜，那就减量吧
                     offer_qty = request_qty
                     offer_day = t
-                    offer_price = self._apply_concession(pid, expected, state, price)
+                    offer_price = self._apply_concession(pid, best_price, state, price)
                     res[pid] = SAOResponse(
                         ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                     )
@@ -729,7 +729,7 @@ class LitaAgentY(StdSyncAgent):
                 # 如果太贵了，但是数量还可以的话，那就降价
                 offer_qty = qty
                 offer_day = t
-                offer_price = self._apply_concession(pid, expected, state, price)
+                offer_price = self._apply_concession(pid, best_price, state, price)
                 res[pid] = SAOResponse(
                     ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                 )
@@ -778,12 +778,12 @@ class LitaAgentY(StdSyncAgent):
                     res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (qty, offer[TIME], price))
                 else:
                     # 如果价格够低，但是数量太大 - 减少数量
-                    new_price = self._apply_concession(pid, expected, state, price)
+                    new_price = self._apply_concession(pid, best_price, state, price)
                     counter = (accept_qty, offer[TIME], new_price)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
             else:
                 # 如果太贵了 - 要求降价
-                counter_price = self._apply_concession(pid, expected, state, price)
+                counter_price = self._apply_concession(pid, best_price, state, price)
                 res[pid] = SAOResponse(
                     ResponseType.REJECT_OFFER, (qty, offer[TIME], counter_price)
                 )
