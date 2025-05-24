@@ -177,16 +177,29 @@ class LitaAgentY(StdSyncAgent):
         needed = max(1, self.total_insufficient)
         ratio = available / needed
         progress = self.awi.current_step / max(1, self.awi.n_steps)
-        base_discount = 0.7
+        
+        # Step 1: Determine base discount based on progress
         if progress >= 0.66:
-            base_discount = 0.5
+            progress_discount = 0.5
         elif progress >= 0.33:
-            base_discount = 0.6
+            progress_discount = 0.6
+        else:
+            progress_discount = 0.7
+        
+        # Step 2: Adjust discount based on inventory ratio
         if ratio >= 1.0:
-            base_discount = min(base_discount, 0.5)
+            ratio_discount = 0.5
         elif ratio < 0.8:
-            base_discount = max(base_discount, 0.8)
-        self.cheap_price_discount = base_discount
+            ratio_discount = 0.8
+        else:
+            ratio_discount = progress_discount
+        
+        # Step 3: Combine discounts, prioritizing the stricter condition
+        self.cheap_price_discount = max(progress_discount, ratio_discount)
+        
+        # Inline comments explaining thresholds:
+        # - Progress thresholds: Encourage higher discounts earlier in the timeline.
+        # - Ratio thresholds: Ensure sufficient inventory by prioritizing higher discounts when inventory is low.
 
         # 初始化当日的完成量记录
         # Initialize today's completion records
