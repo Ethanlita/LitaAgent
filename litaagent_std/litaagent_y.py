@@ -823,7 +823,11 @@ class LitaAgentY(StdSyncAgent):
             if qty > accept_qty:
                 counter_qty = qty - accept_qty
                 counter_offer = self._pareto_counter_offer(pid, counter_qty, t, price, state)
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
+                if pid in res and res[pid].response_type == ResponseType.ACCEPT_OFFER:
+                    # Combine ACCEPT_OFFER with counter-offer for remaining quantity
+                    res[pid].outcome = (accept_qty, t, price, counter_offer)
+                else:
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, t, price, counter_offer))
         return res
 
     # ------------------------------------------------------------------
