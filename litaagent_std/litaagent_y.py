@@ -23,6 +23,12 @@ LitaAgentY — SCML 2025  Standard 赛道谈判代理（重构版）
    到四个子函数，代码层次清晰，可维护性大幅提升。
 6. **保持 RL 接口**：保留 ObservationManager / ActionManager 等占位，
    不破坏未来集成智能策略的接口。
+7. **早期计划采购**：利用 `InventoryManager` 的需求预测，在罚金较低时
+   提前锁定原料，减少后期短缺罚金。
+8. **数量敏感的让步**：当短缺风险增大时更倾向接受更大数量，避免多轮议价。
+9. **对手建模增强**：记录伙伴的合同成功率与均价，估计其保留价格以调整报价。
+10. **帕累托意识还价**：反价时综合调整价格、数量与交货期，尝试沿帕累托前沿
+    探索互利方案。
 
 使用说明
 --------
@@ -244,11 +250,12 @@ class LitaAgentY(StdSyncAgent):
     def _expected_price(self, pid: str, default: float) -> float:
         """Return a risk-adjusted expected price using partner history."""
         stats = self.partner_stats.get(pid)
-        if stats and stats.get("success", 0) > 0:
+        if stats and stats.get("contracts", 0) > 0:
             mean = stats.get("avg_price", default)
-            var = stats.get("price_M2", 0.0) / max(1, stats["success"] - 1)
+            var = stats.get("price_M2", 0.0) / max(1, stats.get("success", 0) - 1)
             std = var ** 0.5
-            base = mean + std  # expect a slightly higher price than mean
+            rate = stats.get("success", 0) / max(1, stats.get("contracts", 0))
+            base = mean + std * (1 - rate)
         else:
             base = default
         # if we are buying and penalty is high, be willing to pay up to penalty
@@ -636,39 +643,56 @@ class LitaAgentY(StdSyncAgent):
 
             # Accept if price is not much higher than penalty
             if price <= penalty * 1.1:
-                accept_qty = min(qty, remain_needed)
+                if penalty > price or qty <= remain_needed * 1.5:
+                    accept_qty = min(qty, remain_needed)
+                else:
+                    accept_qty = remain_needed
                 accept_offer = (accept_qty, offer[TIME], price)
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, accept_offer)
                 remain_needed -= accept_qty
                 if qty > accept_qty:
                     counter_qty = qty - accept_qty
                     counter_price = self._apply_concession(pid, expected, state, price)
-                    counter_offer = (counter_qty, self.awi.current_step, counter_price)
+                    counter_offer = (
+                        counter_qty,
+                        max(offer[TIME], self.awi.current_step),
+                        counter_price,
+                    )
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
                 if remain_needed <= 0:
                     break
                 continue
             if price > penalty:
                 new_price = self._apply_concession(pid, expected, state, price)
-                counter = (qty, self.awi.current_step, new_price)
+                counter = (
+                    qty,
+                    max(offer[TIME], self.awi.current_step),
+                    new_price,
+                )
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
                 continue
             accept_qty = min(qty, remain_needed)
-            # 如果日期是今天,并且没有数量问题，则直接接受
             if offer[TIME] == self.awi.current_step and accept_qty == qty:
                 accept_offer = (accept_qty, offer[TIME], price)
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, accept_offer)
                 remain_needed -= accept_qty
             else:
-                # 如果日期不是今天，或者数量太多，则将日期改为今天，并减少数量
                 new_price = self._apply_concession(pid, expected, state, price)
-                counter_offer = (accept_qty, self.awi.current_step, new_price)
+                counter_offer = (
+                    accept_qty,
+                    self.awi.current_step,
+                    new_price,
+                )
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             # 若还有余量未用，可压价重新还价
             if qty > accept_qty and remain_needed <= 0:
                 counter_qty = qty - accept_qty
                 counter_price = self._apply_concession(pid, expected, state, price)
-                counter_offer = (counter_qty, self.awi.current_step, counter_price)
+                counter_offer = (
+                    counter_qty,
+                    max(offer[TIME], self.awi.current_step),
+                    counter_price,
+                )
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             if remain_needed <= 0:
                 break
@@ -712,18 +736,22 @@ class LitaAgentY(StdSyncAgent):
             request_qty = self.im.get_total_insufficient(t)
 
             expected = self._expected_price(pid, best_price)
-            # 5. 决策逻辑
             penalty = self.awi.current_shortfall_penalty
+            # 提前采购: 若罚金低且未来需求较大时适度多买
+            if penalty < 1.0 and request_qty > 0 and price <= max_price_allowed * 1.05:
+                accept_qty = min(qty, int(request_qty * 1.2))
+                res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, t, price))
+                continue
+            # 5. 决策逻辑
             if price <= max_price_allowed and qty <= request_qty:
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
 
             elif price <= max_price_allowed and qty > request_qty:
-                # 价格满足利润要求但数量超出需求 - 部分接受（简化：拒绝并减量，或者提早交付）
-                if price < max_price_allowed * 0.9:
-                    # 实在是太便宜了，推迟交货，但是买(因为越靠前需求量越大，因此可以签署最早到今天的协议，早到哪天根据价格和均价决定)
+                if penalty > price and qty <= request_qty * 1.5:
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                elif price < max_price_allowed * 0.9:
                     n_days_earlier = (self._market_material_price_avg - price) / self.im.raw_storage_cost
                     if n_days_earlier > 0:
-                        # 如果有提前买多一点的必要，那就提前买多一点吧
                         offer_qty = self.im.get_total_insufficient(t - n_days_earlier)
                         offer_day = t - n_days_earlier
                         offer_price = self._apply_concession(pid, best_price, state, price)
@@ -731,7 +759,6 @@ class LitaAgentY(StdSyncAgent):
                             ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                         )
                     else:
-                        # 如果没有提前买的必要,那就减量吧
                         offer_qty = request_qty
                         offer_day = t
                         offer_price = self._apply_concession(pid, best_price, state, price)
@@ -747,7 +774,6 @@ class LitaAgentY(StdSyncAgent):
                         ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                     )
             elif price >= max_price_allowed and qty <= request_qty:
-                # 如果太贵了，但是数量还可以的话，那就降价
                 offer_qty = qty
                 offer_day = t
                 offer_price = self._apply_concession(pid, best_price, state, price)
@@ -755,7 +781,6 @@ class LitaAgentY(StdSyncAgent):
                     ResponseType.REJECT_OFFER, (offer_qty, offer_day, offer_price)
                 )
             else:
-                # 如果又贵又超出需求量，就要求降价
                 offer_qty = request_qty
                 offer_day = t
                 offer_price = self._apply_concession(pid, expected, state, price)
