@@ -135,7 +135,7 @@ class LitaAgentY(StdSyncAgent):
         self.purchase_completed: Dict[int, int] = {}  # 销售完成量 Purchase completion count
 
         # Opponent modeling statistics
-        # {pid: {"avg_price": float, "contracts": int, "success": int}}
+        # {pid: {"avg_price": float, "price_M2": float, "contracts": int, "success": int}}
         self.partner_stats: Dict[str, Dict[str, float]] = {}
 
     # ------------------------------------------------------------------
@@ -242,11 +242,19 @@ class LitaAgentY(StdSyncAgent):
         return max(issue.min_value, min(issue.max_value, price))
 
     def _expected_price(self, pid: str, default: float) -> float:
-        """Return the average agreed price with this partner if available."""
+        """Return a risk-adjusted expected price using partner history."""
         stats = self.partner_stats.get(pid)
-        if stats and stats.get("avg_price", 0) > 0:
-            return stats["avg_price"]
-        return default
+        if stats and stats.get("success", 0) > 0:
+            mean = stats.get("avg_price", default)
+            var = stats.get("price_M2", 0.0) / max(1, stats["success"] - 1)
+            std = var ** 0.5
+            base = mean + std  # expect a slightly higher price than mean
+        else:
+            base = default
+        # if we are buying and penalty is high, be willing to pay up to penalty
+        if self._is_supplier(pid):
+            base = max(base, self.awi.current_shortfall_penalty * 0.8)
+        return base
 
     # ------------------------------------------------------------------
     # 🌟 3-b. 动态让步策略
@@ -626,8 +634,21 @@ class LitaAgentY(StdSyncAgent):
             if len(self._recent_material_prices) > self._avg_window:
                 self._recent_material_prices.pop(0)
 
-            if price > penalty:  # 比罚金贵，先拒绝并压价
-                # 现在是采购，要求降价，降价的目标价格是  你
+            # Accept if price is not much higher than penalty
+            if price <= penalty * 1.1:
+                accept_qty = min(qty, remain_needed)
+                accept_offer = (accept_qty, offer[TIME], price)
+                res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, accept_offer)
+                remain_needed -= accept_qty
+                if qty > accept_qty:
+                    counter_qty = qty - accept_qty
+                    counter_price = self._apply_concession(pid, expected, state, price)
+                    counter_offer = (counter_qty, self.awi.current_step, counter_price)
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
+                if remain_needed <= 0:
+                    break
+                continue
+            if price > penalty:
                 new_price = self._apply_concession(pid, expected, state, price)
                 counter = (qty, self.awi.current_step, new_price)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter)
@@ -860,7 +881,10 @@ class LitaAgentY(StdSyncAgent):
         for pid in partners:
             if pid == self.id:
                 continue
-            stats = self.partner_stats.setdefault(pid, {"avg_price": 0.0, "contracts": 0, "success": 0})
+            stats = self.partner_stats.setdefault(
+                pid,
+                {"avg_price": 0.0, "price_M2": 0.0, "contracts": 0, "success": 0},
+            )
             stats["contracts"] += 1
 
     def on_negotiation_success(self, contract: Contract, mechanism: StdAWI) -> None:
@@ -885,12 +909,17 @@ class LitaAgentY(StdSyncAgent):
         assert added, f"❌ IM.add_transaction 失败! contract={contract.id}"
 
         # ---- update partner statistics ----
-        stats = self.partner_stats.setdefault(partner, {"avg_price": 0.0, "contracts": 0, "success": 0})
+        stats = self.partner_stats.setdefault(
+            partner,
+            {"avg_price": 0.0, "price_M2": 0.0, "contracts": 0, "success": 0},
+        )
         stats["contracts"] += 1
         stats["success"] += 1
-        stats["avg_price"] = (
-            stats["avg_price"] * (stats["contracts"] - 1) + contract.agreement["unit_price"]
-        ) / stats["contracts"]
+        price = contract.agreement["unit_price"]
+        n = stats["contracts"]
+        delta = price - stats["avg_price"]
+        stats["avg_price"] += delta / n
+        stats["price_M2"] += delta * (price - stats["avg_price"])
 
         # 更新不足原材料数据
         self.today_insufficient = self.im.get_today_insufficient(self.awi.current_step)
