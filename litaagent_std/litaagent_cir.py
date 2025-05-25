@@ -102,8 +102,8 @@ def _distribute(q: int, n: int) -> List[int]:
 # ------------------ 主代理实现 ------------------
 # Main agent implementation
 
-class LitaAgentY(StdSyncAgent):
-    """重构后的 LitaAgent N。支持三类采购策略与产能约束销售。"""
+class LitaAgentCIR(StdSyncAgent):
+    """重构后的 LitaAgent CIR。支持三类采购策略与产能约束销售。"""
 
     # ------------------------------------------------------------------
     # 🌟 1. 初始化
