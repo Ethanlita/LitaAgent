@@ -193,16 +193,19 @@ class InventoryManager:
             total_store_cost += cs
 
         avg_cost = total_cost / total_qty if total_qty > 0 else 0.0
-
-        # 预期可用：
-        # [可用于生产的原材料]真实库存 + 当日及未来到货 Estimated available inventory, = real + future(contracted)
+        total_est = 0.0
+        # 预期可用：指的是从今天开始，按照计划生产和交付的情况下，到指定日期的可用数量（指定日期之后的不计算）
+        # [可用于生产的原材料]当日真实库存 + 当日至指定日期到货 - 当日至指定日期前一天的生产计划Estimated available inventory, = real + future(contracted)until day
         if mtype == MaterialType.RAW:
-            future_qty = sum(c.quantity for c in pending if c.delivery_time >= day)
-            total_est = total_qty + future_qty
-        # [可用于交割的产品]真实库存 - 当日及未来交割 + 当日及未来生产计划 Estimated available inventory, = real - future(contracted) + production_plan
+            future_in_inv = sum(c.quantity for c in pending if self.current_day <= c.delivery_time <= day)
+            future_prod_plan = sum(self.get_production_plan(prod_day) for prod_day in range(self.current_day, day))
+
+            total_est = total_qty + future_in_inv - future_prod_plan
+        # [可用于交割的产品]当日真实库存 - 当日至指定日期前一天的交割 + 当日至指定日期的生产计划 Estimated available inventory, = real - future(contracted) until day + production_plan until day
         elif mtype == MaterialType.PRODUCT:
-            future_qty = sum(c.quantity for c in pending if c.delivery_time >= day)
-            total_est = total_qty - future_qty + self.get_total_future_production_plan()
+            future_out_inv = sum(c.quantity for c in pending if self.current_day <= c.delivery_time < day)
+            future_prod_plan = sum(self.get_production_plan(prod_day) for prod_day in range(self.current_day, day+1))
+            total_est = total_qty - future_out_inv + future_prod_plan
         # 预期成本：真实（含存储）+ 未来（仅入库价，不含后续存储） Estimated cost = real (including storage) + future (only inbound price, excluding subsequent storage)
         future_cost = sum(c.price * c.quantity for c in pending if c.delivery_time >= day)
         est_avg_cost = (total_cost + future_cost) / total_est if total_est > 0 else 0.0
@@ -264,6 +267,109 @@ class InventoryManager:
     # The following section contains hooks for future extensions
     # ----------------------------------------------------------------
 
+    def jit_production_plan_abs(
+            self,
+            start_day: int,
+            horizon: int,
+            capacity: int,
+            inv_raw: int,
+            inv_prod: int,
+            future_raw_deliver: Dict[int, int],
+            future_prod_deliver: Dict[int, int],
+    ) -> Dict[str, Dict[int, int]]:
+        """
+        JIT 最晚化生产计划（绝对日历版）
+
+        所有 dict 的 key 都是绝对日 (int)。
+        仅处理 start_day … start_day + horizon 这一区间；其他键会被忽略。
+        """
+        t, H, cap = start_day, horizon, capacity
+        size = H + 1  # 天数
+
+        # ---------- 0. 预先把稀疏 dict 投影到稠密 list ----------
+        raw_in: List[int] = [0] * size
+        dem: List[int] = [0] * size
+
+        for day, qty in future_raw_deliver.items():
+            d = day - t
+            if 0 <= d <= H:
+                raw_in[d] = qty
+
+        for day, qty in future_prod_deliver.items():
+            d = day - t
+            if 0 <= d <= H:
+                dem[d] = qty
+
+        # ---------- 1. 累计销量 C_k 与 M_d ----------
+        cum_dem = [0] * size
+        s = 0
+        for i in range(size):
+            s += dem[i]
+            cum_dem[i] = s
+
+        M_d = [0] * size
+        M = float("-inf")
+        for i in range(H, -1, -1):
+            M = max(M, cum_dem[i] - cap * i)
+            M_d[i] = M
+
+        # ---------- 2. 正向滚动生产 ----------
+        prod_plan = {}
+        rem_cap = {}
+        emer_raw = {}
+        raw_after = [0] * size  # 仅内部用
+
+        raw_stock, prod_stock, cum_prod = inv_raw, inv_prod, 0
+
+        for d in range(size):
+            day = t + d  # 绝对日
+
+            raw_stock += raw_in[d]
+
+            min_cum_prod = max(0, M_d[d] + cap * d - inv_prod)
+            need_today = max(0, min_cum_prod - cum_prod)
+
+            # 紧急采购
+            if need_today > raw_stock:
+                emer_qty = need_today - raw_stock
+                emer_raw[day] = emer_qty
+                raw_stock += emer_qty
+            else:
+                emer_raw[day] = 0
+
+            # 生产
+            raw_stock -= need_today
+            prod_stock += need_today
+            cum_prod += need_today
+
+            # 发货
+            prod_stock -= dem[d]  # 保证 ≥0
+
+            # 记录
+            prod_plan[day] = need_today
+            rem_cap[day] = cap - need_today
+            raw_after[d] = raw_stock
+
+        # ---------- 3. 规划性原料需求 ----------
+        suf_prod = 0
+        suf_raw_in = 0
+        planned_raw = {}
+
+        for d in range(H, -1, -1):
+            day = t + d
+            suf_prod += prod_plan[day]
+            suf_raw_in += raw_in[d]
+            future_need = suf_prod
+            future_sup = raw_after[d] + (suf_raw_in - raw_in[d])
+            planned_raw[day] = max(0, future_need - future_sup)
+
+        return {
+            "prod_plan": prod_plan,
+            "remaining_capacity": rem_cap,
+            "emergency_raw_demand": emer_raw,
+            "planned_raw_demand": planned_raw,
+        }
+
     def plan_production(self, up_to_day: int):
         """
         根据已签合同和库存，生成从 current_day 到 up_to_day 的总体生产计划，
@@ -275,15 +381,21 @@ class InventoryManager:
 
         Use a greedy strategy: try to delay production as much as possible, but make sure that all demands are satisfied.
         """
+        # Plan Horizon 规划的范围
+        horizon = up_to_day - self.current_day
+
         # 清空当前的生产计划（重新规划）和不足原料记录 Empty the current production schedule (reprogramming) and records of insufficient raw materials
         self.production_plan = {day: 0.0 for day in range(self.current_day, up_to_day + 1)}
         self.insufficient_raw = {day: {"daily": 0.0, "total": 0.0} for day in range(self.current_day, up_to_day + 1)}
 
         # 获取当前原材料库存 Get current raw material inventory
-        raw_inventory = sum(batch.remaining for batch in self.raw_batches)
+        inv_raw = sum(batch.remaining for batch in self.raw_batches)
 
         # 获取当前产品库存 Get current product inventory
-        product_inventory = sum(batch.remaining for batch in self.product_batches)
+        inv_prod = sum(batch.remaining for batch in self.product_batches)
+
+        # Capacity of a day 一天的最大产能
+        capacity = self.daily_production_capacity
 
         # 按交割日期排序的需求合同 Sales Contracts sorted by delivery date
         demand_contracts = sorted(
@@ -298,125 +410,39 @@ class InventoryManager:
         )
 
         # 计算每天的需求量（产品交割） Daily demand for product delivery
-        daily_demand = {day: 0.0 for day in range(self.current_day, up_to_day + 1)}
+        daily_demand = {day: 0 for day in range(self.current_day, up_to_day+1)}
         for contract in demand_contracts:
             day = contract.delivery_time
             if day in daily_demand:
-                daily_demand[day] += contract.quantity
+                daily_demand[day] += int(contract.quantity)
 
         # 计算每天的供应量（原材料到货） Daily supply of raw materials
-        daily_supply = {day: 0.0 for day in range(self.current_day, up_to_day + 1)}
+        daily_supply = {day: 0 for day in range(self.current_day, up_to_day+1)}
         for contract in supply_contracts:
             day = contract.delivery_time
             if day in daily_supply:
-                daily_supply[day] += contract.quantity
+                daily_supply[day] += int(contract.quantity)
 
-        # 贪心算法：从最后一天往前，尽量推迟生产 Greedy algorithm: from the last day to the front, try to delay production
-        # 首先模拟每天的库存变化 Simulate the inventory changes every day
-        product_inv_simulation = {day: 0.0 for day in range(self.current_day, up_to_day + 2)}
-        raw_inv_simulation = {day: 0.0 for day in range(self.current_day, up_to_day + 2)}
+        result = self.jit_production_plan_abs(
+            start_day=self.current_day,
+            horizon=horizon,
+            capacity=int(capacity),
+            inv_raw=inv_raw,
+            inv_prod=inv_prod,
+            future_raw_deliver=daily_supply,
+            future_prod_deliver=daily_demand,
+        )
 
-        # 初始库存 Initial inventory
-        product_inv_simulation[self.current_day] = product_inventory
-        raw_inv_simulation[self.current_day] = raw_inventory
 
-        # 记录每天的预期原材料到货量 Raw material expected to arrive daily
-        expected_raw_supply = {day: 0.0 for day in range(self.current_day, up_to_day + 1)}
-        for contract in supply_contracts:
-            expected_raw_supply[contract.delivery_time] += contract.quantity
+        # 需要计算的值
+        self.production_plan = result["prod_plan"]
+        for day in range(self.current_day, up_to_day+1):
+            if day not in self.insufficient_raw:
+                self.insufficient_raw[day] = {"daily": 0.0, "total": 0.0}
+            self.insufficient_raw[day]["daily"] = result["emergency_raw_demand"].get(day, 0)
+            self.insufficient_raw[day]["total"] = result["planned_raw_demand"].get(day, 0)
 
-        # 模拟供应和需求的影响（不考虑生产）
-        for day in range(self.current_day, up_to_day + 1):
-            # 更新下一天的库存（先不考虑生产）
-            if day > self.current_day:
-                product_inv_simulation[day] = product_inv_simulation[day - 1]
-                raw_inv_simulation[day] = raw_inv_simulation[day - 1]
 
-            # 添加当天的供应
-            raw_inv_simulation[day] += daily_supply.get(day, 0)
-
-            # 减去当天的需求
-            demand = daily_demand.get(day, 0)
-            if product_inv_simulation[day] >= demand:
-                product_inv_simulation[day] -= demand
-            else:
-                # 记录不足，但在后续规划中会尝试生产满足它
-                # Record the deficit and try to meet it in later planning
-                deficit = demand - product_inv_simulation[day]
-                product_inv_simulation[day] = 0
-
-        # 从后往前计算所需的生产量和不足原料
-        # Compute the required production and shortages from the last day backwards
-        # 用于跟踪累积的原材料不足量
-        # Track the accumulated raw material shortage
-        accumulated_raw_shortage = {day: 0.0 for day in range(self.current_day, up_to_day + 1)}
-
-        for day in range(up_to_day, self.current_day - 1, -1):
-            next_day = day + 1  # This logic seems to look at 'next_day' demand to produce on 'day'
-            if next_day > up_to_day:  # For the last day 'up_to_day', demand is for 'up_to_day' itself
-                needed_products = max(0, int(daily_demand.get(day, 0) - product_inv_simulation[day]))
-            else:
-                needed_products = max(0, int(daily_demand.get(next_day, 0) - product_inv_simulation[next_day]))
-
-            # 如果需要生产
-            # If production is needed
-            if needed_products > 0:
-                # 计算日产能限制
-                production_capacity = min(needed_products, int(self.daily_production_capacity))
-
-                # 在该日可用的原材料
-                available_raw = raw_inv_simulation[day]
-
-                # 实际可生产量
-                actual_production = min(production_capacity, int(available_raw))
-
-                # 原材料不足量
-                raw_shortage = max(0, int(production_capacity - available_raw))
-
-                # 更新生产计划
-                if actual_production > 0:
-                    self.production_plan[day] = actual_production
-                    raw_inv_simulation[day] -= actual_production
-                    if next_day <= up_to_day:  # Ensure not to write out of bounds
-                        product_inv_simulation[next_day] += actual_production
-                    elif day == up_to_day:  # Special case for last day production for last day demand
-                        product_inv_simulation[day] += actual_production
-
-                # 计算并累积不足原料数据
-                # Calculate and accumulate the shortage data
-                if raw_shortage > 0:
-                    # 当日不足量：当天必须获取的原材料量，否则会导致违约
-                    # Daily shortage: the amount of raw materials that must be obtained on the same day, otherwise it will lead to a breach of contract
-                    daily_shortage = raw_shortage
-                    accumulated_raw_shortage[day] = accumulated_raw_shortage.get(
-                        next_day if next_day <= up_to_day else day, 0) + raw_shortage  # Check boundary for next_day
-
-                    # 更新不足原料记录
-                    # Update the shortage record
-                    self.insufficient_raw[day]["daily"] = daily_shortage
-                    self.insufficient_raw[day]["total"] = accumulated_raw_shortage[day]
-                else:
-                    # 如果当天原材料足够，但仍有累积不足
-                    # If the raw material is sufficient on the same day, but there is still a cumulative shortage
-                    accumulated_raw_shortage[day] = accumulated_raw_shortage.get(
-                        next_day if next_day <= up_to_day else day, 0)
-                    if accumulated_raw_shortage[day] > 0:
-                        self.insufficient_raw[day]["total"] = accumulated_raw_shortage[day]
-            else:
-                # 如果当天不需要生产，但可能有累积不足
-                # If production is not needed on the same day, but there may be cumulative shortages
-                accumulated_raw_shortage[day] = accumulated_raw_shortage.get(next_day if next_day <= up_to_day else day,
-                                                                             0)
-                if accumulated_raw_shortage[day] > 0:
-                    self.insufficient_raw[day]["total"] = accumulated_raw_shortage[day]
-
-        # 清理零生产量的日期和零不足量的记录
-        # Remove dates with zero production and records with zero shortages
-        self.production_plan = {k: v for k, v in self.production_plan.items() if v > 0}
-        self.insufficient_raw = {
-            k: v for k, v in self.insufficient_raw.items()
-            if v["daily"] > 0 or v["total"] > 0
-        }
 
         return self.production_plan
 
@@ -589,7 +615,7 @@ class InventoryManager:
 
         max_prod = self.get_max_possible_production(day)
         planned = sum(
-            self.production_plan.get(d, 0) for d in range(self.current_day, day + 1)
+            self.production_plan.get(d, 0) for d in range(self.current_day, day+1)
         )
         remaining = max_prod - planned
         return max(0.0, remaining)
@@ -642,7 +668,7 @@ class InventoryManager:
 
             # 使用当天的生产计划
             day_production = self.production_plan.get(day, 0)
-            if day_production > 0 and raw_inventory >= day_production:
+            if 0 < day_production <= raw_inventory:
                 raw_inventory -= day_production
                 product_inventory += day_production
 

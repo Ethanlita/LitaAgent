@@ -1426,8 +1426,8 @@ class LitaAgentY(StdSyncAgent):
         horizon_days = min(10, self.awi.n_steps - current_day)  # 只预测未来10天或剩余天数
         
         # 表头
-        header = "|  日期  |  原料真库存  |  原料预计库存  |  计划生产  |  剩余产能  |  产品真库存  |  产品预计库存  |  已签署销售量  |  实际产品交付  |"
-        separator = "|" + "-" * (len(header) - 2) + "|"
+        header = "|   日期    |  原料真库存  |  原料预计库存   | 计划生产  |  剩余产能  |  产品真库存  |  产品预计库存  |  已签署销售量  |  实际产品交付  |"
+        separator = "|" + "-" * (len(header) + 24) + "|"
         
         print("\n📊 每日状态报告")
         print(separator)
@@ -1461,8 +1461,8 @@ class LitaAgentY(StdSyncAgent):
                     signed_sales += contract.quantity
             
             # 格式化并输出
-            day_str = f"{forecast_day}" if day_offset == 0 else f"{forecast_day} (T+{day_offset})"
-            print(f"| {day_str:^6} | {raw_current_stock:^10} | {raw_estimated:^12} | {planned_production:^8} | {remaining_capacity:^8} | {product_current_stock:^10} | {product_estimated:^12} | {signed_sales:^12} | {result["delivered_products"]} |")
+            day_str = f"{forecast_day} (T+{day_offset})" if day_offset == 0 else f"{forecast_day} (T+{day_offset})"
+            print(f"| {day_str:^6} | {raw_current_stock:^10} | {raw_estimated:^12} | {planned_production:^8} | {remaining_capacity:^8} | {product_current_stock:^10} | {product_estimated:^12} | {signed_sales:^12} | {result["delivered_products"] if day_offset == 0 else 0:^12} |")
         
         print(separator)
         print()
