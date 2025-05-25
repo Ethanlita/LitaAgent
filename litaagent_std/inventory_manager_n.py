@@ -420,7 +420,7 @@ class InventoryManager:
 
         return self.production_plan
 
-    def deliver_products(self) -> List[str]:
+    def deliver_products(self) -> int:
         """
         当天向下游交割产品，FIFO 方式扣减 product_batches。
         返回本日完成交割的合同 ID 列表。
@@ -498,7 +498,7 @@ class InventoryManager:
             # 重新规划生产计划，考虑新的不足量
             self.plan_production(self.max_day)  # Use self.max_day for full horizon
 
-            return delivered_contracts
+            return total_available
         else:
             # 可以完全满足需求
             # Demands can be fully met
@@ -511,7 +511,7 @@ class InventoryManager:
             for contract in to_deliver:
                 self._pending_demand.remove(contract)
 
-            return delivered_ids
+            return total_available
 
     def _reduce_product_inventory(self, quantity: float):
         """

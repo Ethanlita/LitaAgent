@@ -1,9 +1,7 @@
 import matplotlib.pyplot as plt
 from scml.std import *
 from scml.oneshot import *
-from scml_agents.scml2024 import PenguinAgent
 
-from litaagent_std.litaagent_n import LitaAgentN
 from litaagent_std.litaagent_y import LitaAgentY
 
 agent_types = [
@@ -12,8 +10,6 @@ agent_types = [
     GreedyOneShotAgent,
     RandomStdAgent,
     LitaAgentY,
-    LitaAgentN,
-    PenguinAgent
 ]
 
 world = SCML2024StdWorld(

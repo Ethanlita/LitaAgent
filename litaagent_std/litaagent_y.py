@@ -248,7 +248,7 @@ class LitaAgentY(StdSyncAgent):
         """每天结束时调用：执行 IM 的日终操作并刷新市场均价。"""
         assert self.im, "InventoryManager 尚未初始化!"
         # 让 IM 完成收货 / 生产 / 交付 / 规划
-        self.im.process_day_operations()
+        result = self.im.process_day_operations()
         self.im.update_day() # This increments self.im.current_day
         # —— 更新市场均价估计 ——
         # Ensure lists are not empty before calculating average
@@ -258,6 +258,9 @@ class LitaAgentY(StdSyncAgent):
             self._market_product_price_avg = sum(self._recent_product_prices) / len(self._recent_product_prices)
         if os.path.exists("env.test"): # Added from Step 11
              print(f"🌙 Day {self.awi.current_step} ({self.id}) ending. Market Material Avg Price: {self._market_material_price_avg:.2f}, Market Product Avg Price: {self._market_product_price_avg:.2f}. IM is now on day {self.im.current_day}.")
+        
+        # 输出每日状态报告
+        self._print_daily_status_report(result)
 
     # Method from Step 4 (Turn 15), logging improved in Step 11 (Turn 37)
     def _update_dynamic_stockpiling_parameters(self) -> None:
@@ -1414,6 +1417,56 @@ class LitaAgentY(StdSyncAgent):
     def decide_with_model(self, obs: Any) -> Any: 
         return None
 
+    def _print_daily_status_report(self, result) -> None:
+        """输出每日库存、生产和销售状态报告，包括未来预测"""
+        if not self.im:
+            return
+        
+        current_day = self.awi.current_step
+        horizon_days = min(10, self.awi.n_steps - current_day)  # 只预测未来10天或剩余天数
+        
+        # 表头
+        header = "|  日期  |  原料真库存  |  原料预计库存  |  计划生产  |  剩余产能  |  产品真库存  |  产品预计库存  |  已签署销售量  |  实际产品交付  |"
+        separator = "|" + "-" * (len(header) - 2) + "|"
+        
+        print("\n📊 每日状态报告")
+        print(separator)
+        print(header)
+        print(separator)
+        
+        # 当前日期及未来预测
+        for day_offset in range(horizon_days):
+            forecast_day = current_day + day_offset
+            
+            # 从IM获取数据
+            raw_summary = self.im.get_inventory_summary(forecast_day, MaterialType.RAW)
+            product_summary = self.im.get_inventory_summary(forecast_day, MaterialType.PRODUCT)
+            
+            raw_current_stock = int(raw_summary['current_stock'])
+            raw_estimated = int(raw_summary['estimated_available'])
+            
+            product_current_stock = int(product_summary['current_stock'])
+            product_estimated = int(product_summary['estimated_available'])
+            
+            # 计划生产量
+            planned_production = int(self.im.get_production_plan(forecast_day))
+            
+            # 剩余产能
+            remaining_capacity = int(self.im.get_available_production_capacity(forecast_day))
+            
+            # 已签署的销售合同数量
+            signed_sales = 0
+            for contract in self.im.get_pending_contracts(is_supply=False, day=forecast_day):
+                if contract.material_type == MaterialType.PRODUCT:
+                    signed_sales += contract.quantity
+            
+            # 格式化并输出
+            day_str = f"{forecast_day}" if day_offset == 0 else f"{forecast_day} (T+{day_offset})"
+            print(f"| {day_str:^6} | {raw_current_stock:^10} | {raw_estimated:^12} | {planned_production:^8} | {remaining_capacity:^8} | {product_current_stock:^10} | {product_estimated:^12} | {signed_sales:^12} | {result["delivered_products"]} |")
+        
+        print(separator)
+        print()
+    
 if __name__ == "__main__":
     if os.path.exists("env.test"):
         print("模块加载成功，可在竞赛框架中使用 LitaAgentY。")
