@@ -757,12 +757,14 @@ class LitaAgentY(StdSyncAgent):
             for pid in offers.keys():
                 responses[pid] = SAOResponse(ResponseType.END_NEGOTIATION, None)
             return responses
+        demand_offers = {p: o for p, o in offers.items() if self._is_consumer(p)}
+        demand_states = {p: states[p] for p in demand_offers}
+        sum_qty_supply_offer_today = sum(offer[QUANTITY] for pid, offer in offers.items() if self._is_supplier(pid))
+        responses.update(self._process_sales_offers(demand_offers, demand_states, sum_qty_supply_offer_today))
+
         supply_offers = {p: o for p, o in offers.items() if self._is_supplier(p)}
         supply_states = {p: states[p] for p in supply_offers}
         responses.update(self._process_supply_offers(supply_offers, supply_states))
-        demand_offers = {p: o for p, o in offers.items() if self._is_consumer(p)}
-        demand_states = {p: states[p] for p in demand_offers}
-        responses.update(self._process_sales_offers(demand_offers, demand_states))
         return responses
 
     # ------------------------------------------------------------------
@@ -1004,6 +1006,7 @@ class LitaAgentY(StdSyncAgent):
         self,
         offers: Dict[str, Outcome],
         states: Dict[str, SAOState],
+        sum_qty_supply_offer_today: int
     ) -> Dict[str, SAOResponse]:
         res: Dict[str, SAOResponse] = {}
         if not self.im: return res 
@@ -1018,9 +1021,17 @@ class LitaAgentY(StdSyncAgent):
             for contract_detail in self.im.get_pending_contracts(is_supply=False, day=t):
                 if contract_detail.material_type == MaterialType.PRODUCT:
                     signed_sales_for_day += contract_detail.quantity
-            
-            if signed_sales_for_day + qty > self.im.daily_production_capacity:
-                available_qty_for_offer = self.im.daily_production_capacity - signed_sales_for_day
+
+            max_possible_prod_day = int(self.im.get_available_production_capacity(t))
+            max_possible_purchase = 0
+            if(t == self.awi.current_step):
+                max_possible_purchase = sum_qty_supply_offer_today + self.im.get_inventory_summary(t, MaterialType.RAW).get('estimated_available', 0) - self.im.get_production_plan(t)
+            else:
+                # TODO 这里只是简单将今天的总供应量乘以天数，并不是很好的做法
+                max_possible_purchase = sum_qty_supply_offer_today * (t - self.awi.current_step + 1) * 0.7 + self.im.get_inventory_summary(t, MaterialType.RAW).get('estimated_available', 0) - sum(self.im.get_production_plan(i) for i in range(self.awi.current_step, t + 1))
+
+            if signed_sales_for_day + qty > min(max_possible_purchase, max_possible_prod_day):
+                available_qty_for_offer = min(max_possible_purchase, max_possible_prod_day) - signed_sales_for_day
                 if available_qty_for_offer > 0:
                     counter_offer_outcome = self._pareto_counter_offer(pid, int(available_qty_for_offer), t, price, state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_outcome)
