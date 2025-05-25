@@ -48,7 +48,7 @@ from dataclasses import dataclass
 import random
 import os
 import math
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict # Added defaultdict
 from uuid import uuid4
 
 from numpy.random import choice as np_choice  # type: ignore
@@ -118,6 +118,7 @@ class LitaAgentY(StdSyncAgent):
         ptoday: float = 1.00,
         concession_curve_power: float = 1.5, 
         capacity_tight_margin_increase: float = 0.07, 
+        procurement_cash_flow_limit_percent: float = 0.75, # Added from Step 6
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -126,13 +127,13 @@ class LitaAgentY(StdSyncAgent):
         self.total_insufficient = None
         self.today_insufficient = None
         self.min_profit_margin = min_profit_margin         
-        self.initial_min_profit_margin = min_profit_margin 
+        self.initial_min_profit_margin = min_profit_margin # Added from Step 7
         self.cheap_price_discount = cheap_price_discount   
-        self.procurement_cash_flow_limit_percent = 0.75    
-        self.concession_curve_power = concession_curve_power 
-        self.capacity_tight_margin_increase = capacity_tight_margin_increase
+        self.procurement_cash_flow_limit_percent = procurement_cash_flow_limit_percent # Added from Step 6
+        self.concession_curve_power = concession_curve_power # Added from Step 9.b
+        self.capacity_tight_margin_increase = capacity_tight_margin_increase # Added from Step 9.d
         
-        if os.path.exists("env.test"):
+        if os.path.exists("env.test"): # Added from Step 11
             print(f"🤖 LitaAgentY {self.id} initialized with: \n"
                   f"  min_profit_margin={self.min_profit_margin:.3f}, \n"
                   f"  initial_min_profit_margin={self.initial_min_profit_margin:.3f}, \n"
@@ -160,6 +161,7 @@ class LitaAgentY(StdSyncAgent):
         self.partner_models: Dict[str, Dict[str, float]] = {}
         self._last_partner_offer: Dict[str, float] = {}
         
+        # Counters for dynamic profit margin adjustment (Added from Step 7)
         self._sales_successes_since_margin_update: int = 0
         self._sales_failures_since_margin_update: int = 0
 
@@ -177,7 +179,7 @@ class LitaAgentY(StdSyncAgent):
             daily_production_capacity=self.awi.n_lines ,
             max_day=self.awi.n_steps,
         )
-        if os.path.exists("env.test"):
+        if os.path.exists("env.test"): # Added from Step 11
             print(f"🤖 LitaAgentY {self.id} IM initialized. Daily Capacity: {self.im.daily_production_capacity}")
 
 
@@ -187,10 +189,10 @@ class LitaAgentY(StdSyncAgent):
         current_day = self.awi.current_step # Use local var for f-string clarity
         self.today_insufficient = self.im.get_today_insufficient(current_day)
         self.total_insufficient = self.im.get_total_insufficient(current_day)
-        if os.path.exists("env.test"):
+        if os.path.exists("env.test"): # Added from Step 11
             print(f"🌞 Day {current_day} ({self.id}) starting. Today Insufficient Raw: {self.today_insufficient}, Total Insufficient Raw (horizon): {self.total_insufficient}")
 
-        # Update dynamic parameters
+        # Update dynamic parameters (Added from Step 4 & 7)
         self._update_dynamic_stockpiling_parameters()
         self._update_dynamic_profit_margin_parameters()
 
@@ -204,9 +206,9 @@ class LitaAgentY(StdSyncAgent):
         if self.awi.is_first_level:
             exogenous_contract_quantity = self.awi.current_exogenous_input_quantity
             exogenous_contract_price = self.awi.current_exogenous_input_price
-            if exogenous_contract_quantity > 0:
+            if exogenous_contract_quantity > 0: # Added from Step 11
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_supply"
+                exogenous_contract_partner = "simulator_exogenous_supply" # More specific name
                 exogenous_contract = IMContract(
                     contract_id = exogenous_contract_id,
                     partner_id = exogenous_contract_partner,
@@ -218,15 +220,15 @@ class LitaAgentY(StdSyncAgent):
                     material_type = MaterialType.RAW
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"):
+                if os.path.exists("env.test"): # Added from Step 11
                     print(f"📥 Day {current_day} ({self.id}): Added exogenous SUPPLY contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
 
         elif self.awi.is_last_level:
             exogenous_contract_quantity = self.awi.current_exogenous_output_quantity
             exogenous_contract_price = self.awi.current_exogenous_output_price
-            if exogenous_contract_quantity > 0:
+            if exogenous_contract_quantity > 0: # Added from Step 11
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_demand"
+                exogenous_contract_partner = "simulator_exogenous_demand" # More specific name
                 exogenous_contract = IMContract(
                     contract_id = exogenous_contract_id,
                     partner_id = exogenous_contract_partner,
@@ -238,7 +240,7 @@ class LitaAgentY(StdSyncAgent):
                     material_type = MaterialType.PRODUCT
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"):
+                if os.path.exists("env.test"): # Added from Step 11
                     print(f"📤 Day {current_day} ({self.id}): Added exogenous DEMAND contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
 
 
@@ -254,10 +256,10 @@ class LitaAgentY(StdSyncAgent):
             self._market_material_price_avg = sum(self._recent_material_prices) / len(self._recent_material_prices)
         if self._recent_product_prices:
             self._market_product_price_avg = sum(self._recent_product_prices) / len(self._recent_product_prices)
-        if os.path.exists("env.test"):
+        if os.path.exists("env.test"): # Added from Step 11
              print(f"🌙 Day {self.awi.current_step} ({self.id}) ending. Market Material Avg Price: {self._market_material_price_avg:.2f}, Market Product Avg Price: {self._market_product_price_avg:.2f}. IM is now on day {self.im.current_day}.")
 
-
+    # Method from Step 4 (Turn 15), logging improved in Step 11 (Turn 37)
     def _update_dynamic_stockpiling_parameters(self) -> None:
         """Dynamically adjusts cheap_price_discount based on game state."""
         if not self.im:
@@ -266,7 +268,6 @@ class LitaAgentY(StdSyncAgent):
         current_day = self.awi.current_step
         total_days = self.awi.n_steps
 
-        # Ensure total_days is not zero to prevent division by zero
         if total_days == 0:
             return
 
@@ -274,7 +275,7 @@ class LitaAgentY(StdSyncAgent):
         
         future_total_demand_horizon = min(total_days, current_day + 10)
         future_total_demand = 0
-        if self.im: # Ensure im is available
+        if self.im: 
             for d_iter in range(current_day + 1, future_total_demand_horizon + 1): 
                  if d_iter >= total_days: break 
                  future_total_demand += self.im.get_total_insufficient(d_iter) 
@@ -321,11 +322,8 @@ class LitaAgentY(StdSyncAgent):
             print(f"🔎 Day {current_day} ({self.id}): cheap_price_discount maintained at {self.cheap_price_discount:.2f}. Evaluated Reason: {reason}. "
                   f"InvRaw: {current_raw_inventory}, FutDemandRaw(10d): {future_total_demand}, MktPriceRaw: {market_avg_raw_price:.2f}")
 
+    # Method from Step 9.b (Turn 30)
     def get_avg_raw_cost_fallback(self, current_day_for_im_summary: int, best_price_pid_for_fallback: str | None = None) -> float:
-        """
-        Calculates average raw material cost with fallbacks.
-        Used for estimating costs in proposals and concessions.
-        """
         avg_raw_cost = 0.0
         if self._market_material_price_avg > 0:
             avg_raw_cost = self._market_material_price_avg
@@ -345,22 +343,23 @@ class LitaAgentY(StdSyncAgent):
             avg_raw_cost = 10.0 
         return avg_raw_cost
 
+    # Method from Step 9.d (Turn 35)
     def _is_production_capacity_tight(self, day: int, quantity_being_considered: int = 0) -> bool:
-        """Checks if production capacity for a given day is considered tight."""
         if not self.im:
             return False 
-
         signed_sales_for_day = 0
         for contract_detail in self.im.get_pending_contracts(is_supply=False, day=day):
             if contract_detail.material_type == MaterialType.PRODUCT: 
                 signed_sales_for_day += contract_detail.quantity
-        
         remaining_capacity = self.im.daily_production_capacity - signed_sales_for_day - quantity_being_considered
         is_tight = remaining_capacity < (self.im.daily_production_capacity * 0.20)
-        
         return is_tight
 
-    # ... (Methods _is_supplier to _estimate_reservation_price remain unchanged) ...
+    # ------------------------------------------------------------------
+    # 🌟 3. 价格工具
+    # Pricing utilities
+    # ------------------------------------------------------------------
+
     def _is_supplier(self, pid: str) -> bool:
         return pid in self.awi.my_suppliers
 
@@ -368,24 +367,20 @@ class LitaAgentY(StdSyncAgent):
         return pid in self.awi.my_consumers
 
     def _best_price(self, pid: str) -> float:
-        """对自己最有利的价格（买最低 / 卖最高）。"""
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         return issue.min_value if self._is_supplier(pid) else issue.max_value
 
     def _is_price_too_high(self, pid: str, price: float) -> bool:
-        """简单检查报价是否超出双方议题允许范围。"""
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         if self._is_supplier(pid):
-            return price > issue.max_value  # 采购价过高 Purchase price too high
-        return price < issue.min_value      # 销售价过低 Selling price too low
+            return price > issue.max_value 
+        return price < issue.min_value     
 
     def _clamp_price(self, pid: str, price: float) -> float:
-        """确保价格在议题允许范围内。"""
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         return max(issue.min_value, min(issue.max_value, price))
 
     def _expected_price(self, pid: str, default: float) -> float:
-        """Return a risk-adjusted expected price using partner history."""
         stats = self.partner_stats.get(pid)
         if stats and stats.get("contracts", 0) > 0:
             mean = stats.get("avg_price", default)
@@ -407,6 +402,11 @@ class LitaAgentY(StdSyncAgent):
         model_price = self._estimate_reservation_price(pid, base)
         return (base + model_price) / 2
 
+
+    # ------------------------------------------------------------------
+    # 🌟 3-b. 动态让步策略
+    # ------------------------------------------------------------------
+
     def _calc_opponent_concession(self, pid: str, price: float) -> float:
         last = self._last_offer_price.get(pid)
         self._last_offer_price[pid] = price
@@ -414,6 +414,7 @@ class LitaAgentY(StdSyncAgent):
             return 0.0
         return abs(price - last) / abs(last)
 
+    # Modified in Step 9.b (Turn 30)
     def _concession_multiplier(self, rel_time: float, opp_rate: float = 0.0) -> float:
         if self.concession_model: 
             return self.concession_model(rel_time, opp_rate)
@@ -421,6 +422,7 @@ class LitaAgentY(StdSyncAgent):
         base = non_linear_rel_time * (1 + opp_rate) 
         return max(0.0, min(1.0, base))
 
+    # Modified in Step 9.b (Turn 30)
     def _apply_concession(
         self,
         pid: str,
@@ -475,6 +477,10 @@ class LitaAgentY(StdSyncAgent):
              print(f"CONCESSION Day {self.awi.current_step} ({self.id}) for {pid} (RelTime: {rel_time:.2f}): CurrPrice={current_price:.2f}, Target={current_final_target_price:.2f}, Start={start_price:.2f}, Mult={adjusted_mult:.2f} -> NewPrice={final_conceded_price:.2f}. Reasons: {'|'.join(log_reason_parts)}")
         return final_conceded_price
 
+    # ------------------------------------------------------------------
+    # 🌟 Opponent utility estimation using logistic regression
+    # ------------------------------------------------------------------
+
     def _update_acceptance_model(self, pid: str, price: float, accepted: bool) -> None:
         model = self.partner_models.setdefault(pid, {"w0": 0.0, "w1": 0.0})
         x = price if self._is_supplier(pid) else -price 
@@ -497,6 +503,7 @@ class LitaAgentY(StdSyncAgent):
         price_sign = 1.0 if self._is_supplier(pid) else -1.0
         return reservation_x * price_sign
 
+    # Modified in Step 9.c (Turn 32) & 9.d (Turn 35)
     def _pareto_counter_offer(
         self, pid: str, qty: int, t: int, price: float, state: SAOState | None
     ) -> Outcome:
@@ -566,15 +573,300 @@ class LitaAgentY(StdSyncAgent):
         proposed_outcome_time = max(proposed_outcome_time, self.awi.current_step)
         return (proposed_outcome_qty, proposed_outcome_time, proposed_outcome_price)
 
-    # ... (Rest of the file, _get_sales_demand methods, _distribute_todays_needs, _distribute_to_partners, first_proposals are okay) ...
-    # ... (_process_supply_offers and sub-methods _process_emergency, _process_planned, _process_optional have new logging) ...
-    # ... (_process_sales_offers has new logging) ...
-    # ... (Negotiation callbacks on_negotiation_failure, on_negotiation_success have logging) ...
-    # ... (on_contracts_finalized has logging) ...
-    # ... (sign_all_contracts has new logging) ...
-    # ... (_update_dynamic_profit_margin_parameters, update_profit_strategy, decide_with_model are okay) ...
-    
-    # Ensure the main processing methods also get the (self.id) in their logs for clarity in multi-agent scenarios
+    # ------------------------------------------------------------------
+    # 🌟 3-a. 需求计算和需求分配
+    # ------------------------------------------------------------------
+
+    def _get_sales_demand_first_layer(self) -> int:
+        if not self.im: return 0
+        today_inventory_material = int(min(self.im.get_inventory_summary(self.awi.current_step, MaterialType.RAW)["estimated_available"], self.im.get_max_possible_production(self.awi.current_step)))
+        return today_inventory_material
+
+    def _get_sales_demand_last_layer(self) -> int:
+        return 0
+
+    def _get_sales_demand_middle_layer_today(self) -> int:
+        if not self.im: return 0
+        today_inventory_product = int(self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)["estimated_available"])
+        return today_inventory_product
+
+    def _get_sales_demand_middle_layer(self, day: int) -> int:
+        if not self.im: return 0
+        future_inventory_product = int(self.im.get_inventory_summary(day, MaterialType.PRODUCT)["estimated_available"])
+        return future_inventory_product
+
+    def _get_supply_demand_middle_last_layer_today(self) -> tuple[int, int, float]:
+        if not self.im: return 0,0,0.0
+        return (self.im.get_today_insufficient(self.awi.current_step),
+                self.im.get_total_insufficient(self.awi.current_step),
+                self.im.get_total_insufficient(self.awi.current_step) * 0.2)
+
+    def _get_supply_demand_middle_last_layer(self, day: int) -> tuple[int, int, float]:
+        if not self.im: return 0,0,0.0
+        return (
+            self.im.get_total_insufficient(day), 
+            self.im.get_total_insufficient(day), 
+            self.im.get_total_insufficient(day) * 0.2, 
+        )
+
+    def _get_supply_demand_first_layer(self) -> Tuple[int, int, int]:
+        return 0,0,0
+
+    def _distribute_todays_needs(self, partners: Iterable[str] | None = None) -> Dict[str, int]:
+        if partners is None:
+            partners = self.negotiators.keys()
+        partners = list(partners)
+        response: Dict[str, int] = {p: 0 for p in partners}
+        if not self.im : return response
+
+        suppliers = [p for p in partners if self._is_supplier(p)]
+        consumers = [p for p in partners if self._is_consumer(p)]
+        buy_need_emergency, buy_need_planned, buy_need_optional = 0,0,0
+        sell_need = 0
+
+        if self.awi.is_first_level:
+            _ , _ , buy_need_optional_float = self._get_supply_demand_first_layer() 
+            buy_need_optional = int(buy_need_optional_float)
+            sell_need = self._get_sales_demand_first_layer()
+        elif self.awi.is_last_level:
+            buy_need_emergency, buy_need_planned, buy_need_optional_float = self._get_supply_demand_middle_last_layer_today()
+            buy_need_optional = int(buy_need_optional_float)
+            sell_need = self._get_sales_demand_last_layer() 
+        else:
+            buy_need_emergency, buy_need_planned, buy_need_optional_float = self._get_supply_demand_middle_last_layer_today()
+            buy_need_optional = int(buy_need_optional_float)
+            sell_need = self._get_sales_demand_middle_layer_today()
+        
+        total_buy_need = buy_need_emergency + buy_need_planned + buy_need_optional
+        if suppliers and total_buy_need > 0:
+            response.update(self._distribute_to_partners(suppliers, total_buy_need))
+        if consumers and sell_need > 0:
+            response.update(self._distribute_to_partners(consumers, sell_need))
+        return response
+
+    def _distribute_to_partners(self, partners: List[str], needs: int) -> Dict[str, int]:
+        if needs <= 0 or not partners:
+            return {p: 0 for p in partners}
+        needs = int(needs)
+        partners.sort(
+            key=lambda p: self.partner_stats.get(p, {}).get("success", 0)
+            / max(1, self.partner_stats.get(p, {}).get("contracts", 0)),
+            reverse=True,
+        )
+        k = max(1, int(len(partners) * self._ptoday))
+        k = min(k, len(partners))
+        if needs < k:
+             chosen_for_small_needs = random.sample(partners[:k], needs) 
+             quantities = [1] * needs
+             distribution = dict(zip(chosen_for_small_needs, quantities))
+        else:
+            chosen = partners[:k] 
+            quantities = _distribute(needs, len(chosen))
+            distribution = dict(zip(chosen, quantities))
+        final_distribution = {p:0 for p in partners}
+        final_distribution.update(distribution)
+        return final_distribution
+
+    # ------------------------------------------------------------------
+    # 🌟 4. first_proposals — 首轮报价（可简化）
+    # ------------------------------------------------------------------
+    # Modified in Step 9.a (Turn 28) & 9.d (Turn 35)
+    def first_proposals(self) -> Dict[str, Outcome]:
+        partners = list(self.negotiators.keys())
+        if not partners: return {}
+        filtered: List[str] = []
+        for pid in partners:
+            if self._is_supplier(pid) and self.awi.is_first_level: continue
+            if self._is_consumer(pid) and self.awi.is_last_level: continue
+            filtered.append(pid)
+        if not filtered: return {}
+
+        distribution = self._distribute_todays_needs(filtered)
+        today = self.awi.current_step
+        proposals: Dict[str, Outcome] = {}
+
+        for pid, qty in distribution.items():
+            if qty <= 0: continue
+            time_issue = self.get_nmi(pid).issues[TIME]
+            delivery_time = max(today, time_issue.min_value) 
+            delivery_time = min(delivery_time, time_issue.max_value) 
+            qty_issue = self.get_nmi(pid).issues[QUANTITY]
+            final_qty = min(qty, qty_issue.max_value)
+            final_qty = max(final_qty, qty_issue.min_value)
+            if final_qty <=0 : continue
+
+            price_for_proposal: float
+            reason_log_parts: List[str] = []
+
+            if self._is_consumer(pid): 
+                avg_raw_cost = self.get_avg_raw_cost_fallback(today, pid)
+                reason_log_parts.append(f"AvgRawCostEst: {avg_raw_cost:.2f}")
+                unit_cost_estimate = avg_raw_cost + (self.im.processing_cost if self.im else 0)
+                reason_log_parts.append(f"UnitCostEst (raw+proc): {unit_cost_estimate:.2f}")
+                target_margin = self.min_profit_margin
+                
+                if self._is_production_capacity_tight(delivery_time, final_qty):
+                    target_margin += self.capacity_tight_margin_increase
+                    reason_log_parts.append(f"CapacityTight! Margin adj by +{self.capacity_tight_margin_increase:.3f} -> {target_margin:.3f}")
+                else:
+                    reason_log_parts.append(f"BaseTargetMargin: {target_margin:.3f}")
+
+                partner_data = self.partner_stats.get(pid)
+                if partner_data and partner_data.get("contracts", 0) >= 3 and unit_cost_estimate > 0:
+                    historical_avg_price = partner_data["avg_price"]
+                    historical_profit_margin = (historical_avg_price - unit_cost_estimate) / unit_cost_estimate
+                    if historical_profit_margin > target_margin + 0.05: 
+                        adjustment_factor = 0.5 
+                        target_margin = target_margin + (historical_profit_margin - target_margin) * adjustment_factor
+                        reason_log_parts.append(f"HistMargin ({historical_profit_margin:.3f}) -> AdjustedTargetMargin: {target_margin:.3f}")
+                    success_rate = partner_data["success"] / partner_data["contracts"]
+                    if success_rate > 0.8:
+                        bonus_for_reliability = 0.02
+                        target_margin += bonus_for_reliability
+                        reason_log_parts.append(f"ReliablePartner (SR {success_rate:.2f}) -> Bonus {bonus_for_reliability:.3f} -> NewTargetMargin: {target_margin:.3f}")
+                
+                initial_price = unit_cost_estimate * (1 + target_margin)
+                absolute_min_profitable_price = unit_cost_estimate * (1 + self.min_profit_margin)
+                price_for_proposal = max(initial_price, absolute_min_profitable_price)
+                price_for_proposal = self._clamp_price(pid, price_for_proposal) 
+                price_for_proposal = max(price_for_proposal, absolute_min_profitable_price)
+                reason_log_parts.append(f"CalcPrice: {initial_price:.2f} -> Clamped/MinEnsured: {price_for_proposal:.2f} (AbsMinProfitable: {absolute_min_profitable_price:.2f})")
+                if os.path.exists("env.test"):
+                     print(f"📈 Day {today} ({self.id}) Proposal to Consumer {pid}: Qty={final_qty}, Price={price_for_proposal:.2f}. Reasons: {' | '.join(reason_log_parts)}")
+            else: 
+                price_for_proposal = self._best_price(pid) 
+                if os.path.exists("env.test"):
+                    print(f"📦 Day {today} ({self.id}) Proposal to Supplier {pid}: Qty={final_qty}, Price={price_for_proposal:.2f} (Best price for buying)")
+            proposals[pid] = (final_qty, delivery_time, price_for_proposal)
+        return proposals
+
+    # ------------------------------------------------------------------
+    # 🌟 5. counter_all — 谈判核心（分派到子模块）
+    # ------------------------------------------------------------------
+
+    def counter_all(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
+        responses: Dict[str, SAOResponse] = {}
+        if not self.im: 
+            for pid in offers.keys():
+                responses[pid] = SAOResponse(ResponseType.END_NEGOTIATION, None)
+            return responses
+        supply_offers = {p: o for p, o in offers.items() if self._is_supplier(p)}
+        supply_states = {p: states[p] for p in supply_offers}
+        responses.update(self._process_supply_offers(supply_offers, supply_states))
+        demand_offers = {p: o for p, o in offers.items() if self._is_consumer(p)}
+        demand_states = {p: states[p] for p in demand_offers}
+        responses.update(self._process_sales_offers(demand_offers, demand_states))
+        return responses
+
+    # ------------------------------------------------------------------
+    # 🌟 5‑1. 供应报价拆分三类
+    # ------------------------------------------------------------------
+
+    def _process_supply_offers(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
+        res: Dict[str, SAOResponse] = {}
+        if not offers or not self.im: 
+            return res
+        today = self.awi.current_step
+        emergency_offers = {} 
+        planned_offers = {}   
+        optional_offers = {}  
+        current_today_insufficient = self.im.get_today_insufficient(today)
+        sorted_offers = sorted(offers.items(), key=lambda item: (item[1][UNIT_PRICE], -item[1][QUANTITY]))
+
+        for pid, offer in sorted_offers:
+            self._last_partner_offer[pid] = offer[UNIT_PRICE] 
+            offer_time = offer[TIME]
+            if offer_time == today and current_today_insufficient > 0:
+                emergency_offers[pid] = offer
+            elif offer_time > today and self.im.get_total_insufficient(offer_time) > 0:
+                planned_offers[pid] = offer
+            else:
+                optional_offers[pid] = offer
+        
+        if emergency_offers:
+            em_res = self._process_emergency_supply_offers(emergency_offers, {p: states[p] for p in emergency_offers})
+            res.update(em_res)
+            for resp in em_res.values():
+                if resp.response == ResponseType.ACCEPT_OFFER and resp.outcome and resp.outcome[TIME] == today:
+                    current_today_insufficient -= resp.outcome[QUANTITY]
+            current_today_insufficient = max(0, current_today_insufficient) 
+
+        if current_today_insufficient > 0:
+            adaptable_offers = list(planned_offers.items()) + list(optional_offers.items())
+            adaptable_offers.sort(key=lambda item: item[1][UNIT_PRICE])
+            for pid, offer_to_adapt in adaptable_offers:
+                if current_today_insufficient <= 0: break
+                original_qty, _, original_price = offer_to_adapt
+                state = states.get(pid)
+                qty_to_request_today = min(original_qty, current_today_insufficient)
+                countered_outcome_today = self._pareto_counter_offer(pid, qty_to_request_today, today, original_price, state)
+                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, countered_outcome_today)
+                if pid in planned_offers: planned_offers.pop(pid)
+                if pid in optional_offers: optional_offers.pop(pid)
+        
+        if planned_offers:
+            plan_res = self._process_planned_supply_offers(planned_offers, {p: states[p] for p in planned_offers})
+            res.update(plan_res)
+        if optional_offers:
+            optional_res = self._process_optional_supply_offers(optional_offers, {p: states[p] for p in optional_offers})
+            res.update(optional_res)
+        return res
+
+    # ------------------------------------------------------------------
+    # 🌟 5‑1‑a 紧急需求处理
+    # ------------------------------------------------------------------
+    def _process_emergency_supply_offers(
+        self,
+        offers: Dict[str, Outcome],
+        states: Dict[str, SAOState],
+    ) -> Dict[str, SAOResponse]:
+        res: Dict[str, SAOResponse] = {}
+        if not offers or not self.im : return res 
+        remain_needed = self.im.get_today_insufficient(self.awi.current_step)
+        if remain_needed <=0 : return res
+        ordered_offers = sorted(offers.items(), key=lambda x: x[1][UNIT_PRICE])
+        penalty = self.awi.current_shortfall_penalty
+
+        for pid, offer in ordered_offers:
+            if remain_needed <= 0: break 
+            qty, time, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+            state = states.get(pid)
+            self._recent_material_prices.append(price)
+            if len(self._recent_material_prices) > self._avg_window: self._recent_material_prices.pop(0)
+
+            if price <= penalty * 1.1: 
+                accept_qty = min(qty, remain_needed)
+                if qty <= remain_needed and price <= penalty:
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
+                    remain_needed -= accept_qty
+                elif qty > remain_needed and price <= penalty:
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
+                    remain_needed -= accept_qty
+                elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8:
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
+                    remain_needed -= accept_qty
+                else: 
+                    counter_offer = self._pareto_counter_offer(pid, accept_qty, time, price, state)
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
+            else: 
+                target_price_for_counter = min(price, penalty * 0.95) 
+                conceded_price = self._apply_concession(pid, target_price_for_counter, state, price)
+                counter_offer = self._pareto_counter_offer(pid, min(qty, remain_needed), time, conceded_price, state)
+                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
+        return res
+
+    # ------------------------------------------------------------------
+    # 🌟 5‑1‑b 计划性需求处理
+    # ------------------------------------------------------------------
+    # Modified in Step 3 (Turn 13), Step 5 (Turn 15/verified pre-existing), Step 11 (logging)
     def _process_planned_supply_offers(
         self,
         offers: Dict[str, Outcome],
@@ -598,7 +890,7 @@ class LitaAgentY(StdSyncAgent):
             max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product
             days_held_estimate = max(0, t - (self.awi.current_step + 1))
             estimated_storage_cost_per_unit = self.im.raw_storage_cost * days_held_estimate
-            effective_price = price + estimated_storage_cost_per_unit
+            effective_price = price + estimated_storage_cost_per_unit # Renamed from effective_price_considering_storage
             price_is_acceptable = (effective_price <= max_affordable_raw_price_jit)
 
             current_total_needed_for_date_t = float(self.im.get_total_insufficient(t))
@@ -622,10 +914,10 @@ class LitaAgentY(StdSyncAgent):
                 if os.path.exists("env.test"): print(log_prefix + f"Accepted Qty {accept_qty_int}. " + log_details)
             else:
                 rejection_reason = ""
-                if accept_qty_int <= 0 : rejection_reason += "NoHeadroomOrZeroAcceptQty;" # Combined reason for clarity
+                if accept_qty_int <= 0 : rejection_reason += "NoHeadroomOrZeroAcceptQty;" 
                 if not price_is_acceptable: rejection_reason += "PriceUnacceptable(Effective);"
                 
-                if not price_is_acceptable: # Primary reason is price
+                if not price_is_acceptable: 
                     target_quoted_price_for_negotiation = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
                     conceded_actual_price_to_offer = self._apply_concession(pid, target_quoted_price_for_negotiation, state, price)
                     qty_for_counter = qty_original if accept_qty_int > 0 else min(qty_original, int(round(remaining_headroom_for_t))) 
@@ -637,11 +929,15 @@ class LitaAgentY(StdSyncAgent):
                     counter_offer_tuple = self._pareto_counter_offer(pid, qty_for_counter, t, conceded_actual_price_to_offer, state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_tuple)
                     if os.path.exists("env.test"): print(log_prefix + f"Rejected ({rejection_reason}). Countering. " + log_details + f" Counter: Q:{counter_offer_tuple[0]} P:{counter_offer_tuple[2]:.2f} T:{counter_offer_tuple[1]}")
-                else: # Price was fine, but no headroom or accept_qty_int is 0
+                else: 
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None) 
                     if os.path.exists("env.test"): print(log_prefix + f"Rejected ({rejection_reason}). No counter. " + log_details)
         return res
 
+    # ------------------------------------------------------------------
+    # 🌟 5‑1‑c 机会性采购处理
+    # ------------------------------------------------------------------
+    # Modified in Step 3 (Turn 13), Step 11 (logging)
     def _process_optional_supply_offers(
         self,
         offers: Dict[str, Outcome],
@@ -696,7 +992,11 @@ class LitaAgentY(StdSyncAgent):
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
                     if os.path.exists("env.test"): print(log_prefix + f"Rejected ({rejection_reason}). No counter. " + log_details)
         return res
-
+        
+    # ------------------------------------------------------------------
+    # 🌟 5‑2. 销售报价处理
+    # ------------------------------------------------------------------
+    # Modified in Step 9.d (Turn 35), Step 11 (logging)
     def _process_sales_offers(
         self,
         offers: Dict[str, Outcome],
@@ -750,6 +1050,115 @@ class LitaAgentY(StdSyncAgent):
                 if os.path.exists("env.test"): print(f"❌ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Q:{qty} P:{price:.2f} T:{t}): Rejected (Price < MinSellPrice {min_sell_price:.2f}). Countering with P:{counter_offer[UNIT_PRICE]:.2f}. Reasons: {'|'.join(reason_log_parts)}")
         return res
 
+    # ------------------------------------------------------------------
+    # 🌟 6. 谈判回调
+    # ------------------------------------------------------------------
+
+    def get_partner_id(self, contract: Contract) -> str:
+        for p in contract.partners:
+            if p != self.id:
+                return p
+        if os.path.exists("env.test"): print(f"⚠️ ({self.id}) Could not determine partner ID for contract {contract.id}, partners: {contract.partners}, my ID: {self.id}")
+        return "unknown_partner" # Should ideally not happen
+
+    # Modified in Step 7 (Turn 20)
+    def on_negotiation_failure(
+        self,
+        partners: List[str],
+        annotation: Dict[str, Any],
+        mechanism: StdAWI,
+        state: SAOState,
+    ) -> None:
+        for pid in partners:
+            if pid == self.id:
+                continue
+            if self._is_consumer(pid): # It's a sales negotiation
+                self._sales_failures_since_margin_update += 1
+            
+            stats = self.partner_stats.setdefault(
+                pid,
+                {"avg_price": 0.0, "price_M2": 0.0, "contracts": 0, "success": 0},
+            )
+            stats["contracts"] += 1
+            last_price = self._last_partner_offer.get(pid)
+            if last_price is not None:
+                self._update_acceptance_model(pid, last_price, False)
+
+    # Modified in Step 7 (Turn 20)
+    def on_negotiation_success(self, contract: Contract, mechanism: StdAWI) -> None:
+        assert self.im, "InventoryManager 尚未初始化"
+        partner = self.get_partner_id(contract) 
+        if partner == "unknown_partner": 
+            if os.path.exists("env.test"): print(f"Error ({self.id}): Could not identify partner for contract {contract.id}. Skipping IM update.")
+            return
+
+        is_supply = partner in self.awi.my_suppliers
+        if not is_supply: 
+            self._sales_successes_since_margin_update += 1
+        
+        im_type = IMContractType.SUPPLY if is_supply else IMContractType.DEMAND
+        mat_type = MaterialType.RAW if is_supply else MaterialType.PRODUCT
+        agreement = contract.agreement
+        if not agreement : 
+            if os.path.exists("env.test"): print(f"Error ({self.id}): Contract {contract.id} has no agreement. Skipping IM update.")
+            return
+
+        new_c = IMContract(
+            contract_id=contract.id, partner_id=partner, type=im_type,
+            quantity=agreement["quantity"], price=agreement["unit_price"],
+            delivery_time=agreement["time"], bankruptcy_risk=0.0, 
+            material_type=mat_type,
+        )
+        added = self.im.add_transaction(new_c)
+        assert added, f"❌ ({self.id}) IM.add_transaction 失败! contract={contract.id}"
+
+        stats = self.partner_stats.setdefault(
+            partner, {"avg_price": 0.0, "price_M2": 0.0, "contracts": 0, "success": 0})
+        stats["contracts"] += 1
+        stats["success"] += 1
+        price = agreement["unit_price"]
+        n_success = stats["success"] # Number of successful contracts for this partner
+        delta = price - stats["avg_price"]
+        stats["avg_price"] += delta / n_success 
+        if n_success > 1: stats["price_M2"] += delta * (price - stats["avg_price"]) 
+        self._update_acceptance_model(partner, price, True)
+
+        self.today_insufficient = self.im.get_today_insufficient(self.awi.current_step)
+        self.total_insufficient = self.im.get_total_insufficient(self.awi.current_step)
+
+        if is_supply and agreement["time"] == self.awi.current_step:
+            self.purchase_completed[self.awi.current_step] += agreement["quantity"]
+        elif not is_supply and agreement["time"] == self.awi.current_step:
+            self.sales_completed[self.awi.current_step] += agreement["quantity"]
+
+        if os.path.exists("env.test"):
+            print(f"✅ [{self.awi.current_step}] ({self.id}) Contract {contract.id} added to IM: {new_c}")
+    
+    # Added from Step 8 (Turn 24), logging improved in Step 11 (Turn 37)
+    def on_contracts_finalized(self, signed: List[Contract], cancelled: List[Contract], rejected: List[Contract]) -> None:
+        super().on_contracts_finalized(signed, cancelled, rejected)
+        current_day = self.awi.current_step # For logging
+        if os.path.exists("env.test"):
+            print(f"📝 [{current_day}] ({self.id}) Contracts Finalized. Signed: {len(signed)}, Cancelled: {len(cancelled)}, Rejected: {len(rejected)}")
+
+        if not self.im:
+            if os.path.exists("env.test"): print(f"⚠️ [{current_day}] ({self.id}) IM not available in on_contracts_finalized. Cannot reconcile.")
+            return
+
+        for contract in cancelled:
+            if os.path.exists("env.test"):
+                print(f"🔔 [{current_day}] ({self.id}) Contract {contract.id} was cancelled at signing stage. Instructing IM to void it.")
+            removed_from_im = self.im.void_negotiated_contract(contract.id)
+            if os.path.exists("env.test"):
+                if removed_from_im:
+                    print(f"✅ [{current_day}] ({self.id}) IM voided cancelled contract {contract.id}.")
+                else:
+                    print(f"⚠️ [{current_day}] ({self.id}) IM could not find contract {contract.id} to void (already processed or never added?).")
+
+    # ------------------------------------------------------------------
+    # 🌟 POST-NEGOTIATION SIGNING PHASE
+    # ------------------------------------------------------------------
+    # Method from Step 2 (Turn 17), modified Step 6 (Turn 19), logging improved Step 11 (Turn 37)
     def sign_all_contracts(self, contracts: List[Contract]) -> List[Contract]:
         if self.im is None:
             if os.path.exists("env.test"): print(f"⚠️ Day {self.awi.current_step} ({self.id}) IM is None in sign_all_contracts. Signing all blindly.")
@@ -772,7 +1181,6 @@ class LitaAgentY(StdSyncAgent):
             if quantity <= 0:
                 if os.path.exists("env.test"): print(f"⚠️ [{self.awi.current_step}] ({self.id}) Contract {contract_obj.id} has zero/negative quantity ({quantity}). Skipping.")
                 continue
-            # ... (rest of parsing logic is fine) ...
             unit_price = agreement.get(UNIT_PRICE, 0.0)
             delivery_time = agreement.get(TIME, self.awi.current_step)
             if self._is_consumer(partner_id):
@@ -802,7 +1210,7 @@ class LitaAgentY(StdSyncAgent):
                     "linked_to_sale": False, "original_quantity": quantity 
                 })
         
-        if os.path.exists("env.test"):
+        if os.path.exists("env.test"): # Added logging from Step 11
             print(f"ℹ️ [{self.awi.current_step}] ({self.id}) Parsed contracts. Sales: {len(pending_sales_contracts_data)}, Procurement: {len(pending_procurement_contracts_data)}.")
 
         pending_sales_contracts_data.sort(key=lambda x: x["profit"], reverse=True)
@@ -826,7 +1234,7 @@ class LitaAgentY(StdSyncAgent):
             if daily_production_commitment[s_time] + s_qty > self.im.daily_production_capacity:
                 if os.path.exists("env.test"): print(f"🚫 [{self.awi.current_step}] ({self.id}) Skipping sales contract {s_data['contract_obj'].id} (Qty:{s_qty} for Day:{s_time}) due to exceeding capacity. Committed: {daily_production_commitment[s_time]}, Capacity: {self.im.daily_production_capacity}")
                 continue 
-            # ... (rest of sign_all_contracts is okay, already has detailed logging for other phases) ...
+            
             materials_needed = s_qty
             secured_from_im_stock = 0
             temp_linked_procurements_for_this_sale = []
@@ -860,7 +1268,7 @@ class LitaAgentY(StdSyncAgent):
                             p_master_item["quantity"] -= linked_p_info_commit["quantity_taken"]
                             p_master_item["linked_to_sale"] = True 
                             break
-            else: # Material check failed for this sales contract
+            else: 
                  if os.path.exists("env.test"): print(f"⚠️ [{self.awi.current_step}] ({self.id}) Sales contract {s_data['contract_obj'].id} (Qty:{s_qty}) lacks materials. Needed:{materials_needed}, SecuredFromStock:{secured_from_im_stock}, SecuredFromBatch:{secured_from_batch_procurements}. Skipping.")
         
         if os.path.exists("env.test"): print(f"ℹ️ [{self.awi.current_step}] ({self.id}) Phase 2: Cash Flow Check. Candidates after initial selection: {len(candidate_sales_data_list)} sales.")
@@ -913,6 +1321,12 @@ class LitaAgentY(StdSyncAgent):
                   f"{final_signed_sales_count} sales, {final_signed_procurement_count} procurements. Est. profit: {final_total_profit_estimate:.2f}")
         return final_signed_contracts_list
 
+
+    # ------------------------------------------------------------------
+    # 🌟 7. 动态策略调节接口
+    # Dynamic strategy adjustment API
+    # ------------------------------------------------------------------
+    # Method from Step 7 (Turn 20), logging improved Step 11 (Turn 37)
     def _update_dynamic_profit_margin_parameters(self) -> None:
         if not self.im: return
         current_day = self.awi.current_step

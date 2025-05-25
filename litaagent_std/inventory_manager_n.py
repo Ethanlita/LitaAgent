@@ -91,11 +91,9 @@ class InventoryManager:
         # Sign a supply (upstream) or demand (downstream) contract.
         if os.path.exists("env.test"):
             print(
-                f"IM LOG: Adding contract: {contract.contract_id} ({contract.type.name}), Qty: {contract.quantity}, Price: {contract.price}, Time: {contract.delivery_time}"
+                f"Add contract: {contract.contract_id} ({contract.type.name}), contract_raw:{contract}"
             )
         if contract.delivery_time < self.current_day:
-            if os.path.exists("env.test"):
-                print(f"IM LOG ERROR: Attempted to add contract {contract.contract_id} with past delivery time {contract.delivery_time} on day {self.current_day}.")
             return False
         if contract.type == IMContractType.SUPPLY:
             self._pending_supply.append(contract)
@@ -106,46 +104,10 @@ class InventoryManager:
         # Re-plan the production schedule whenever a new contract is added
         # 并计算不足库存量，确保代理可以及时应对变化
         # Calculate inventory shortfalls to ensure the agent can react in time
-        self.plan_production(self.max_day) # Use self.max_day for full horizon planning
+        planning_horizon = self.max_day
+        self.plan_production(planning_horizon)
             
         return True
-
-    def void_negotiated_contract(self, contract_id: str) -> bool:
-        """
-        Removes a contract from pending lists if it was cancelled at signing.
-        This is called when a contract previously added via on_negotiation_success
-        is ultimately not signed (e.g., due to sign_all_contracts logic or opponent cancellation).
-        """
-        found_and_removed = False
-        # Search in pending supply contracts
-        for contract in self._pending_supply:
-            if contract.contract_id == contract_id:
-                self._pending_supply.remove(contract)
-                if os.path.exists("env.test"):
-                    print(f"IM LOG: Voided SUPPLY contract ID: {contract_id} from _pending_supply.")
-                found_and_removed = True
-                break
-        
-        if not found_and_removed:
-            # Search in pending demand contracts
-            for contract in self._pending_demand:
-                if contract.contract_id == contract_id:
-                    self._pending_demand.remove(contract)
-                    if os.path.exists("env.test"):
-                        print(f"IM LOG: Voided DEMAND contract ID: {contract_id} from _pending_demand.")
-                    found_and_removed = True
-                    break
-        
-        if found_and_removed:
-            # Re-plan production as voiding a contract can change needs
-            if os.path.exists("env.test"):
-                 print(f"IM LOG: Contract {contract_id} voided. Re-planning production up to day {self.max_day}.")
-            self.plan_production(self.max_day) # Use self.max_day for full horizon planning
-        else:
-            if os.path.exists("env.test"):
-                print(f"IM LOG WARNING: Attempted to void contract ID: {contract_id}, but it was not found in pending lists.")
-
-        return found_and_removed
 
     def receive_materials(self) -> List[str]:
         """
@@ -253,7 +215,7 @@ class InventoryManager:
         将当前日期推进到下一天。
         Advances the current date to the next day.
         """
-        # self.process_day_operations() # process_day_operations is called by agent's step() now.
+        self.process_day_operations()
         self.current_day += 1
 
     # ----------------------------------------------------------------
@@ -349,12 +311,11 @@ class InventoryManager:
         accumulated_raw_shortage = {day: 0.0 for day in range(self.current_day, up_to_day + 1)}
         
         for day in range(up_to_day, self.current_day - 1, -1):
-            next_day = day + 1 # This logic seems to look at 'next_day' demand to produce on 'day'
-            if next_day > up_to_day: # For the last day 'up_to_day', demand is for 'up_to_day' itself
-                needed_products = max(0, int(daily_demand.get(day, 0) - product_inv_simulation[day]))
-            else:
-                needed_products = max(0, int(daily_demand.get(next_day, 0) - product_inv_simulation[next_day]))
-
+            next_day = day + 1
+            
+            # 计算需要的产品量：确保下一天有足够库存满足需求
+            # Calculate the required product quantity: ensure that there is enough inventory to meet the demand for the next day
+            needed_products = max(0, int(daily_demand.get(next_day, 0) - product_inv_simulation[next_day]))
             
             # 如果需要生产
             # If production is needed
@@ -375,19 +336,15 @@ class InventoryManager:
                 if actual_production > 0:
                     self.production_plan[day] = actual_production
                     raw_inv_simulation[day] -= actual_production
-                    if next_day <= up_to_day: # Ensure not to write out of bounds
-                        product_inv_simulation[next_day] += actual_production
-                    elif day == up_to_day: # Special case for last day production for last day demand
-                        product_inv_simulation[day] += actual_production
-
-
+                    product_inv_simulation[next_day] += actual_production
+                
                 # 计算并累积不足原料数据
                 # Calculate and accumulate the shortage data
                 if raw_shortage > 0:
                     # 当日不足量：当天必须获取的原材料量，否则会导致违约
                     # Daily shortage: the amount of raw materials that must be obtained on the same day, otherwise it will lead to a breach of contract
                     daily_shortage = raw_shortage
-                    accumulated_raw_shortage[day] = accumulated_raw_shortage.get(next_day if next_day <= up_to_day else day, 0) + raw_shortage # Check boundary for next_day
+                    accumulated_raw_shortage[day] = accumulated_raw_shortage.get(next_day, 0) + raw_shortage
                     
                     # 更新不足原料记录
                     # Update the shortage record
@@ -396,13 +353,13 @@ class InventoryManager:
                 else:
                     # 如果当天原材料足够，但仍有累积不足
                     # If the raw material is sufficient on the same day, but there is still a cumulative shortage
-                    accumulated_raw_shortage[day] = accumulated_raw_shortage.get(next_day if next_day <= up_to_day else day, 0)
+                    accumulated_raw_shortage[day] = accumulated_raw_shortage.get(next_day, 0)
                     if accumulated_raw_shortage[day] > 0:
                         self.insufficient_raw[day]["total"] = accumulated_raw_shortage[day]
             else:
                 # 如果当天不需要生产，但可能有累积不足
                 # If production is not needed on the same day, but there may be cumulative shortages
-                accumulated_raw_shortage[day] = accumulated_raw_shortage.get(next_day if next_day <= up_to_day else day, 0)
+                accumulated_raw_shortage[day] = accumulated_raw_shortage.get(next_day, 0)
                 if accumulated_raw_shortage[day] > 0:
                     self.insufficient_raw[day]["total"] = accumulated_raw_shortage[day]
         
@@ -492,7 +449,7 @@ class InventoryManager:
                     pass
 
             # 重新规划生产计划，考虑新的不足量
-            self.plan_production(self.max_day) # Use self.max_day for full horizon
+            self.plan_production(self.current_day + 30)
 
             return delivered_contracts
         else:
@@ -692,7 +649,7 @@ class InventoryManager:
         delivered_products = self.deliver_products()
 
         # 重新计划生产
-        self.plan_production(self.max_day) # Use self.max_day for full horizon
+        self.plan_production(self.current_day + self.max_day)
         
         return {
             "received_materials": received_materials,
@@ -799,16 +756,16 @@ class InventoryManager:
             remaining_to_reduce = production_qty
             raw_batches_copy = im.raw_batches.copy()
 
-            for i, batch_item in enumerate(raw_batches_copy): # Renamed batch to batch_item
-                if batch_item.remaining <= 0:
+            for i, batch in enumerate(raw_batches_copy):
+                if batch.remaining <= 0:
                     continue
 
-                if batch_item.remaining >= remaining_to_reduce:
+                if batch.remaining >= remaining_to_reduce:
                     im.raw_batches[i].remaining -= remaining_to_reduce
                     remaining_to_reduce = 0
                     break
                 else:
-                    remaining_to_reduce -= batch_item.remaining
+                    remaining_to_reduce -= batch.remaining
                     im.raw_batches[i].remaining = 0
 
             # 清理剩余量为0的批次
