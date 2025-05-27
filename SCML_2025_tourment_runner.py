@@ -1,15 +1,15 @@
 import matplotlib.pyplot as plt
-from scml.std import *
 from scml.oneshot import *
+from scml.std import *
 
-from litaagent_std.litaagent_y import LitaAgentY
+from litaagent_std.litaagent_cir import LitaAgentCIR
 
 agent_types = [
     SyncRandomStdAgent,
     RandDistOneShotAgent,
     GreedyOneShotAgent,
     RandomStdAgent,
-    LitaAgentY,
+    LitaAgentCIR,
 ]
 
 world = SCML2024StdWorld(
