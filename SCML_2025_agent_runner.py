@@ -16,7 +16,7 @@ from litaagent_std.litaagent_y import LitaAgentY
 
 # create a runner that encapsulates a number of configs to evaluate agents
 # in the same conditions every time
-CONFIGS, REPS, STEPS = 10, 3, 10
+CONFIGS, REPS, STEPS = 10, 5, 10
 context = ANACStdContext( # what are the rounds here, number of trials, process (needs processes or not), etc. and align with the actual parameters of the live competitoin.
     n_steps=STEPS, n_processes=3, world_params=dict(construct_graphs=True)
 )

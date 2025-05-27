@@ -1,3 +1,4 @@
+import os
 from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any, TYPE_CHECKING
@@ -19,10 +20,10 @@ class IMContractType(Enum):
 
 @dataclass
 class IMContract:
-    contract_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     partner_id: str
+    contract_id: str
     type: IMContractType
-    quantity: float
+    quantity: int
     price: float
     delivery_time: int
     material_type: MaterialType
@@ -30,19 +31,19 @@ class IMContract:
 
 @dataclass
 class Batch: # For tracking inventory
-    batch_id: str = field(default_factory=lambda: str(uuid.uuid4())) # Added default factory for batch_id
-    original_quantity: float
-    remaining_quantity: float
+    batch_id: str # Added default factory for batch_id
+    original_quantity: int
+    remaining_quantity: int
     unit_cost: float # Cost at which it was acquired (raw) or produced (product)
     arrival_or_production_time: int
     material_type: MaterialType
 
-class CustomInventoryManager:
+class InventoryManagerCIR:
     def __init__(self,
                  raw_storage_cost: float,
                  product_storage_cost: float,
                  processing_cost: float,
-                 daily_production_capacity: float, # Can be float('inf')
+                 daily_production_capacity: int, # Was float, now int (except for float('inf'))
                  max_simulation_day: int,
                  current_day: int = 0):
 
@@ -74,9 +75,9 @@ class CustomInventoryManager:
         self.total_products_sold: float = 0.0
         # ... any other metrics useful for the agent's strategy
 
-    def deepcopy(self) -> 'CustomInventoryManager':
+    def deepcopy(self) -> 'InventoryManagerCIR':
         # Create a new instance and deepcopy mutable attributes
-        new_im = CustomInventoryManager(
+        new_im = InventoryManagerCIR(
             raw_storage_cost=self.raw_storage_cost_per_unit_per_day,
             product_storage_cost=self.product_storage_cost_per_unit_per_day,
             processing_cost=self.processing_cost_per_unit,
@@ -122,15 +123,16 @@ class CustomInventoryManager:
         self.plan_production() 
         return True
 
-    def get_inventory_summary(self, day: int, mtype: MaterialType) -> Dict[str, float]:
+    def get_inventory_summary(self, day: int, mtype: MaterialType) -> Dict[str, int]:
+        """预期可用库存是*包括*了当天入库、生产或者交付的，现在库存是*不包括*还没生产的东西的，即使是未来的日期也会返回*实际上已经生产并入库的*产品库存量"""
         batches_to_consider = self.raw_material_batches if mtype == MaterialType.RAW else self.product_batches
         storage_cost_per_unit = self.raw_storage_cost_per_unit_per_day if mtype == MaterialType.RAW else self.product_storage_cost_per_unit_per_day
-
-        current_stock_qty = 0.0
+    
+        current_stock_qty = 0
         total_cost_of_current_stock = 0.0
-
+    
         for batch in batches_to_consider:
-            if batch.arrival_or_production_time <= day:
+            if batch.arrival_or_production_time < day:
                 current_stock_qty += batch.remaining_quantity
                 storage_duration = max(0, day - batch.arrival_or_production_time)
                 cost_for_batch = batch.unit_cost * batch.remaining_quantity + \
@@ -138,15 +140,15 @@ class CustomInventoryManager:
                 total_cost_of_current_stock += cost_for_batch
         
         average_cost_of_current_stock = (total_cost_of_current_stock / current_stock_qty) if current_stock_qty > 0 else 0.0
-
+    
         estimated_available_qty = current_stock_qty
         
         # For estimated cost, start with the cost of current stock
         estimated_total_cost = total_cost_of_current_stock 
         # Keep track of quantities added for weighted average of future items
-        future_qty_added_for_estimation = 0.0
+        future_qty_added_for_estimation = 0
         cost_of_future_qty_added = 0.0
-
+    
         if mtype == MaterialType.RAW:
             for contract in self.pending_supply_contracts:
                 # Only consider future deliveries up to 'day' that haven't logically arrived yet based on 'self.current_day'
@@ -158,14 +160,14 @@ class CustomInventoryManager:
             # Raw materials are consumed by production.
             # This assumes production plan is accurate for future consumption.
             for prod_day in range(self.current_day, day + 1):
-                planned_prod = self.production_plan.get(prod_day, 0.0)
+                planned_prod = self.production_plan.get(prod_day, 0)
                 estimated_available_qty -= planned_prod
                 # Cost impact of consumption is complex for estimation; for now, focus on quantity.
         
         elif mtype == MaterialType.PRODUCT:
             # Products are added by production.
             for prod_day in range(self.current_day, day + 1):
-                planned_prod = self.production_plan.get(prod_day, 0.0)
+                planned_prod = self.production_plan.get(prod_day, 0)
                 estimated_available_qty += planned_prod
                 # For estimated cost, if current stock is zero, we need to estimate cost of future production
                 if current_stock_qty == 0: # Simplified: only estimate if no current stock
@@ -220,11 +222,13 @@ class CustomInventoryManager:
         for i, contract in enumerate(self.pending_supply_contracts):
             if contract.delivery_time == day_being_processed:
                 if contract.material_type != MaterialType.RAW:
-                    print(f"Warning (_receive_materials): Supply contract {contract.contract_id} for day {day_being_processed} has incorrect material type {contract.material_type}. Skipping.")
+                    if os.path.exists("env.test"):
+                        print(f"Warning (_receive_materials): Supply contract {contract.contract_id} for day {day_being_processed} has incorrect material type {contract.material_type}. Skipping.")
                     continue
 
                 new_batch = Batch(
                     # batch_id=contract.contract_id, # Using contract_id might lead to non-unique batch_ids if contracts are renegotiated/split. Default UUID is safer.
+                    batch_id=str(uuid.uuid4()),
                     original_quantity=contract.quantity,
                     remaining_quantity=contract.quantity,
                     unit_cost=contract.price,
@@ -234,7 +238,8 @@ class CustomInventoryManager:
                 self.raw_material_batches.append(new_batch)
                 self.total_raw_material_acquired += contract.quantity
                 processed_contracts_indices.append(i)
-                print(f"Info (_receive_materials): Received {contract.quantity} of RAW material from {contract.partner_id} on day {day_being_processed}.")
+                if os.path.exists("env.test"):
+                    print(f"Info (_receive_materials): Received {contract.quantity} of RAW material from {contract.partner_id} on day {day_being_processed}.")
 
         # Remove processed contracts (iterate in reverse to avoid index issues)
         for i in sorted(processed_contracts_indices, reverse=True):
@@ -245,27 +250,28 @@ class CustomInventoryManager:
 
 
     def _execute_production(self, day_being_processed: int):
-        planned_qty_to_produce = self.production_plan.get(day_being_processed, 0.0)
+        planned_qty_to_produce = self.production_plan.get(day_being_processed, 0)
         if planned_qty_to_produce <= 0:
             return
-
+    
         # Sort raw material batches to ensure FIFO
         self.raw_material_batches.sort(key=lambda b: b.arrival_or_production_time)
-
+    
         available_raw_material = sum(b.remaining_quantity for b in self.raw_material_batches)
         
         actual_produced_qty = min(planned_qty_to_produce, available_raw_material, self.daily_production_capacity)
-
+    
         if actual_produced_qty < planned_qty_to_produce:
-            print(f"Warning (_execute_production): Production shortfall on day {day_being_processed}. Planned: {planned_qty_to_produce}, Actual: {actual_produced_qty}. Available Raw: {available_raw_material}, Daily Capacity: {self.daily_production_capacity}")
+            if os.path.exists("env.test"):
+                print(f"Warning (_execute_production): Production shortfall on day {day_being_processed}. Planned: {planned_qty_to_produce}, Actual: {actual_produced_qty}. Available Raw: {available_raw_material}, Daily Capacity: {self.daily_production_capacity}")
             # Store shortfall if needed: self.production_shortfalls[(day_being_processed, "reason")] = planned_qty_to_produce - actual_produced_qty
-
+    
         if actual_produced_qty <= 0:
             return
-
+    
         consumed_raw_material_cost = 0.0
         qty_to_consume_for_production = actual_produced_qty # 1 unit of raw makes 1 unit of product
-
+    
         temp_batches_to_remove_indices = []
         for i, batch in enumerate(self.raw_material_batches):
             if qty_to_consume_for_production <= 0:
@@ -275,16 +281,17 @@ class CustomInventoryManager:
             consumed_raw_material_cost += consume_from_this_batch * batch.unit_cost
             batch.remaining_quantity -= consume_from_this_batch
             qty_to_consume_for_production -= consume_from_this_batch
-
+    
             if batch.remaining_quantity <= 0:
                 temp_batches_to_remove_indices.append(i)
         
         for i in sorted(temp_batches_to_remove_indices, reverse=True):
             del self.raw_material_batches[i]
-
+    
         production_cost_per_unit = (consumed_raw_material_cost / actual_produced_qty) + self.processing_cost_per_unit if actual_produced_qty > 0 else self.processing_cost_per_unit
-
+    
         product_batch = Batch(
+            batch_id=str(uuid.uuid4()),
             original_quantity=actual_produced_qty,
             remaining_quantity=actual_produced_qty,
             unit_cost=production_cost_per_unit,
@@ -293,7 +300,8 @@ class CustomInventoryManager:
         )
         self.product_batches.append(product_batch)
         self.total_products_produced += actual_produced_qty
-        print(f"Info (_execute_production): Produced {actual_produced_qty} of PRODUCT on day {day_being_processed}.")
+        if os.path.exists("env.test"):
+            print(f"Info (_execute_production): Produced {actual_produced_qty} of PRODUCT on day {day_being_processed}.")
         
         # Sort product batches by arrival time for strict FIFO if not already guaranteed
         self.product_batches.sort(key=lambda b: b.arrival_or_production_time)
@@ -308,8 +316,9 @@ class CustomInventoryManager:
         for i, contract in enumerate(self.pending_demand_contracts):
             if contract.delivery_time == day_being_processed:
                 if contract.material_type != MaterialType.PRODUCT:
-                     print(f"Warning (_deliver_products): Demand contract {contract.contract_id} for day {day_being_processed} has incorrect material type {contract.material_type}. Skipping.")
-                     continue
+                    if os.path.exists("env.test"):
+                        print(f"Warning (_deliver_products): Demand contract {contract.contract_id} for day {day_being_processed} has incorrect material type {contract.material_type}. Skipping.")
+                    continue
 
                 qty_to_deliver = contract.quantity
                 available_product_stock = sum(b.remaining_quantity for b in self.product_batches)
@@ -317,7 +326,8 @@ class CustomInventoryManager:
                 actual_delivered_qty = min(qty_to_deliver, available_product_stock)
 
                 if actual_delivered_qty < qty_to_deliver:
-                    print(f"Warning (_deliver_products): Delivery shortfall for contract {contract.contract_id} on day {day_being_processed}. Needed: {qty_to_deliver}, Delivered: {actual_delivered_qty}. Available Stock: {available_product_stock}")
+                    if os.path.exists("env.test"):
+                        print(f"Warning (_deliver_products): Delivery shortfall for contract {contract.contract_id} on day {day_being_processed}. Needed: {qty_to_deliver}, Delivered: {actual_delivered_qty}. Available Stock: {available_product_stock}")
                     # Store shortfall: self.delivery_shortfalls[(day_being_processed, contract.contract_id)] = qty_to_deliver - actual_delivered_qty
                 
                 if actual_delivered_qty <= 0:
@@ -342,7 +352,8 @@ class CustomInventoryManager:
                 
                 self.total_products_sold += actual_delivered_qty
                 processed_contracts_indices.append(i)
-                print(f"Info (_deliver_products): Delivered {actual_delivered_qty} of PRODUCT for contract {contract.contract_id} on day {day_being_processed}.")
+                if os.path.exists("env.test"):
+                    print(f"Info (_deliver_products): Delivered {actual_delivered_qty} of PRODUCT for contract {contract.contract_id} on day {day_being_processed}.")
 
         for i in sorted(processed_contracts_indices, reverse=True):
             del self.pending_demand_contracts[i]
@@ -350,10 +361,12 @@ class CustomInventoryManager:
 
     def process_day_end_operations(self, day_being_processed: int):
         if day_being_processed != self.current_day:
-            print(f"Warning (process_day_end_operations): Attempting to process day {day_being_processed} but current_day is {self.current_day}. This might indicate a simulation flow error.")
+            if os.path.exists("env.test"):
+                print(f"Warning (process_day_end_operations): Attempting to process day {day_being_processed} but current_day is {self.current_day}. This might indicate a simulation flow error.")
             # Optionally, align current_day or raise error: self.current_day = day_being_processed
 
-        print(f"\n--- Processing Day End Operations for Day {day_being_processed} ---")
+        if os.path.exists("env.test"):
+            print(f"\n--- Processing Day End Operations for Day {day_being_processed} ---")
         
         # 1. Receive materials scheduled for today
         self._receive_materials(day_being_processed)
@@ -371,7 +384,8 @@ class CustomInventoryManager:
         # This should ideally use the new self.current_day as its starting point for planning
         self.plan_production(up_to_day=self.max_simulation_day) 
         
-        print(f"--- Day {day_being_processed} processed. CIM is now at the start of Day {self.current_day} ---")
+        if os.path.exists("env.test"):
+            print(f"--- Day {day_being_processed} processed. CIM is now at the start of Day {self.current_day} ---")
         # Return a summary or status if needed
         return {
             "raw_batches_count": len(self.raw_material_batches),
@@ -381,17 +395,17 @@ class CustomInventoryManager:
         }
 
 
-    def get_today_insufficient_raw(self, day: int) -> float:
+    def get_today_insufficient_raw(self, day: int) -> int:
         # Placeholder - Detailed implementation in Part 3 (with plan_production)
         # This would typically be: planned_production_for_day - current_raw_stock_for_day
         # For now, if no production plan, it's 0.
-        planned_production_today = self.production_plan.get(day, 0.0)
+        planned_production_today = self.production_plan.get(day, 0)
         if planned_production_today <= 0:
-            return 0.0
+            return 0
         
         # A simplified check on current raw stock at the start of 'day'
         raw_stock_today = self.get_inventory_summary(day, MaterialType.RAW)["current_stock"]
-        return max(0.0, planned_production_today - raw_stock_today)
+        return max(0, planned_production_today - raw_stock_today)
 
     def get_total_insufficient_raw(self, day: int, horizon: int) -> float:
         # Placeholder - Detailed implementation in Part 3 (with plan_production)
@@ -466,12 +480,12 @@ class CustomInventoryManager:
         shortfall = max(0.0, production_on_day - true_available_raw_at_start_of_day)
         return shortfall
 
-    def get_total_insufficient_raw(self, target_day: int, horizon: int) -> float:
-        total_shortfall = 0.0
+    def get_total_insufficient_raw(self, target_day: int, horizon: int) -> int:
+        total_shortfall = 0
         
         # Initial simulated raw stock: sum of batches arrived before target_day 
         # AND pending contracts delivering before target_day but on/after current_day.
-        simulated_raw_stock = 0.0
+        simulated_raw_stock = 0
         for r_batch in self.raw_material_batches: # Already received stock
             if r_batch.arrival_or_production_time < target_day:
                 simulated_raw_stock += r_batch.remaining_quantity
@@ -482,14 +496,14 @@ class CustomInventoryManager:
         
         for i in range(horizon):
             d = target_day + i # Current day in the horizon we are evaluating
-
+    
             # Add raw materials arriving *on* day d
             # These are from pending_supply_contracts delivering on day 'd'
             for s_contract in self.pending_supply_contracts:
                 if s_contract.delivery_time == d: # Arriving exactly on this simulated day 'd'
                     simulated_raw_stock += s_contract.quantity
             
-            production_needed = self.production_plan.get(d, 0.0)
+            production_needed = self.production_plan.get(d, 0)
             
             if production_needed > 0:
                 if simulated_raw_stock >= production_needed:
@@ -510,52 +524,54 @@ class CustomInventoryManager:
             if day_to_clear in self.production_plan:
                 del self.production_plan[day_to_clear]
 
-        demands_by_day: Dict[int, float] = {}
+        demands_by_day: Dict[int, int] = {}
         for contract in self.pending_demand_contracts:
             # Only consider demands within the planning window [self.current_day, up_to_day]
             if self.current_day <= contract.delivery_time <= up_to_day:
-                demands_by_day[contract.delivery_time] = demands_by_day.get(contract.delivery_time, 0.0) + contract.quantity
+                demands_by_day[contract.delivery_time] = demands_by_day.get(contract.delivery_time, 0) + contract.quantity
         
         # Iterate backwards for demand days to implement JIT (schedule later demands first)
         sorted_demand_delivery_days = sorted(demands_by_day.keys(), reverse=True)
-
+    
         for demand_delivery_day in sorted_demand_delivery_days:
             needed_for_demand_at_delivery_day = demands_by_day[demand_delivery_day]
             remaining_to_plan_for_this_demand = needed_for_demand_at_delivery_day
-
+    
             # Try to schedule production as late as possible for this demand
             # Production for demand_delivery_day can happen on or before demand_delivery_day
             for prod_day in range(demand_delivery_day, self.current_day - 1, -1):
                 if remaining_to_plan_for_this_demand <= 0:
                     break # All planned for this specific demand
-
+    
                 # Capacity available on prod_day, considering already planned items for other demands
-                available_capacity_on_prod_day = self.daily_production_capacity - self.production_plan.get(prod_day, 0.0)
+                available_capacity_on_prod_day = self.daily_production_capacity - self.production_plan.get(prod_day, 0)
                 
                 can_plan_on_prod_day = min(remaining_to_plan_for_this_demand, available_capacity_on_prod_day)
                 
                 if can_plan_on_prod_day > 0:
-                    self.production_plan[prod_day] = self.production_plan.get(prod_day, 0.0) + can_plan_on_prod_day
+                    self.production_plan[prod_day] = self.production_plan.get(prod_day, 0) + can_plan_on_prod_day
                     remaining_to_plan_for_this_demand -= can_plan_on_prod_day
             
             if remaining_to_plan_for_this_demand > 0:
-                print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} due on day {demand_delivery_day}. "
-                      f"Unplanned quantity: {remaining_to_plan_for_this_demand}. This might be due to capacity limits or demands exceeding capacity even if planned from self.current_day.")
+                if os.path.exists("env.test"):
+                    print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} due on day {demand_delivery_day}. "
+                          f"Unplanned quantity: {remaining_to_plan_for_this_demand}. This might be due to capacity limits or demands exceeding capacity even if planned from self.current_day.")
 
 
-    def get_available_production_capacity(self, day: int) -> float:
+    def get_available_production_capacity(self, day: int) -> int:
         if day < self.current_day: # Cannot produce in the past
-            return 0.0
+            return 0
         # Considers self.daily_production_capacity and self.production_plan for that day
-        planned_production_for_day = self.production_plan.get(day, 0.0)
-        return max(0.0, self.daily_production_capacity - planned_production_for_day)
+        planned_production_for_day = self.production_plan.get(day, 0)
+        return max(0, self.daily_production_capacity - planned_production_for_day)
 
 # Example usage (optional, for testing during development)
 if __name__ == '__main__':
-    print("--- Starting CustomInventoryManager Part 2 Test ---")
+    if os.path.exists("env.test"):
+        print("--- Starting CustomInventoryManager Part 2 Test ---")
     
     # Initialize CustomInventoryManager
-    cim = CustomInventoryManager(
+    cim = InventoryManagerCIR(
         raw_storage_cost=0.01, 
         product_storage_cost=0.02,
         processing_cost=2.0,
@@ -563,13 +579,16 @@ if __name__ == '__main__':
         max_simulation_day=10,
         current_day=0
     )
-    print(f"Initialized CIM at day {cim.current_day}. Daily prod capacity: {cim.daily_production_capacity}")
+    if os.path.exists("env.test"):
+        print(f"Initialized CIM at day {cim.current_day}. Daily prod capacity: {cim.daily_production_capacity}")
 
     # --- Test plan_production ---
-    print("\n--- Testing Production Planning (JIT) ---")
+    if os.path.exists("env.test"):
+        print("\n--- Testing Production Planning (JIT) ---")
     # No demands initially, plan should be empty
     cim.plan_production() # Call explicitly for controlled test
-    print(f"Initial production plan (no demands): {cim.production_plan}") 
+    if os.path.exists("env.test"):
+        print(f"Initial production plan (no demands): {cim.production_plan}")
 
     # Add demands. add_transaction calls plan_production() internally.
     cim.add_transaction(IMContract("C1", IMContractType.DEMAND, 20, 10, 2, MaterialType.PRODUCT)) 
@@ -577,7 +596,8 @@ if __name__ == '__main__':
     cim.add_transaction(IMContract("C3", IMContractType.DEMAND, 25, 12, 1, MaterialType.PRODUCT)) 
     cim.add_transaction(IMContract("C4", IMContractType.DEMAND, 40, 13, 3, MaterialType.PRODUCT)) 
     
-    print(f"Production plan after adding demands: {dict(sorted(cim.production_plan.items()))}")
+    if os.path.exists("env.test"):
+        print(f"Production plan after adding demands: {dict(sorted(cim.production_plan.items()))}")
     # Expected JIT (Demands: D1:25, D2:35, D3:40. Capacity:30):
     # Plan for D3=40: Plan[3]=30, Plan[2]=10 (spillover)
     # Plan for D2=35 (add to existing Plan[2]=10): Plan[2] becomes 10+min(35, 30-10=20)=30. Spillover=15 to Day 1. Plan[1]=15
@@ -585,7 +605,8 @@ if __name__ == '__main__':
     # Expected: {0: 10.0, 1: 30.0, 2: 30.0, 3: 30.0}
     
     # --- Test Shortage Calculations ---
-    print("\n--- Testing Shortage Calculations ---")
+    if os.path.exists("env.test"):
+        print("\n--- Testing Shortage Calculations ---")
     # Setup: current day = 0. Production plan is as above.
     # Add raw material supplies. These will also call plan_production, but it should be idempotent for demands.
     cim.add_transaction(IMContract("S1_new", IMContractType.SUPPLY, 15, 5, 0, MaterialType.RAW)) # 15 on Day 0
@@ -593,12 +614,14 @@ if __name__ == '__main__':
     # Process day 0 to receive S1_new and produce based on Plan[0]=10
     cim.process_day_end_operations(0) # current_day becomes 1. S1_new (15) received. 10 produced. Raw left: 5.
     
-    print(f"CIM at start of Day {cim.current_day}")
-    print(f"Raw material batches: {[(b.remaining_quantity, b.arrival_or_production_time) for b in cim.raw_material_batches]}") # Expected: [(5, 0)]
-    print(f"Pending supply: {[(s.quantity, s.delivery_time, s.partner_id) for s in cim.pending_supply_contracts]}") # Expected: S2 not added yet
+    if os.path.exists("env.test"):
+        print(f"CIM at start of Day {cim.current_day}")
+        print(f"Raw material batches: {[(b.remaining_quantity, b.arrival_or_production_time) for b in cim.raw_material_batches]}") # Expected: [(5, 0)]
+        print(f"Pending supply: {[(s.quantity, s.delivery_time, s.partner_id) for s in cim.pending_supply_contracts]}") # Expected: S2 not added yet
     cim.add_transaction(IMContract("S2", IMContractType.SUPPLY, 5, 5.5, 1, MaterialType.RAW)) # 5 on Day 1. Plan re-calculated.
-    print(f"Production plan after S2: {dict(sorted(cim.production_plan.items()))}") # Should be same: {0:10, 1:30, 2:30, 3:30}
-    print(f"Pending supply after S2: {[(s.quantity, s.delivery_time, s.partner_id) for s in cim.pending_supply_contracts]}")
+    if os.path.exists("env.test"):
+        print(f"Production plan after S2: {dict(sorted(cim.production_plan.items()))}") # Should be same: {0:10, 1:30, 2:30, 3:30}
+        print(f"Pending supply after S2: {[(s.quantity, s.delivery_time, s.partner_id) for s in cim.pending_supply_contracts]}")
 
 
     # Test get_today_insufficient_raw for Day 1 (current_day is 1)
@@ -606,7 +629,8 @@ if __name__ == '__main__':
     # Available raw by start of Day 1 (strictly before day 1): Batch (5 from day 0). S2 arrives *on* Day 1, not counted for "already arrived".
     # Shortfall for Day 1 = max(0, 30 - 5) = 25.
     insufficient_day1 = cim.get_today_insufficient_raw(1) 
-    print(f"Insufficient raw for Day 1 (production P[1]=30, stock before D1 was 5): {insufficient_day1}") # Expected: 25
+    if os.path.exists("env.test"):
+        print(f"Insufficient raw for Day 1 (production P[1]=30, stock before D1 was 5): {insufficient_day1}") # Expected: 25
 
     # Test get_total_insufficient_raw for Day 1, horizon 3 (Days 1, 2, 3)
     # Current Day = 1.
@@ -624,11 +648,13 @@ if __name__ == '__main__':
     #   Production needed on Day 3: Plan[3] = 30.
     #   Shortfall D3: 30 - 0 = 30. Total Shortfall = 50 + 30 = 80. Simulated stock = 0.
     total_insufficient_d1_h3 = cim.get_total_insufficient_raw(target_day=1, horizon=3)
-    print(f"Total insufficient raw from Day 1 (horizon 3): {total_insufficient_d1_h3}") # Expected: 80
+    if os.path.exists("env.test"):
+        print(f"Total insufficient raw from Day 1 (horizon 3): {total_insufficient_d1_h3}") # Expected: 80
 
     # Test with more supply
     cim.add_transaction(IMContract("S3", IMContractType.SUPPLY, 100, 6, 2, MaterialType.RAW)) # 100 on Day 2
-    print(f"Production plan after S3: {dict(sorted(cim.production_plan.items()))}") # Should still be {0:10,1:30,2:30,3:30}
+    if os.path.exists("env.test"):
+        print(f"Production plan after S3: {dict(sorted(cim.production_plan.items()))}") # Should still be {0:10,1:30,2:30,3:30}
 
     # Recalculate total_insufficient_raw for Day 1, horizon 3 (Days 1, 2, 3) with S3
     # Current Day = 1.
@@ -646,6 +672,8 @@ if __name__ == '__main__':
     #   Production needed: Plan[3] = 30.
     #   Simulated stock becomes 70 - 30 = 40. No shortfall for Day 3. Total Shortfall = 20.
     total_insufficient_d1_h3_with_S3 = cim.get_total_insufficient_raw(target_day=1, horizon=3)
-    print(f"Total insufficient raw from Day 1 (horizon 3) with S3 added: {total_insufficient_d1_h3_with_S3}") # Expected: 20
+    if os.path.exists("env.test"):
+        print(f"Total insufficient raw from Day 1 (horizon 3) with S3 added: {total_insufficient_d1_h3_with_S3}") # Expected: 20
 
-    print("\n--- CustomInventoryManager Part 3 Test Complete ---")
+    if os.path.exists("env.test"):
+        print("\n--- CustomInventoryManager Part 3 Test Complete ---")

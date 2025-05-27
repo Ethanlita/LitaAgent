@@ -1,13 +1,10 @@
 from __future__ import annotations
-from __future__ import annotations
+
+from scml import OneShotAWI
 
 """
 LitaAgentCIR — 库存敏感型统一策略（SDK 对接版）
 =================================================
-
-* 依托 `inventory_manager_n` **现有接口**（无 `has_capacity` 等自带方法），通过辅助函数 `_has_capacity/_has_budget/_calc_target_price` 实现原期望能力。
-* 价格惩罚与市场波动使用简化逻辑（暂无全局市场统计时返回 0）。
-* 兼容 `scml>=0.3.0`，无 `sign_all_contracts()`。
 """
 
 from dataclasses import dataclass
@@ -15,50 +12,7 @@ from copy import deepcopy
 from typing import Dict, List, Sequence, Tuple, Optional # Added Optional
 import numpy as np
 
-# from inventory_manager_n import InventoryManager, MaterialType  # type: ignore
-from .custom_inventory_manager import CustomInventoryManager, IMContract, IMContractType, MaterialType
-
-# ----------------------------------------------------
-# Bayesian 罚金 / 机会成本模型
-# ----------------------------------------------------
-@dataclass
-class BetaDist:
-    a: float = 2.0
-    b: float = 2.0
-    def mean(self):
-        return self.a / (self.a + self.b)
-    def update(self, flag: bool):
-        if flag:
-            self.a += 1
-        else:
-            self.b += 1
-
-@dataclass
-class Offer(tuple):
-    """简易占位: (quantity, time, price)"""
-    def __new__(cls, data):
-        return tuple.__new__(cls, data)
-    @property
-    def quantity(self):
-        return self[0]
-    @property
-    def time(self):
-        return self[1]
-    @property
-    def price(self):
-        return self[2]
-
-class BayesPenaltyModel:
-    def __init__(self):
-        self.penalty = BetaDist(2, 2)
-        self.storage = BetaDist(2, 6)
-    def observe_shortage(self, happened: bool):
-        self.penalty.update(happened)
-    def observe_overstock(self, happened: bool):
-        self.storage.update(happened)
-    def current_weights(self) -> Tuple[float, float]:
-        return 10 * self.penalty.mean(), 4 * self.storage.mean()
-
+from .inventory_manager_cir import InventoryManagerCIR, IMContract, IMContractType, MaterialType
 
 # ------------------ 基础依赖 ------------------
 from typing import Any, Dict, List, Tuple, Iterable, Optional # Added Optional
@@ -83,56 +37,10 @@ from negmas import SAOState, SAOResponse, Outcome, Contract, ResponseType
 
 # 内部工具 & manager
 from .inventory_manager_n import (
-    InventoryManager,
     IMContract,
     IMContractType,
     MaterialType,
 )
-
-# ------------------ 辅助函数 ------------------
-# Helper functions
-
-def _split_partners(partners: List[str]) -> Tuple[List[str], List[str], List[str]]:
-    """按 50 % / 30 % / 20 % 三段切分伙伴列表。"""
-    # Split partners into 50%, 30% and 20% groups
-    n = len(partners)
-    return (
-        partners[: int(n * 0.5)],
-        partners[int(n * 0.5): int(n * 0.8)],
-        partners[int(n * 0.8):],
-    )
-
-def _distribute(q: int, n: int) -> List[int]:
-    """随机将 ``q`` 单位分配到 ``n`` 个桶，保证每桶至少 1（若可行）。"""
-    # Randomly distribute ``q`` units into ``n`` buckets, each getting at least one if possible
-    if n <= 0:
-        return []
-
-    if q < n:
-        lst = [0] * (n - q) + [1] * q
-        random.shuffle(lst)
-        return lst
-    if q == n:
-        return [1] * n
-
-    r = Counter(np_choice(n, q - n))
-    return [r.get(i, 0) + 1 for i in range(n)]
-
-class StockScorer:
-    def __init__(self, im: InventoryManager, bayes: BayesPenaltyModel, today: int, window: int = 14):
-        self.im, self.bayes, self.today, self.window = im, bayes, today, window
-
-    def _calc_raw_over(self, im, day):
-        raw_avail = im.get_inventory_summary(day, MaterialType.RAW)["estimated_available"]
-        raw_need = im.get_total_insufficient(day)  # 需在 IM 中已有或补充方法
-        return max(0, raw_avail - raw_need)
-
-# ----------------------------------------------------
-# λ_price (无市场波动)
-# ----------------------------------------------------
-
-def lambda_price(rel_t: float, deal_rate: float, λ0=0.1, α=0.5):
-    return λ0 * (1 - α * deal_rate)
 
 # ------------------ 主代理实现 ------------------
 # Main agent implementation
@@ -148,9 +56,6 @@ class LitaAgentCIR(StdSyncAgent):
     def __init__(
         self,
         *args,
-        min_profit_margin: float = 0.10,
-        cheap_price_discount: float = 0.70,
-        ptoday: float = 1.00,
         concession_curve_power: float = 1.5, 
         capacity_tight_margin_increase: float = 0.07, 
         procurement_cash_flow_limit_percent: float = 0.75, # Added from Step 6
@@ -161,13 +66,8 @@ class LitaAgentCIR(StdSyncAgent):
         super().__init__(*args, **kwargs)
 
         # —— 参数 ——
-        self.bayes = None
-        self.λ0 = None
         self.total_insufficient = None
         self.today_insufficient = None
-        self.min_profit_margin = min_profit_margin         
-        self.initial_min_profit_margin = min_profit_margin # Added from Step 7
-        self.cheap_price_discount = cheap_price_discount   
         self.procurement_cash_flow_limit_percent = procurement_cash_flow_limit_percent # Added from Step 6
         self.concession_curve_power = concession_curve_power # Added from Step 9.b
         self.capacity_tight_margin_increase = capacity_tight_margin_increase # Added from Step 9.d
@@ -176,23 +76,19 @@ class LitaAgentCIR(StdSyncAgent):
         
         if os.path.exists("env.test"): # Added from Step 11
             print(f"🤖 LitaAgentY {self.id} initialized with: \n"
-                  f"  min_profit_margin={self.min_profit_margin:.3f}, \n"
-                  f"  initial_min_profit_margin={self.initial_min_profit_margin:.3f}, \n"
-                  f"  cheap_price_discount={self.cheap_price_discount:.2f}, \n"
                   f"  procurement_cash_flow_limit_percent={self.procurement_cash_flow_limit_percent:.2f}, \n"
                   f"  concession_curve_power={self.concession_curve_power:.2f}, \n"
                   f"  capacity_tight_margin_increase={self.capacity_tight_margin_increase:.3f}\n"
                   f"  p_threshold={self.p_threshold:.2f}, q_threshold={self.q_threshold:.2f}")
 
         # —— 运行时变量 ——
-        self.im: Optional[CustomInventoryManager] = None # Updated type hint
+        self.im: Optional[InventoryManagerCIR] = None # Updated type hint
         self._market_price_avg: float = 0.0                
         self._market_material_price_avg: float = 0.0       
         self._market_product_price_avg: float = 0.0        
         self._recent_material_prices: List[float] = []     
         self._recent_product_prices: List[float] = []
-        self._avg_window: int = 30                         
-        self._ptoday: float = ptoday                       
+        self._avg_window: int = 30
         self.model = None                                  
         self.concession_model = None                       
         self._last_offer_price: Dict[str, float] = {}
@@ -215,40 +111,18 @@ class LitaAgentCIR(StdSyncAgent):
     def init(self) -> None:
         """在 World 初始化后调用；此处创建库存管理器。"""
         # Determine processing_cost
+        # 反正加工成本都是固定的，scml好像会自动优化这个，就当做0了
         processing_cost = 0.0
-        # SCML structure: awi.profile.costs is a list of costs for each process.
-        # If agent produces output product at index `my_output_product_idx`
-        # and its input is at `my_input_product_idx`, the cost is usually related to these.
-        # Assuming a single-step production for simplicity or that profile.costs[0] is relevant.
-        # A more robust way: self.awi.profile.costs[self.awi.my_output_product_idx -1] if output is not the first product
-        # or self.awi.profile.processes[self.awi.my_output_process_idx].cost
-        # Using self.awi.profile.manufacturing_cost if available, else a default.
-        if hasattr(self.awi.profile, 'manufacturing_cost'): # SCML >= 0.7.x
-            processing_cost = self.awi.profile.manufacturing_cost
-        elif hasattr(self.awi.profile, 'process_cost_per_unit'): # Older SCML
-             processing_cost = self.awi.profile.process_cost_per_unit
-        elif self.awi.profile.costs and len(self.awi.profile.costs) > 0: # Fallback to first cost
-            processing_cost = self.awi.profile.costs[0]
-        else: # Ultimate fallback
-            processing_cost = 0 # Or some other default like 1.0
-            if os.path.exists("env.test"):
-                print(f"Warning ({self.id}): Could not determine processing_cost from AWI profile. Using {processing_cost}.")
+        daily_capacity = self.awi.n_lines
 
-        daily_capacity = self.awi.n_lines * self.awi.profile.line_capacity if hasattr(self.awi.profile, 'line_capacity') else self.awi.n_lines
-        if hasattr(self.awi.profile, 'max_production_per_day'): # SCML >=0.7.x
-            daily_capacity = self.awi.profile.max_production_per_day
-
-
-        self.im = CustomInventoryManager(
-            raw_storage_cost=self.awi.current_storage_cost, # Assuming same cost for raw and product
+        self.im = InventoryManagerCIR(
+            raw_storage_cost=self.awi.current_storage_cost, # same cost for raw and product
             product_storage_cost=self.awi.current_storage_cost,
             processing_cost=processing_cost,
             daily_production_capacity=daily_capacity,
             max_simulation_day=self.awi.n_steps,
             current_day=self.awi.current_step 
         )
-        self.bayes = BayesPenaltyModel()
-        self.λ0 = 0.1
         if os.path.exists("env.test"): 
             print(f"🤖 {self.id} CustomIM initialized. Daily Capacity: {self.im.daily_production_capacity}, Processing Cost: {self.im.processing_cost_per_unit}, Current Day (IM): {self.im.current_day}")
 
@@ -280,7 +154,7 @@ class LitaAgentCIR(StdSyncAgent):
                     contract_id = exogenous_contract_id,
                     partner_id = exogenous_contract_partner,
                     type = IMContractType.SUPPLY,
-                    quantity = exogenous_contract_quantity,
+                    quantity = int(exogenous_contract_quantity),
                     price = exogenous_contract_price,
                     delivery_time = current_day, # Exogenous are for current day
                     bankruptcy_risk = 0,
@@ -343,535 +217,1050 @@ class LitaAgentCIR(StdSyncAgent):
         return pid in self.awi.my_consumers
 
     # ------------------------------------------------------------------
-    # 🌟 3-a. 需求计算和需求分配
-    # ------------------------------------------------------------------
-
-    def _distribute_todays_needs(self, partners: Iterable[str] | None = None) -> Dict[str, int]:
-        if partners is None:
-            partners = self.negotiators.keys()
-        partners = list(partners)
-        response: Dict[str, int] = {p: 0 for p in partners}
-        if not self.im : return response
-
-        suppliers = [p for p in partners if self._is_supplier(p)]
-        consumers = [p for p in partners if self._is_consumer(p)]
-
-        total_buy_need = self.im.get_total_insufficient(self.awi.current_step)
-        # Simplified sell_need: using available products
-        total_sell_need = self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)["estimated_available"]
-        
-        if suppliers and total_buy_need > 0:
-            response.update(self._distribute_to_partners(suppliers, total_buy_need))
-        if consumers and total_sell_need > 0:
-            response.update(self._distribute_to_partners(consumers, int(total_sell_need))) # Ensure int
-        return response
-
-    def _distribute_to_partners(self, partners: List[str], needs: int) -> Dict[str, int]:
-        if needs <= 0 or not partners:
-            return {p: 0 for p in partners}
-        needs = int(needs)
-        partners.sort(
-            key=lambda p: self.partner_stats.get(p, {}).get("success", 0)
-            / max(1, self.partner_stats.get(p, {}).get("contracts", 0)),
-            reverse=True,
-        )
-        k = max(1, int(len(partners) * self._ptoday))
-        k = min(k, len(partners))
-        if needs < k:
-             chosen_for_small_needs = random.sample(partners[:k], needs) 
-             quantities = [1] * needs
-             distribution = dict(zip(chosen_for_small_needs, quantities))
-        else:
-            chosen = partners[:k] 
-            quantities = _distribute(needs, len(chosen))
-            distribution = dict(zip(chosen, quantities))
-        final_distribution = {p:0 for p in partners}
-        final_distribution.update(distribution)
-        return final_distribution
-
-    # ------------------------------------------------------------------
     # 🌟 4. first_proposals — 首轮报价（可简化）
     # ------------------------------------------------------------------
-    # Modified in Step 9.a (Turn 28) & 9.d (Turn 35)
     def first_proposals(self) -> Dict[str, Outcome]:
-        partners = list(self.negotiators.keys())
-        if not partners: 
-            return {}
-        
-        # Filter partners based on layer (no buying for first layer, no selling for last layer)
-        # This logic can be kept as it's independent of the deleted demand functions
-        filtered_partners: List[str] = []
-        for pid in partners:
-            if self._is_supplier(pid) and self.awi.is_first_level:
-                continue
-            if self._is_consumer(pid) and self.awi.is_last_level:
-                continue
-            filtered_partners.append(pid)
+        """
+        Generates initial proposals to partners.
+        Prices are set to the agent's optimal based on NMI.
+        Needs/opportunities are distributed among available partners.
 
-        if not filtered_partners:
-            return {}
-
-        # Use the simplified _distribute_todays_needs
-        distribution = self._distribute_todays_needs(filtered_partners)
-        today = self.awi.current_step
+        生成向伙伴的初始报价。
+        价格根据NMI设置为代理的最优价格。
+        需求/机会被分配给可用的伙伴。
+        """
         proposals: Dict[str, Outcome] = {}
+        current_day = self.awi.current_step
+        n_steps = self.awi.n_steps
 
-        for pid, qty in distribution.items():
-            if qty <= 0:
-                continue
-            
-            nmi = self.get_nmi(pid) # Assuming get_nmi is an existing method
-            # Determine price: min for buying (from supplier), max for selling (to consumer)
-            # This logic is standard and can be kept
-            price = nmi.issues[UNIT_PRICE].min_value if self._is_supplier(pid) else nmi.issues[UNIT_PRICE].max_value
-            
-            proposals[pid] = (qty, today, price) # Create proposal (quantity, time, price)
+        if not self.im:
+            if os.path.exists("env.test"):
+                print(f"Error ({self.id} @ {current_day}): InventoryManager not initialized. Cannot generate first proposals.")
+            return proposals
 
+        # --- 1. 采购原材料以满足短缺 (Procure raw materials to meet shortfall) ---
+        target_procurement_quantity = self.total_insufficient if self.total_insufficient is not None else 0
+
+        supplier_negotiators = [
+            nid for nid in self.negotiators.keys()
+            if self._is_supplier(nid) and not (self.awi.is_first_level and nid in self.awi.my_suppliers)
+        ]
+
+        if target_procurement_quantity > 0 and supplier_negotiators:
+            # Distribute procurement needs among available suppliers
+            # 将采购需求分配给可用的供应商
+            # We aim to distribute, but also respect NMI min quantities.
+            # If total need is small, we might not be able to propose to all.
+
+            # First, get NMI min quantities for all potential suppliers to make a more informed distribution
+            supplier_min_q_map: Dict[str, int] = {}
+            for nid in supplier_negotiators:
+                nmi_s = self.get_nmi(nid)
+                min_q_s = 1 # Default min quantity
+                if nmi_s and QUANTITY in nmi_s.issues and nmi_s.issues[QUANTITY] is not None:
+                    min_q_s = int(round(nmi_s.issues[QUANTITY].min_value))
+                supplier_min_q_map[nid] = max(1, min_q_s) # Ensure min_q is at least 1
+
+            # Sort suppliers by their min_q_nmi to prioritize those with smaller minimums if total need is low
+            # This is a simple heuristic. More complex would be to solve a knapsack-like problem.
+            sorted_supplier_nids = sorted(supplier_negotiators, key=lambda nid: supplier_min_q_map[nid])
+
+            remaining_procurement_need = target_procurement_quantity
+
+            if os.path.exists("env.test"):
+                print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - Total raw material need: {target_procurement_quantity}. "
+                      f"Available suppliers: {len(sorted_supplier_nids)}.")
+
+            for nid in sorted_supplier_nids:
+                if remaining_procurement_need <= 0:
+                    break # All needs met
+
+                nmi = self.get_nmi(nid)
+                min_q_nmi = supplier_min_q_map[nid]
+                max_q_nmi = float('inf')
+                min_p_nmi = 0.01
+                # max_p_nmi is not strictly needed for proposing our best price (min_p_nmi for buying)
+                # but good to have for clamping if we were to use a different pricing strategy.
+                max_p_nmi_from_nmi = float('inf')
+                min_t_nmi, max_t_nmi = current_day + 1, n_steps - 1
+
+                if nmi:
+                    if QUANTITY in nmi.issues and nmi.issues[QUANTITY] is not None:
+                        # min_q_nmi already fetched
+                        if nmi.issues[QUANTITY].max_value is not None:
+                             max_q_nmi = nmi.issues[QUANTITY].max_value
+                    if UNIT_PRICE in nmi.issues and nmi.issues[UNIT_PRICE] is not None:
+                        if nmi.issues[UNIT_PRICE].min_value is not None:
+                            min_p_nmi = nmi.issues[UNIT_PRICE].min_value
+                        if nmi.issues[UNIT_PRICE].max_value is not None:
+                            max_p_nmi_from_nmi = nmi.issues[UNIT_PRICE].max_value
+                    if TIME in nmi.issues and nmi.issues[TIME] is not None:
+                        if nmi.issues[TIME].min_value is not None:
+                            min_t_nmi = max(min_t_nmi, nmi.issues[TIME].min_value)
+                        if nmi.issues[TIME].max_value is not None:
+                            max_t_nmi = min(max_t_nmi, nmi.issues[TIME].max_value)
+
+                # Determine proposal quantity for this supplier
+                # Propose up to remaining need, but not less than NMI min, and not more than NMI max.
+                propose_q_for_this_supplier = min(remaining_procurement_need, max_q_nmi)
+                propose_q_for_this_supplier = max(propose_q_for_this_supplier, min_q_nmi)
+
+                if propose_q_for_this_supplier <= 0 or propose_q_for_this_supplier > remaining_procurement_need :
+                    # If min_q_nmi is greater than remaining need, we can't propose to this supplier for this need.
+                    # Or if calculated quantity is invalid.
+                    if os.path.exists("env.test") and propose_q_for_this_supplier > 0 :
+                         print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - Skipping supplier {nid}. "
+                               f"Min Q ({min_q_nmi}) > remaining need ({remaining_procurement_need}) or invalid propose_q ({propose_q_for_this_supplier}).")
+                    continue
+
+                propose_q = int(round(propose_q_for_this_supplier))
+
+                # Determine proposal time
+                propose_t = max(current_day + 1, min_t_nmi)
+                propose_t = min(propose_t, max_t_nmi)
+                propose_t = max(propose_t, current_day + 1) # Final check
+                propose_t = min(propose_t, n_steps - 1)   # Final check
+
+                # Determine proposal price (agent's best price from NMI)
+                propose_p = min_p_nmi # Buying at the lowest possible NMI price
+                # Ensure price is within NMI bounds if they were fetched (max_p_nmi_from_nmi)
+                # This is more for safety, as we are picking min_p_nmi.
+                propose_p = min(propose_p, max_p_nmi_from_nmi)
+
+
+                if propose_q > 0:
+                    proposals[nid] = (propose_q, propose_t, propose_p)
+                    remaining_procurement_need -= propose_q
+                    if os.path.exists("env.test"):
+                        print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - To {nid}: Q={propose_q}, T={propose_t}, P={propose_p:.2f}. "
+                              f"Remaining need: {remaining_procurement_need}")
+
+            if remaining_procurement_need > 0 and os.path.exists("env.test"):
+                print(f"Warning ({self.id} @ {current_day}): FirstProposals (Supply) - Still have {remaining_procurement_need} unmet raw material need after proposing to all suppliers.")
+
+        # --- 2. 销售产成品 (Sell finished products) ---
+        if not self.awi.is_last_level:
+            sellable_horizon = min(3, n_steps - (current_day + 1))
+            estimated_sellable_quantity = 0
+            if sellable_horizon > 0:
+                current_product_stock = self.im.get_inventory_summary(current_day, MaterialType.PRODUCT).get('current_stock', 0)
+                planned_production_in_horizon = 0
+                for d_offset in range(sellable_horizon):
+                    planned_production_in_horizon += self.im.production_plan.get(current_day + d_offset, 0)
+                committed_sales_in_horizon = 0
+                for contract_s in self.im.pending_demand_contracts: # Renamed to avoid conflict
+                    if current_day <= contract_s.delivery_time < current_day + sellable_horizon:
+                        committed_sales_in_horizon += contract_s.quantity
+                estimated_sellable_quantity = current_product_stock + planned_production_in_horizon - committed_sales_in_horizon
+                estimated_sellable_quantity = max(0, estimated_sellable_quantity)
+
+            consumer_negotiators = [
+                nid for nid in self.negotiators.keys()
+                if self._is_consumer(nid)
+            ]
+
+            if estimated_sellable_quantity > 0 and consumer_negotiators:
+                # Similar distribution logic for selling
+                consumer_min_q_map: Dict[str, int] = {}
+                for nid_c in consumer_negotiators: # Renamed to avoid conflict
+                    nmi_c = self.get_nmi(nid_c)
+                    min_q_c = 1
+                    if nmi_c and QUANTITY in nmi_c.issues and nmi_c.issues[QUANTITY] is not None:
+                        min_q_c = int(round(nmi_c.issues[QUANTITY].min_value))
+                    consumer_min_q_map[nid_c] = max(1, min_q_c)
+
+                sorted_consumer_nids = sorted(consumer_negotiators, key=lambda nid: consumer_min_q_map[nid])
+                remaining_sellable_quantity = estimated_sellable_quantity
+
+                if os.path.exists("env.test"):
+                    print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - Estimated sellable products: {estimated_sellable_quantity}. "
+                          f"Available consumers: {len(sorted_consumer_nids)}.")
+
+                for nid in sorted_consumer_nids:
+                    if remaining_sellable_quantity <= 0:
+                        break
+
+                    nmi = self.get_nmi(nid)
+                    min_q_nmi = consumer_min_q_map[nid]
+                    max_q_nmi = float('inf')
+                    # min_p_nmi is not strictly needed for proposing our best price (max_p_nmi for selling)
+                    min_p_nmi_from_nmi = 0.01
+                    max_p_nmi = float('inf')
+                    min_t_nmi, max_t_nmi = current_day + 1, n_steps - 1
+
+                    if nmi:
+                        if QUANTITY in nmi.issues and nmi.issues[QUANTITY] is not None:
+                            if nmi.issues[QUANTITY].max_value is not None:
+                                max_q_nmi = nmi.issues[QUANTITY].max_value
+                        if UNIT_PRICE in nmi.issues and nmi.issues[UNIT_PRICE] is not None:
+                            if nmi.issues[UNIT_PRICE].min_value is not None:
+                                min_p_nmi_from_nmi = nmi.issues[UNIT_PRICE].min_value
+                            if nmi.issues[UNIT_PRICE].max_value is not None:
+                                max_p_nmi = nmi.issues[UNIT_PRICE].max_value
+                        if TIME in nmi.issues and nmi.issues[TIME] is not None:
+                            if nmi.issues[TIME].min_value is not None:
+                                min_t_nmi = max(min_t_nmi, nmi.issues[TIME].min_value)
+                            if nmi.issues[TIME].max_value is not None:
+                                max_t_nmi = min(max_t_nmi, nmi.issues[TIME].max_value)
+
+                    propose_q_for_this_consumer = min(remaining_sellable_quantity, max_q_nmi)
+                    propose_q_for_this_consumer = max(propose_q_for_this_consumer, min_q_nmi)
+
+                    if propose_q_for_this_consumer <= 0 or propose_q_for_this_consumer > remaining_sellable_quantity:
+                        if os.path.exists("env.test") and propose_q_for_this_consumer > 0:
+                            print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - Skipping consumer {nid}. "
+                                  f"Min Q ({min_q_nmi}) > remaining sellable ({remaining_sellable_quantity}) or invalid propose_q ({propose_q_for_this_consumer}).")
+                        continue
+
+                    propose_q = int(round(propose_q_for_this_consumer))
+
+                    propose_t = current_day + 2 # e.g., T+2 for selling
+                    propose_t = max(propose_t, min_t_nmi)
+                    propose_t = min(propose_t, max_t_nmi)
+                    propose_t = max(propose_t, current_day + 1) # Final check
+                    propose_t = min(propose_t, n_steps - 1)   # Final check
+
+                    # Determine proposal price (agent's best price from NMI)
+                    propose_p = max_p_nmi # Selling at the highest possible NMI price
+                    # Ensure price is within NMI bounds if they were fetched (min_p_nmi_from_nmi)
+                    propose_p = max(propose_p, min_p_nmi_from_nmi)
+
+
+                    if propose_q > 0:
+                        proposals[nid] = (propose_q, propose_t, propose_p)
+                        remaining_sellable_quantity -= propose_q
+                        if os.path.exists("env.test"):
+                             print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - To {nid}: Q={propose_q}, T={propose_t}, P={propose_p:.2f}. "
+                                   f"Remaining sellable: {remaining_sellable_quantity}")
+
+                if remaining_sellable_quantity > 0 and os.path.exists("env.test"):
+                    print(f"Warning ({self.id} @ {current_day}): FirstProposals (Demand) - Still have {remaining_sellable_quantity} sellable products after proposing to all consumers.")
+            elif os.path.exists("env.test") and consumer_negotiators:
+                 print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - No estimated sellable quantity or no consumers to propose to for sales.")
         return proposals
 
     # ------------------------------------------------------------------
     # 🌟 5. counter_all — 谈判核心（分派到子模块）
     # ------------------------------------------------------------------
     def score_offers(
-        self,
-        offers_to_evaluate: List[Tuple[str, Outcome]], # list of (negotiator_id, offer_outcome)
-        current_im: CustomInventoryManager,
-        awi: StdAWI, # For current_day, storage_costs etc.
-        bayes_model: BayesPenaltyModel
-    ) -> List[float]:
+            self,
+            offer_combination: Dict[str, Outcome],  # 一个报价组合
+            current_im: InventoryManagerCIR,  # 当前的库存管理器状态
+            awi: OneShotAWI,  # AWI 实例，用于获取当前日期、总天数等
+            # unit_shortfall_penalty: float,      # 可以作为参数传入，或在内部根据awi动态计算
+            # unit_storage_cost: float            # 这个参数在calculate_inventory_cost_score中实际未使用，成本从im_state获取
+    ) -> Tuple[float, float]:
+        """
+        评估一个报价组合的分数。
+        分数 = (接受组合前的库存成本) - (接受组合后的库存成本)。
+        成本由 calculate_inventory_cost_score 计算，越低越好。
+        因此，本方法返回的分数越高，代表该报价组合带来的成本降低越多，越有利。
+        Parameter:
+            Offer list
+            Inventory Manager(im)
+            AWI
+        Return:
+            Tuple[raw_score, norm_score]
+        """
         today = awi.current_step
-        horizon_days = 14  # Scoring window
-        w_short, w_over = bayes_model.current_weights()
+        # last_simulation_day 对于 calculate_inventory_cost_score 是包含的
+        # 如果 awi.n_steps 是总模拟步数 (例如 50, 代表天数 0 到 49),
+        # 那么最后一天是 awi.n_steps - 1.
+        last_day = awi.n_steps - 1
 
-        offer_scores = []
+        # 1. 定义单位缺货惩罚 (unit_shortfall_penalty)
+        unit_shortfall_penalty = self.awi.current_shortfall_penalty  # 默认回退值
 
-        # Baseline Inventory Assessment
-        # get_total_insufficient_raw(target_day, horizon) sums shortfalls from target_day up to target_day + horizon -1
-        shortage_before_total = current_im.get_total_insufficient_raw(today, horizon=horizon_days) 
-        urgent_shortage_today = current_im.get_today_insufficient_raw(today)
-        
-        product_surplus_before = 0.0
-        for d_offset in range(horizon_days):
-            day_in_horizon = today + d_offset
-            product_summary = current_im.get_inventory_summary(day_in_horizon, MaterialType.PRODUCT)
-            product_surplus_before += product_summary.get('estimated_available', 0.0)
-        
-        # Heuristic for normalization scale: sum of max possible shortage and surplus values over horizon
-        # This is a rough guide. If daily_production_capacity is inf, this might be problematic.
-        # Consider a large constant or a sum of all potential demands if available.
-        # For now, let's use daily_production_capacity * horizon_days as a proxy for "significant quantity"
-        max_impact_qty_heuristic = current_im.daily_production_capacity * horizon_days if current_im.daily_production_capacity != float('inf') else 10000 # Large fallback
-        if max_impact_qty_heuristic == 0: max_impact_qty_heuristic = 1000 # Ensure not zero
+        # unit_storage_cost
+        current_unit_storage_cost = self.awi.current_storage_cost
 
-        max_raw_score_scale = (w_short * max_impact_qty_heuristic) + (w_over * max_impact_qty_heuristic)
-        if max_raw_score_scale == 0: # Avoid division by zero if weights are zero
-            max_raw_score_scale = 1.0
+        # 2. 计算 score_a: 接受报价组合前的总库存成本
+        im_before = current_im.deepcopy()
+        # 假设 calculate_inventory_cost_score 是在模块级别定义的函数
+        score_a = self.calculate_inventory_cost_score(
+            im_state=im_before,
+            current_day=today,
+            last_simulation_day=self.awi.n_steps,
+            unit_shortfall_penalty=unit_shortfall_penalty,
+            unit_storage_cost=current_unit_storage_cost  # 传递虚拟值
+        )
 
+        # 3. 计算 score_b: 接受报价组合后的总库存成本
+        im_after = current_im.deepcopy()
+        for negotiator_id, offer_outcome in offer_combination.items():
+            if not offer_outcome:  # 防御性检查，确保 offer_outcome 不是 None
+                if os.path.exists("env.test"):
+                    print(
+                        f"Warning ({self.id} @ {today}): Null offer_outcome for negotiator {negotiator_id} in combination. Skipping.")
+                continue
 
-        for negotiator_id, offer_outcome in offers_to_evaluate:
             quantity, time, unit_price = offer_outcome
-            # is_seller_outcome: True if the offer is from a supplier (agent is BUYING raw material)
-            #                    False if the offer is from a consumer (agent is SELLING product, this means partner is buying)
-            # This was confusing. Let's rename: is_supply_contract_for_agent
-            is_supply_contract_for_agent = self._is_supplier(negotiator_id) 
+            is_supply_contract_for_agent = self._is_supplier(negotiator_id)
 
-            sim_im = current_im.deepcopy()
-            
             contract_type = IMContractType.SUPPLY if is_supply_contract_for_agent else IMContractType.DEMAND
             material_type = MaterialType.RAW if is_supply_contract_for_agent else MaterialType.PRODUCT
-            
-            contract = IMContract(
-                contract_id=str(uuid4()), 
+
+            # 创建临时合约用于模拟
+            sim_contract = IMContract(
+                contract_id=str(uuid4()),  # 模拟用ID
                 partner_id=negotiator_id,
                 type=contract_type,
-                quantity=quantity,
+                quantity=int(quantity),
                 price=unit_price,
                 delivery_time=time,
                 material_type=material_type,
-                bankruptcy_risk=0 # Assuming no risk for simulation
+                bankruptcy_risk=0.0  # 模拟中假设无破产风险
             )
-            sim_im.add_transaction(contract) # This also triggers sim_im.plan_production()
+            im_after.add_transaction(sim_contract)  # add_transaction 内部会调用 plan_production
 
-            # Post-Offer Inventory Assessment
-            shortage_after_total = sim_im.get_total_insufficient_raw(today, horizon=horizon_days)
-            urgent_shortage_after_today = sim_im.get_today_insufficient_raw(today)
-            
-            product_surplus_after = 0.0
-            for d_offset in range(horizon_days):
-                day_in_horizon = today + d_offset
-                product_summary_after = sim_im.get_inventory_summary(day_in_horizon, MaterialType.PRODUCT)
-                product_surplus_after += product_summary_after.get('estimated_available', 0.0)
+        score_b = self.calculate_inventory_cost_score(
+            im_state=im_after,
+            current_day=today,
+            last_simulation_day=self.awi.n_steps,
+            unit_shortfall_penalty=unit_shortfall_penalty,
+            unit_storage_cost=current_unit_storage_cost  # 传递虚拟值
+        )
 
-            # Calculate Score Components
-            # a. Inventory Balance Score (IBS)
-            delta_shortage = shortage_before_total - shortage_after_total # Positive is good
-            delta_product_surplus = product_surplus_before - product_surplus_after # Positive is good (reduced surplus)
-            
-            # raw_score_ibs: Higher is better.
-            # Penalize increase in product surplus (delta_product_surplus is negative) with 0.1 factor.
-            # Benefit from decrease in product surplus (delta_product_surplus is positive) fully.
-            penalty_for_surplus_increase = 0.0
-            benefit_from_surplus_decrease = 0.0
-
-            if delta_product_surplus < 0: # Product surplus increased
-                penalty_for_surplus_increase = -delta_product_surplus * 0.1 # -delta is positive, then apply penalty factor
-            else: # Product surplus decreased or stayed same
-                benefit_from_surplus_decrease = delta_product_surplus # Full benefit for reduction
-
-            raw_score_ibs = (w_short * delta_shortage) + (w_over * benefit_from_surplus_decrease) - (w_over * penalty_for_surplus_increase)
-            
-            # Normalization of IBS to [0,1] using sigmoid-like scaling centered at 0.5
-            norm_ibs = 0.5 + 0.5 * (raw_score_ibs / max_raw_score_scale)
-            norm_ibs = max(0.0, min(1.0, norm_ibs)) # Clamp to [0,1]
-
-            # b. Time-based Bonus (TBB) - Placeholder
-            tbb = 0.0 # Not implemented as per requirements
-
-            # c. Urgency Bonus (UB)
-            ub = 0.0
-            if urgent_shortage_today > 0:
-                urgent_need_addressed = urgent_shortage_today - urgent_shortage_after_today
-                if urgent_need_addressed > 0:
-                    ub = (urgent_need_addressed / urgent_shortage_today) * 0.20 # Max 20% contribution
-            ub = max(0.0, min(ub, 0.20)) # Clamp UB
-            
-            # Combine Scores
-            # Final score is primarily IBS, with UB providing a bonus on top of IBS's normalized value.
-            # Let IBS range from 0 to (1-max_UB_potential=0.8), then add UB.
-            # final_score = (norm_ibs * (1.0 - 0.20)) + ub 
-            # OR as specified: norm_ibs * (1-ub) + ub, which gives UB more weight if norm_ibs is low.
-            final_score = norm_ibs * (1.0 - ub) + ub # Let's stick to the prompt's formula
-            final_score = max(0.0, min(1.0, final_score)) # Clamp to [0,1]
-
-            offer_scores.append(final_score)
-            
+        # 4. 确保成本分数 a 和 b 不为负 (成本理论上应 >= 0)
+        if score_a < 0:
             if os.path.exists("env.test"):
-                print(f"Offer Eval ({self.id} @ {today}): NegID={negotiator_id}, Qty={quantity}, Prc={unit_price}, Time={time}, IsSupplyContract={is_supply_contract_for_agent}\n"
-                      f"  InvBefore: ShrtTot={shortage_before_total:.2f}, UrgentShrt={urgent_shortage_today:.2f}, ProdSurp={product_surplus_before:.2f}\n"
-                      f"  InvAfter : ShrtTot={shortage_after_total:.2f}, UrgentShrt={urgent_shortage_after_today:.2f}, ProdSurp={product_surplus_after:.2f}\n"
-                      f"  Deltas   : Shrt={delta_shortage:.2f}, ProdSurp={delta_product_surplus:.2f}\n"
-                      f"  Scores   : IBS_raw={raw_score_ibs:.2f}, IBS_norm={norm_ibs:.3f}, UB={ub:.3f}, Final={final_score:.3f}")
-
-
-        return offer_scores
-
-    def counter_all(
-        self,
-        offers: Dict[str, Outcome],
-        states: Dict[str, SAOState],
-    ) -> Dict[str, SAOResponse]:
-        responses: Dict[str, SAOResponse] = {}
-
-        if not offers:
-            return responses
-
-        # Prepare offers for scoring
-        offers_to_evaluate = []
-        for nid, outcome in offers.items():
-            if outcome: # Ensure outcome is not None
-                 offers_to_evaluate.append((nid, outcome))
-            else: # Handle cases where an offer might be None (e.g. initial empty offers)
-                if os.path.exists("env.test"):
-                    print(f"Warning: Received None outcome for negotiator {nid} in counter_all.")
-
-
-        if not offers_to_evaluate: # If all offers were None or empty
-            for nid in offers.keys(): # Still need to respond, typically reject
-                 responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-            return responses
-            
-        # Score offers
-        # Ensure self.im, self.awi, self.bayes are available and correctly passed
-        if not self.im or not self.awi or not self.bayes:
+                print(
+                    f"Warning ({self.id} @ {today}): score_a (cost_before) is negative: {score_a:.2f}. Clamping to 0.")
+            score_a = 0.0
+        if score_b < 0:
             if os.path.exists("env.test"):
-                print("Error: IM, AWI, or Bayes model not initialized. Cannot score offers.")
-            # Fallback: reject all if critical components are missing
-            for nid, offer_outcome_tuple in offers_to_evaluate:
-                responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-            return responses
+                print(f"Warning ({self.id} @ {today}): score_b (cost_after) is negative: {score_b:.2f}. Clamping to 0.")
+            score_b = 0.0
 
-        scores = self.score_offers(offers_to_evaluate, self.im, self.awi, self.bayes)
+        # 5. 计算最终分数: score_a - score_b
+        #    如果 score_b < score_a (接受组合后成本降低), 则 final_score 为正 (好)
+        #    如果 score_b > score_a (接受组合后成本增加), 则 final_score 为负 (差)
+        raw_final_score = score_a - score_b
+        normalized_final_score = self.normalize_final_score(raw_final_score, score_a)
 
         if os.path.exists("env.test"):
-            print(f"Scores for offers at step {self.awi.current_step}: {scores}")
+            offer_details_str_list = []
+            for nid, outcm in offer_combination.items():
+                if outcm:
+                    offer_details_str_list.append(
+                        f"NID({nid}):Q({outcm[QUANTITY]})P({outcm[UNIT_PRICE]})T({outcm[TIME]})")
+                else:
+                    offer_details_str_list.append(f"NID({nid}):NullOutcome")
+            offers_str = ", ".join(offer_details_str_list) if offer_details_str_list else "No offers in combo"
 
-        # TODO: Use scores for selection and decision logic (Accept, Reject, Counter)
-        # For now, reject all offers (as per previous placeholder)
-        # This part will be implemented in subsequent steps.
-        # For now, this method is used by _evaluate_offer_combinations.
-        # The direct call from counter_all to score_offers will be replaced.
-        pass # score_offers is now primarily a helper for _evaluate_offer_combinations
+            print(f"ScoreOffers ({self.id} @ {today}): Combo Eval: [{offers_str}]\n"
+                  f"  Cost Before (score_a)   : {score_a:.2f}\n"
+                  f"  Cost After (score_b)    : {score_b:.2f}\n"
+                  f"  Raw Score (a-b)         : {raw_final_score:.2f}\n"
+                  f"  Normalized Score        : {normalized_final_score:.3f}")
 
-    def _calculate_combination_profit(self, combination: List[Tuple[str, Outcome]]) -> float:
-        """Calculates the simple profit for a combination of offers."""
-        profit = 0.0
-        for negotiator_id, offer_outcome in combination:
-            quantity, _, unit_price = offer_outcome
-            if self._is_supplier(negotiator_id): # Agent is buying raw materials
-                profit -= quantity * unit_price
-            else: # Agent is selling products
-                profit += quantity * unit_price
-        return profit
+        return (raw_final_score, normalized_final_score)
 
-    def _evaluate_offer_combinations(self,
-                                    offers: Dict[str, Outcome],
-                                    current_im: CustomInventoryManager,
-                                    awi: StdAWI,
-                                    bayes_model: BayesPenaltyModel) \
-                                    -> Tuple[Optional[List[Tuple[str, Outcome]]], float, float]: # (best_combo, best_score, best_profit)
-        if not offers:
-            return None, -1.0, 0.0
+    def normalize_final_score(self, final_score: float, score_a: float) -> float:
+        """
+        将 final_score (score_a - score_b) 归一化到 [0, 1] 区间。
+        score_a 是接受组合前的成本。
+        """
+        if score_a < 0:  # 理论上 score_a (成本) 不应为负，做个保护
+            score_a = 0.0
 
-        today = awi.current_step
-        horizon_days = 14
-        w_short, w_over = bayes_model.current_weights()
+        if score_a == 0:
+            # 如果初始成本为0:
+            # final_score = -score_b
+            if final_score == 0:  # score_b 也为0, 成本保持为0
+                return 0.5
+            else:  # final_score < 0 (因为 score_b > 0), 成本增加了
+                # 使用一个快速下降的函数，例如 0.5 * exp(final_score / C) C是一个缩放常数
+                # 或者更简单地，如果成本增加，就给一个较低的分数
+                return 0.25  # 或者更低，表示成本从0增加是不好的
 
-        offers_list = list(offers.items()) # List of (nid, outcome)
+        # 当 score_a > 0:
+        # relative_improvement_ratio = final_score / score_a
+        # final_score = score_a - score_b
+        # relative_improvement_ratio = (score_a - score_b) / score_a = 1 - (score_b / score_a)
+        #
+        # 这个比率:
+        # 如果 score_b = 0 (成本降为0) => ratio = 1
+        # 如果 score_b = score_a (成本不变) => ratio = 0
+        # 如果 score_b = 2 * score_a (成本翻倍) => ratio = -1
+        #
+        # 我们希望:
+        # ratio = 1 (final_score = score_a) -> normalized = 1.0
+        # ratio = 0 (final_score = 0)     -> normalized = 0.5
+        # ratio = -1 (final_score = -score_a) -> normalized = 0.0 (或接近0)
 
-        # Generate combinations: singles and pairs. Optional: triplets if few offers.
-        all_eval_combinations: List[List[Tuple[str, Outcome]]] = []
-        all_eval_combinations.extend([[item] for item in offers_list]) # Singles
-        if len(offers_list) >= 2:
-            for pair in iter_combinations(offers_list, 2):
-                all_eval_combinations.append(list(pair))
-        
-        # Optional: Add triplets if the number of offers is small to manage complexity
-        # For example, if len(offers_list) < 7, then max 7C3 = 35 triplet combinations.
-        # Let's set a threshold for total combinations to avoid excessive computation.
-        # Max combinations: N (singles) + N*(N-1)/2 (pairs) + N*(N-1)*(N-2)/6 (triplets)
-        if len(offers_list) >=3 and len(offers_list) < 7 : # Limit for triplets
-             for triplet in iter_combinations(offers_list, 3):
-                all_eval_combinations.append(list(triplet))
+        # 使用一个修改的 logistic 函数或者简单的映射
+        # x 是 final_score。我们希望 x=0 时为 0.5，x=score_a 时接近1，x=-score_a 时接近0。
+        # 可以将 final_score 先映射到 [-1, 1] 左右的范围（如果以 score_a 为尺度）
 
+        scaled_score = final_score / score_a  # 这个值理论上可以是 (-inf, 1]
 
-        if not all_eval_combinations:
-            return None, -1.0, 0.0
+        # 使用 logistic 函数: 1 / (1 + exp(-k * x))
+        # 我们希望 x=0 (scaled_score=0) 时为 0.5, 这是 logistic 函数在输入为0时的自然行为。
+        # 我们需要选择 k。
+        # 当 scaled_score = 1 (成本降为0), final_score = score_a.  exp(-k)
+        # 当 scaled_score = -1 (成本翻倍), final_score = -score_a. exp(k)
 
-        # Baseline Inventory Assessment (once)
-        shortage_before_total = current_im.get_total_insufficient_raw(today, horizon=horizon_days)
-        urgent_shortage_today = current_im.get_today_insufficient_raw(today)
-        product_surplus_before = sum(
-            current_im.get_inventory_summary(today + d_offset, MaterialType.PRODUCT).get('estimated_available', 0.0)
-            for d_offset in range(horizon_days)
-        )
-        max_impact_qty_heuristic = current_im.daily_production_capacity * horizon_days \
-            if current_im.daily_production_capacity != float('inf') else 10000
-        if max_impact_qty_heuristic == 0: max_impact_qty_heuristic = 1000
-        max_raw_score_scale = (w_short * max_impact_qty_heuristic) + (w_over * max_impact_qty_heuristic)
-        if max_raw_score_scale == 0: max_raw_score_scale = 1.0
+        # k 值决定了曲线的陡峭程度。k越大，曲线在0附近越陡。
+        # 例如 k=2:
+        # scaled_score = 1  => 1 / (1 + exp(-2)) = 1 / (1 + 0.135) = 0.88
+        # scaled_score = 0  => 0.5
+        # scaled_score = -1 => 1 / (1 + exp(2))  = 1 / (1 + 7.389) = 0.119
 
-        scored_combinations = [] # List of (combo_final_score, combo_profit, combo_object)
+        # 如果希望 scaled_score=1 时更接近1，scaled_score=-1 时更接近0，可以增大k
+        # 例如 k=4:
+        # scaled_score = 1  => 1 / (1 + exp(-4)) = 1 / (1 + 0.018) = 0.982
+        # scaled_score = -1 => 1 / (1 + exp(4))  = 1 / (1 + 54.6)  = 0.018
 
-        for combo in all_eval_combinations:
-            sim_im = current_im.deepcopy()
-            combo_valid = True
-            for negotiator_id, offer_outcome in combo:
-                quantity, time, unit_price = offer_outcome
-                is_supply_contract_for_agent = self._is_supplier(negotiator_id)
-                contract_type = IMContractType.SUPPLY if is_supply_contract_for_agent else IMContractType.DEMAND
-                material_type = MaterialType.RAW if is_supply_contract_for_agent else MaterialType.PRODUCT
-                
-                contract = IMContract(
-                    contract_id=str(uuid4()), partner_id=negotiator_id, type=contract_type,
-                    quantity=quantity, price=unit_price, delivery_time=time,
-                    material_type=material_type, bankruptcy_risk=0
-                )
-                if not sim_im.add_transaction(contract): # If any transaction fails (e.g., past date)
-                    combo_valid = False
-                    break 
-            
-            if not combo_valid:
+        k = 2.5  # 可调参数
+
+        # 为了防止 scaled_score 过大或过小导致 exp 溢出或精度问题，可以先裁剪一下
+        # 虽然 final_score / score_a 的上限是1，但下限可以是负无穷。
+        # 但实际中，成本增加几倍已经很差了。
+        # 例如，如果成本增加了10倍 (score_b = 11 * score_a), final_score = -10 * score_a, scaled_score = -10
+        # exp(-k * -10) = exp(25) 会非常大。
+
+        # 我们可以对 scaled_score 进行裁剪，例如到 [-3, 1]
+        # 如果 final_score > score_a (理论上不可能，因为 score_b >= 0), 则 final_score/score_a > 1
+        # 但由于 score_b >= 0, final_score = score_a - score_b <= score_a. 所以 final_score / score_a <= 1.
+
+        # 如果 final_score < -2 * score_a (即 score_b > 3 * score_a, 成本变成原来的3倍以上)
+        # 此时 scaled_score < -2。
+        # 我们可以认为成本增加超过一定倍数后，分数都应该非常接近0。
+
+        # 调整一下，让 final_score = 0 对应 0.5
+        # final_score = score_a (最大收益) 对应 接近 1
+        # final_score = -score_a (成本增加一倍) 对应 接近 0
+        # final_score = -2*score_a (成本增加两倍) 对应 更接近 0
+
+        # 考虑使用 final_score 作为 logistic 函数的直接输入，但需要一个缩放因子。
+        # x0 设为0。 k 需要根据 score_a 来调整，或者 final_score 除以 score_a。
+
+        # 使用之前推导的 scaled_score = final_score / score_a
+        # 这个 scaled_score 的理想范围是 [-1, 1]，对应成本翻倍到成本降为0。
+        # 0 对应成本不变。
+
+        # normalized = 0.5 + 0.5 * scaled_score  (如果 scaled_score 在 [-1, 1])
+        # scaled_score = 1  => 0.5 + 0.5 = 1
+        # scaled_score = 0  => 0.5
+        # scaled_score = -1 => 0.5 - 0.5 = 0
+        # 这个是最简单的线性映射。
+
+        # 如果 final_score / score_a 可能超出 [-1, 1]：
+        # 例如 final_score = -1.5 * score_a => scaled_score = -1.5 => 0.5 - 0.75 = -0.25 (需要裁剪)
+        # 例如 final_score = 0.5 * score_a => scaled_score = 0.5 => 0.5 + 0.25 = 0.75 (在范围内)
+
+        # 线性映射并裁剪:
+        normalized_value = 0.5 + 0.5 * (final_score / score_a)
+
+        # 裁剪到 [0, 1]
+        normalized_value = max(0.0, min(1.0, normalized_value))
+
+        return normalized_value
+
+    def calculate_inventory_cost_score(
+            self,
+            im_state: InventoryManagerCIR,
+            current_day: int,
+            last_simulation_day: int,
+            unit_shortfall_penalty: float,
+            unit_storage_cost: float
+            # Assuming a single storage cost for simplicity, or it can be passed as a dict/tuple
+    ) -> float:
+        total_cost_score = 0.0
+
+        # Ensure the production plan within the im_state is up-to-date for the relevant horizon
+        im_state.plan_production(up_to_day=last_simulation_day)
+
+        # A. Calculate Product Shortfall Penalty
+        # This needs to simulate day-by-day product availability vs. demand.
+        # We'll make a temporary copy to simulate forward without altering the original im_state's current_day.
+        sim_eval_im = im_state.deepcopy()  # Make a copy to simulate operations without affecting the original
+
+        # Ensure the simulation starts from the correct day for evaluation
+        sim_eval_im.current_day = current_day
+
+        for d in range(current_day + 1, last_simulation_day + 1):
+            # 1. Demands due on day 'd'
+            total_demand_qty_on_d = 0.0
+            for contract in sim_eval_im.pending_demand_contracts:
+                if contract.delivery_time == d:
+                    total_demand_qty_on_d += contract.quantity
+
+            if total_demand_qty_on_d == 0:  # No demand, no shortfall for this day based on contracts
+                # Still need to account for storage for this day if we continue the loop here.
+                # The storage calculation be+low will handle it.
+                pass
+
+            # 2. Total products available to deliver on day 'd'
+            total_available_to_deliver_on_d = sim_eval_im.get_inventory_summary(d, MaterialType.PRODUCT)['estimated_available']
+
+            # 3. Calculate shortfall for day 'd'
+            if total_demand_qty_on_d > total_available_to_deliver_on_d:
+                shortfall_on_d = total_demand_qty_on_d - total_available_to_deliver_on_d
+                total_cost_score += shortfall_on_d * unit_shortfall_penalty
                 if os.path.exists("env.test"):
-                    print(f"Debug ({self.id}): Combo invalid due to transaction error: {combo}")
-                continue # Skip this combination
+                    print(
+                        f"Debug (calc_inv_cost @ day {d}): Demand={total_demand_qty_on_d}, Avail={total_available_to_deliver_on_d}, Shortfall={shortfall_on_d}, Penalty={shortfall_on_d * unit_shortfall_penalty}")
 
-            # Post-Combination Assessment
-            shortage_after_total = sim_im.get_total_insufficient_raw(today, horizon=horizon_days)
-            urgent_shortage_after_today = sim_im.get_today_insufficient_raw(today)
-            product_surplus_after = sum(
-                sim_im.get_inventory_summary(today + d_offset, MaterialType.PRODUCT).get('estimated_available', 0.0)
-                for d_offset in range(horizon_days)
-            )
+        # B. Calculate Total Storage Cost
+        # Iterate again, this time using the original im_state, assuming its current_day is the actual start
+        # or use a fresh copy if the above loop modified im_state in ways not intended for storage calculation.
+        # For storage, we need SOD stock which is then stored for the whole day.
+        # The loop for shortfall above *did* modify sim_eval_im's batches.
+        # So, we need a fresh start for storage, or use the final state of sim_eval_im if that's desired.
+        # The prompt says: "current_stock from get_inventory_summary(d, ...) refers to stock at the beginning of day d"
+        # This means we can iterate using the *original* im_state for storage calculation if we interpret it as
+        # calculating storage cost for *future* days based on the *initial* state + plan.
+        # However, if decisions (like accepting an offer) are made based on this score, the storage cost
+        # should reflect the state *after* those decisions.
+        # Given this is a helper to score a *potential* state (im_state), we calculate storage on that state.
 
-            # Calculate Score Components (IBS, UB)
-            delta_shortage = shortage_before_total - shortage_after_total
-            delta_product_surplus = product_surplus_before - product_surplus_after
-            
-            penalty_for_surplus_increase = -delta_product_surplus * 0.1 if delta_product_surplus < 0 else 0.0
-            benefit_from_surplus_decrease = delta_product_surplus if delta_product_surplus > 0 else 0.0
-            raw_score_ibs = (w_short * delta_shortage) + (w_over * benefit_from_surplus_decrease) - (w_over * penalty_for_surplus_increase)
-            
-            norm_ibs = max(0.0, min(1.0, 0.5 + 0.5 * (raw_score_ibs / max_raw_score_scale)))
+        # Re-initialize a sim for storage cost calculation based on the *final state* of inventory after all demands met/shortfalled
+        # This uses the sim_eval_im which has processed deliveries/productions up to last_simulation_day
 
-            ub = 0.0
-            if urgent_shortage_today > 0:
-                urgent_need_addressed = urgent_shortage_today - urgent_shortage_after_today
-                if urgent_need_addressed > 0:
-                    ub = min(0.20, (urgent_need_addressed / urgent_shortage_today) * 0.20)
-            
-            combo_final_score = max(0.0, min(1.0, norm_ibs * (1.0 - ub) + ub))
-            combo_profit = self._calculate_combination_profit(combo)
-            
-            scored_combinations.append({'score': combo_final_score, 'profit': combo_profit, 'combo': combo})
+        # Let's recalculate storage costs based on the state of 'im_state' as passed, assuming it's the state to evaluate.
+        # The shortfall loop *simulated* operations on `sim_eval_im`.
+        # For calculating storage cost of `im_state`, we should use `im_state` directly as it represents
+        # the state *after* a hypothetical decision (e.g. accepting an offer).
+        # The production plan of im_state is already updated.
+
+        for d in range(current_day, last_simulation_day + 1):
+            if(os.path.exists("env.test")):
+                print(f"Debug (calc_inv_cost @ day {d}): Current day in im: {im_state.current_day} (Should be equal)")
+            raw_stock_info = im_state.get_inventory_summary(d, MaterialType.RAW)
+            product_stock_info = im_state.get_inventory_summary(d, MaterialType.PRODUCT)
+
+            # As per prompt clarification: 'current_stock' is SOD, stored for the entirety of day d.
+            daily_storage_cost = (
+                        raw_stock_info.get('current_stock', 0.0) * unit_storage_cost +
+                        product_stock_info.get('current_stock', 0.0) * unit_storage_cost)
+            total_cost_score += daily_storage_cost
+            if os.path.exists("env.test"):
+                print(
+                    f"Debug (calc_inv_cost @ day {d}): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
+            im_state.process_day_end_operations(d)
+        # C. Calculate excess inventory penalty
+        # Get Real Inventory the day after last day, and add a penalty
+        im_curday = im_state.current_day
+        if im_curday == last_simulation_day - 1:
+            im_state.process_day_end_operations(im_curday)
+        # else im_curday = last_simulation_day
+        print(f"Debug (calc inventory penalty): Day in im: {im_state.current_day} Last simulation day: {last_simulation_day}")
+        remain_raw = im_state.get_inventory_summary(im_state.current_day, MaterialType.RAW)['current_stock']
+        remain_product = im_state.get_inventory_summary(im_state.current_day, MaterialType.PRODUCT)['current_stock']
+        inventory_penalty = (remain_raw + remain_product) *  self.awi.current_disposal_cost
+        total_cost_score += inventory_penalty
+
+        return total_cost_score
+
+    def _evaluate_offer_combinations(
+            self,
+            offers: Dict[str, Outcome],
+            im: InventoryManagerCIR,
+            awi: OneShotAWI,
+    ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float, float]:
+        """
+            评估所有可能的报价组合，并返回得分最高的组合及其分数和盈利。
+
+            一个组合至少包含一个报价，最多包含所有传入的报价。
+            “分数”是指由 score_offers 方法计算得到的归一化分数。
+            “盈利”是指由 score_offers 方法计算得到的原始成本降低量 (score_a - score_b)。
+
+            返回:
+                Tuple[Optional[List[Tuple[str, Outcome]]], float, float]:
+                - 最佳报价组合 (以 (negotiator_id, Outcome) 元组列表的形式表示)，如果没有有效组合则为 None。
+                - 最佳组合的归一化分数 (如果在 [0,1] 区间，否则为 -1.0 表示无有效分数)。
+                - 最佳组合的原始盈利 (成本降低量)(这玩意没什么意义，不要在意他)
+        """
+        if not offers:
+            return None, -1.0, 0.0  # 没有报价，无法形成组合
+
+        # 将字典形式的 offers 转换为 (negotiator_id, Outcome) 元组的列表，方便组合
+        offer_items_list: List[Tuple[str, Outcome]] = list(offers.items())
+
+        best_combination_items: Optional[List[Tuple[str, Outcome]]] = None
+        # 归一化分数通常在 [0, 1] 区间，初始化为区间外的值
+        highest_normalized_score: float = -1.0
+        # 盈利
+        profit_of_best_combination: float = 0.0
+
+        # 遍历所有可能的组合大小，从1到len(offer_items_list)
+        for i in range(1, len(offer_items_list) + 1):
+            # 生成当前大小的所有组合
+            # iter_combinations 返回的是元组的元组，例如 ((nid1, out1), (nid2, out2))
+            for combo_as_tuple_of_tuples in iter_combinations(offer_items_list, i):
+                current_combination_list_of_tuples = list(combo_as_tuple_of_tuples)
+                current_combination_dict = dict(current_combination_list_of_tuples)
+
+                # 1. 计算成本降低量和归一化分数
+                # 调用 score_offers 获取原始成本降低和归一化分数
+                # 假设 score_offers 返回 (raw_cost_reduction, normalized_score)
+                raw_cost_reduction, normalized_score = self.score_offers(
+                    offer_combination=current_combination_dict,
+                    current_im=im,
+                    awi=awi
+                )
+
+                # 2. 计算该组合的直接盈利
+                raw_current_profit, normalized_current_profit = self._calculate_combination_profit_and_normalize(
+                    offer_combination=current_combination_dict,
+                    awi=awi
+                )
+
+                if os.path.exists("env.test"):
+                    combo_nids_str = [item[0] for item in current_combination_list_of_tuples]
+                    print(f"Debug ({self.id} @ {awi.current_step}): Evaluating Combo NIDs: {combo_nids_str}, "
+                          f"RawCostReduction(Deprecated): {raw_cost_reduction:.2f}, NormScore: {normalized_score:.3f}, "
+                          f"CalculatedProfit: {normalized_current_profit:.2f}")
+
+                # 更新最佳组合
+                if normalized_score > highest_normalized_score:
+                    highest_normalized_score = normalized_score
+                    best_combination_items = current_combination_list_of_tuples
+                    profit_of_best_combination = normalized_current_profit
+                elif normalized_score == highest_normalized_score:
+                    # 如果归一化分数相同，选择原始盈利（成本降低量）更大的那个
+                    if normalized_current_profit > profit_of_best_combination:
+                        best_combination_items = current_combination_list_of_tuples
+                        profit_of_best_combination = normalized_current_profit
+
+        if os.path.exists("env.test"):
+            if best_combination_items:
+                best_combo_nids_str = [item[0] for item in best_combination_items]
+                print(f"Debug ({self.id} @ {awi.current_step}): Best Combo Found: NIDs: {best_combo_nids_str}, "
+                      f"HighestNormScore: {highest_normalized_score:.3f}, "
+                      f"ProfitOfBest (CostReduction): {profit_of_best_combination:.2f}")
+            else:
+                print(f"Debug ({self.id} @ {awi.current_step}): No suitable offer combination found "
+                      f"(highest_normalized_score: {highest_normalized_score:.3f}).")
+
+        return best_combination_items, highest_normalized_score, profit_of_best_combination
+
+    def _calculate_combination_profit_and_normalize(
+            self,
+            offer_combination: Dict[str, Outcome],
+            awi: OneShotAWI,
+            # production_cost_per_unit: float = 0.0 # 生产成本明确为0
+    ) -> Tuple[float, float]:
+        """
+        计算报价组合的直接盈利，并将其归一化到 [-1, 1] 区间。
+        盈利 = (销售收入) - (采购支出)。生产成本在此版本中设为0。
+        归一化基于从 NMI 获取的估算最大潜在盈利和最大潜在亏损。
+        1.0 表示非常好的盈利。
+        0.0 表示盈亏平衡。
+        -1.0 表示较大的亏损。
+
+        返回:
+            Tuple[float, float]: (原始盈利, 归一化后的盈利)
+        """
+        actual_profit = 0.0
+        # Represents the profit (revenue - cost) in the best-case price scenario for the agent
+        max_potential_profit_scenario = 0.0
+        # Represents the profit (revenue - cost) in the worst-case price scenario for the agent
+        min_potential_profit_scenario = 0.0  # This will likely be negative, representing max loss
+
+        for negotiator_id, outcome in offer_combination.items():
+            if not outcome:
+                continue
+            quantity, _, unit_price = outcome
+
+            nmi = self.get_nmi(negotiator_id)
+            is_selling_to_consumer = not self._is_supplier(negotiator_id)
+
+            min_est_price = nmi.issues[UNIT_PRICE].min_value
+            max_est_price = nmi.issues[UNIT_PRICE].max_value
+            if nmi is None and os.path.exists("env.test"):  # Log if NMI was missing and fallback was used
+                print(
+                    f"Warning ({self.id} @ {awi.current_step}): NMI missing for {negotiator_id}. Using heuristic price bounds: min={min_est_price:.2f}, max={max_est_price:.2f}")
+
+            if is_selling_to_consumer:  # We are selling products
+                # Actual profit from this offer
+                actual_profit += quantity * unit_price
+                # Contribution to max potential profit scenario (sell at highest price)
+                max_potential_profit_scenario += quantity * max_est_price
+                # Contribution to min potential profit scenario (sell at lowest price)
+                min_potential_profit_scenario += quantity * min_est_price
+            else:  # We are buying raw materials
+                # Actual profit from this offer (it's a cost)
+                actual_profit -= quantity * unit_price
+                # Contribution to max potential profit scenario (buy at lowest price)
+                # Cost is minimized, so profit contribution is - (quantity * min_est_price)
+                max_potential_profit_scenario -= quantity * min_est_price
+                # Contribution to min potential profit scenario (buy at highest price)
+                # Cost is maximized, so profit contribution is - (quantity * max_est_price)
+                min_potential_profit_scenario -= quantity * max_est_price
+
+        # Normalize the actual_profit
+        normalized_profit = 0.0
+
+        # The range of potential profit is [min_potential_profit_scenario, max_potential_profit_scenario]
+        # We want to map this range to [-1, 1]
+
+        profit_range = max_potential_profit_scenario - min_potential_profit_scenario
+
+        if profit_range <= 1e-6:  # Effectively zero or invalid range (e.g. max < min)
+            if actual_profit > 1e-6:  # If there's actual profit despite no discernible range
+                normalized_profit = 1.0
+            elif actual_profit < -1e-6:  # If there's actual loss
+                normalized_profit = -1.0
+            else:  # actual_profit is also near zero
+                normalized_profit = 0.0
+        else:
+            # Linear mapping: y = (y_max - y_min) * (x - x_min) / (x_max - x_min) + y_min
+            # Here, x is actual_profit, [x_min, x_max] is [min_potential_profit_scenario, max_potential_profit_scenario]
+            # And [y_min, y_max] is [-1, 1]
+            normalized_profit = -1.0 + 2.0 * (actual_profit - min_potential_profit_scenario) / profit_range
+
+        # Clamp the result to [-1, 1] in case actual_profit falls outside the estimated scenario range
+        normalized_profit = max(-1.0, min(1.0, normalized_profit))
+
+        if os.path.exists("env.test"):
+            print(f"Debug ({self.id} @ {awi.current_step}): ProfitCalcNorm[-1,1] (NMI-based) for Combo: "
+                  f"ActualProfit={actual_profit:.2f}, "
+                  f"MaxPotentialProfitScen={max_potential_profit_scenario:.2f} (Best Case Profit), "
+                  f"MinPotentialProfitScen={min_potential_profit_scenario:.2f} (Worst Case Profit), "
+                  f"NormalizedProfit={normalized_profit:.3f}")
+
+        return actual_profit, normalized_profit
+
+    def _generate_counter_offer(
+            self,
+            negotiator_id: str,
+            original_offer: Outcome,
+            optimize_for_inventory: bool,
+            optimize_for_profit: bool,
+            inventory_target_quantity: Optional[int] = None
+            # For Case 1.2, specific need from this partner / 针对情况1.2，来自此伙伴的特定需求
+    ) -> Optional[Outcome]:
+        """
+        Generates a counter-offer based on optimization goals using heuristics.
+        It adjusts quantity, time, and price of the original_offer.
+        For time adjustments, it simulates the impact on inventory score.
+        使用启发式方法，根据优化目标生成还价。
+        它会调整原始报价的数量、时间和价格。
+        对于时间调整，它会模拟其对库存分数的影响。
+        """
+        orig_q, orig_t, orig_p = original_offer
+
+        nmi = self.get_nmi(negotiator_id)
+
+        min_q_nmi, max_q_nmi = nmi.issues[QUANTITY].min_value, nmi.issues[QUANTITY].max_value
+        min_p_nmi, max_p_nmi = nmi.issues[UNIT_PRICE].min_value, nmi.issues[UNIT_PRICE].max_value
+        min_t_nmi, max_t_nmi = nmi.issues[TIME].min_value, nmi.issues[TIME].max_value
+
+        # Initialize new_q, new_t, new_p with original values
+        # 用原始值初始化 new_q, new_t, new_p
+        new_q, new_t, new_p = orig_q, orig_t, orig_p
+        is_buying = self._is_supplier(negotiator_id)  # True if we are buying from this supplier / 如果我们从此供应商处购买，则为 True
+
+        # Heuristic parameters
+        # 启发式参数
+        epsilon_qty_change = 0.10
+        price_concession_inventory_time_change = 0.01 # Smaller concession specifically for time change if it improves score / 如果能提高分数，为时间变化提供较小的让步
+        price_concession_inventory_qty_change = 0.02
+        price_target_profit_opt = 0.05
+
+        # --- Store initial proposed quantity and price before time evaluation ---
+        # --- 在时间评估前存储初始提议的数量和价格 ---
+        temp_q_for_time_eval = orig_q
+        temp_p_for_time_eval = orig_p
+
+        if optimize_for_inventory:
+            # Quantity adjustment logic (applied before time evaluation for simplicity in this version)
+            # 数量调整逻辑 (在此版本中为简单起见，在时间评估前应用)
+            if is_buying:
+                current_agent_shortfall = self.total_insufficient if self.total_insufficient is not None else 0
+                effective_need_delta = inventory_target_quantity if inventory_target_quantity is not None else current_agent_shortfall
+                if effective_need_delta > 0:
+                    qty_after_epsilon_increase = int(round(orig_q * (1 + epsilon_qty_change)))
+                    temp_q_for_time_eval = min(qty_after_epsilon_increase, effective_need_delta)
+                    temp_q_for_time_eval = max(temp_q_for_time_eval, int(round(min_q_nmi)))
+                    # Make a price concession for quantity increase
+                    # 为数量增加做价格让步
+                    temp_p_for_time_eval = orig_p * (1 + price_concession_inventory_qty_change)
+                elif inventory_target_quantity is None : # No specific target, no general shortfall / 没有特定目标，也没有一般性缺口
+                    temp_q_for_time_eval = int(round(orig_q * (1 - epsilon_qty_change / 2)))
+            else: # Selling products / 销售产品
+                temp_q_for_time_eval = int(round(orig_q * (1 + epsilon_qty_change)))
+                # Make a price concession for quantity increase (seller charges less)
+                # 为数量增加做价格让步 (卖家收费更少)
+                temp_p_for_time_eval = orig_p * (1 - price_concession_inventory_qty_change)
+
+            new_q = temp_q_for_time_eval # Tentatively set new_q / 暂定 new_q
+            new_p = temp_p_for_time_eval # Tentatively set new_p / 暂定 new_p
+
+            # Time adjustment with simulation-based scoring (Scheme C)
+            # 基于模拟评分的时间调整 (方案C)
+
+            # Candidate times: original time, one step earlier (if buying), one step later (if selling)
+            # 候选时间: 原始时间, 提早一天 (如果购买), 推迟一天 (如果销售)
+            candidate_times = {orig_t} # Start with original time / 从原始时间开始
+            if is_buying and orig_t > min_t_nmi : # min_t_nmi is at least current_step + 1 / min_t_nmi 至少是 current_step + 1
+                candidate_times.add(max(min_t_nmi, orig_t - 1))
+            elif not is_buying and orig_t < max_t_nmi:
+                candidate_times.add(min(max_t_nmi, orig_t + 1))
+
+            best_t_for_inventory = orig_t
+            highest_simulated_score_for_time = -float('inf')
+
+            # Evaluate score for original time (with potentially adjusted q and p from above)
+            # 评估原始时间的得分 (使用上面可能已调整的 q 和 p)
+            # We need a mechanism to score a single hypothetical offer.
+            # For now, we'll use score_offers with a dict containing only this one offer.
+            # This is computationally more expensive than a dedicated single-offer scorer.
+            # 我们需要一种机制来对单个假设报价进行评分。
+            # 目前，我们将使用 score_offers，其中包含一个仅包含此报价的字典。
+            # 这比专门的单个报价评分器计算成本更高。
+
+            # Score for the offer with original time but potentially modified Q and P
+            # 对具有原始时间但可能修改了数量和价格的报价进行评分
+            initial_offer_to_score = {negotiator_id: (new_q, orig_t, new_p)}
+            # Assuming score_offers returns (raw_score, normalized_score)
+            # 假设 score_offers 返回 (原始分数, 归一化分数)
+            _, score_with_orig_t = self.score_offers(initial_offer_to_score, self.im, self.awi)
+            highest_simulated_score_for_time = score_with_orig_t
 
             if os.path.exists("env.test"):
-                 print(f"Combo Eval ({self.id} @ {today}): ComboNIDs={[c[0] for c in combo]}\n"
-                       f"  InvBefore: ShrtTot={shortage_before_total:.2f}, UrgShrt={urgent_shortage_today:.2f}, PrdSurp={product_surplus_before:.2f}\n"
-                       f"  InvAfter : ShrtTot={shortage_after_total:.2f}, UrgShrt={urgent_shortage_after_today:.2f}, PrdSurp={product_surplus_after:.2f}\n"
-                       f"  Scores   : IBS_raw={raw_score_ibs:.2f}, IBS_norm={norm_ibs:.3f}, UB={ub:.3f}, Profit={combo_profit:.2f} ==> FinalScore={combo_final_score:.3f}")
+                print(f"Debug ({self.id} @ {self.awi.current_step}): TimeEval for NID {negotiator_id}: OrigT={orig_t}, Q={new_q}, P={new_p:.2f}, Score={score_with_orig_t:.3f}")
 
-        if not scored_combinations:
-            return None, -1.0, 0.0
+            for t_candidate in candidate_times:
+                if t_candidate == orig_t: # Already scored / 已评分
+                    continue
 
-        # Sort by score (desc), then by profit (desc) for tie-breaking
-        scored_combinations.sort(key=lambda x: (x['score'], x['profit']), reverse=True)
-        
-        best_combo_data = scored_combinations[0]
-        return best_combo_data['combo'], best_combo_data['score'], best_combo_data['profit']
+                # Simulate score for this t_candidate
+                # 为这个 t_candidate 模拟得分
+                # Assume quantity (new_q) is fixed for this time evaluation stage.
+                # 假设数量 (new_q) 在此时间评估阶段是固定的。
+                # Price might be slightly adjusted for making time more attractive.
+                # 价格可能会略微调整以使时间更具吸引力。
+                p_for_t_candidate = new_p # Start with the price adjusted for quantity / 从为数量调整后的价格开始
+                if t_candidate != orig_t: # If time is different, make a small concession / 如果时间不同，则做小幅让步
+                    if is_buying and t_candidate < orig_t: # Buying and earlier / 购买且更早
+                        p_for_t_candidate = new_p * (1 + price_concession_inventory_time_change)
+                    elif not is_buying and t_candidate > orig_t: # Selling and later / 销售且更晚
+                        p_for_t_candidate = new_p * (1 - price_concession_inventory_time_change)
 
+                offer_to_score = {negotiator_id: (new_q, t_candidate, p_for_t_candidate)}
+                _, current_sim_score = self.score_offers(offer_to_score, self.im, self.awi)
+
+                if os.path.exists("env.test"):
+                    print(f"Debug ({self.id} @ {self.awi.current_step}): TimeEval for NID {negotiator_id}: CandT={t_candidate}, Q={new_q}, P={p_for_t_candidate:.2f}, Score={current_sim_score:.3f}")
+
+                if current_sim_score > highest_simulated_score_for_time:
+                    highest_simulated_score_for_time = current_sim_score
+                    best_t_for_inventory = t_candidate
+                    new_p = p_for_t_candidate # Update price if this time is chosen / 如果选择了这个时间，则更新价格
+
+            new_t = best_t_for_inventory
+            # new_q is already set from quantity optimization phase / new_q 已在数量优化阶段设置
+            # new_p is set to the price that yielded the best time score (or from qty opt if time didn't change)
+            # new_p 设置为产生最佳时间分数的那个价格（如果时间没有改变，则来自数量优化阶段）
+
+        # --- Profit Optimization (as per 3.1, or part of 4.1) ---
+        # This will override the price if optimize_for_profit is True
+        # 如果 optimize_for_profit 为 True，这将覆盖价格
+        if optimize_for_profit:
+            if is_buying:
+                new_p = orig_p * (1 - price_target_profit_opt) # Target a better price than original / 目标是比原始价格更好的价格
+            else:
+                new_p = orig_p * (1 + price_target_profit_opt) # Target a better price than original / 目标是比原始价格更好的价格
+
+        # --- Final clamping and validation ---
+        # --- 最终限制和验证 ---
+        new_q = int(round(new_q))
+        new_q = max(int(round(min_q_nmi)), min(new_q, int(round(max_q_nmi))))
+        if new_q <= 0:
+            if min_q_nmi > 0: new_q = int(round(min_q_nmi))
+            else: return None
+
+        new_t = int(round(new_t)) # Time should be an integer / 时间应为整数
+        new_t = max(min_t_nmi, min(new_t, max_t_nmi))
+
+        new_p = max(min_p_nmi, min(new_p, max_p_nmi))
+        if new_p <= 0:
+            if min_p_nmi > 0.001: new_p = min_p_nmi
+            else: new_p = 0.01
+
+        # Avoid countering with an offer identical to the original
+        # 避免提出与原始报价相同的还价
+        if new_q == orig_q and new_t == orig_t and abs(new_p - orig_p) < 1e-5:
+            if os.path.exists("env.test"):
+                print(
+                    f"Debug ({self.id} @ {self.awi.current_step}): Counter for {negotiator_id} resulted in same as original. No counter generated.")
+                # 调试 ({self.id} @ {self.awi.current_step}): 对 {negotiator_id} 的还价与原始报价相同。未生成还价。
+            return None
+
+        return new_q, new_t, new_p
 
     def counter_all(
         self,
-        offers: Dict[str, Outcome],
+        offers: Dict[str, Outcome], # partner_id -> (q, t, p) / 伙伴ID -> (数量, 时间, 价格)
         states: Dict[str, SAOState],
     ) -> Dict[str, SAOResponse]:
         responses: Dict[str, SAOResponse] = {}
-
         if not offers:
             return responses
             
-        if not self.im or not self.awi or not self.bayes:
+        if not self.im or not self.awi:
             if os.path.exists("env.test"):
-                print(f"Error ({self.id}): IM, AWI, or Bayes model not initialized. Cannot evaluate combinations.")
-            for nid_key in offers.keys(): # Corrected iteration over keys
+                print(f"Error ({self.id} @ {self.awi.current_step}): IM or AWI not initialized. Rejecting all offers.")
+                # 错误 ({self.id} @ {self.awi.current_step}): IM 或 AWI 未初始化。拒绝所有报价。
+            for nid_key in offers.keys():
                 responses[nid_key] = SAOResponse(ResponseType.REJECT_OFFER, None)
             return responses
 
-        best_combination, norm_score, raw_profit_of_best_combination = self._evaluate_offer_combinations(
-            offers, self.im, self.awi, self.bayes
+        # Default all responses to REJECT. We will override for ACCEPT or COUNTER.
+        # 默认所有响应为拒绝。我们将针对接受或还价进行覆盖。
+        for nid in offers.keys():
+            responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, None)
+
+        # Evaluate combinations to find the best one and its scores
+        # 评估组合以找到最佳组合及其分数
+        best_combination_items, norm_score, norm_profit = self._evaluate_offer_combinations(
+            offers, self.im, self.awi
         )
 
-        norm_profit = 0.0
-        ufun_is_usable = False # Default to Option B (heuristic)
-        
-        # ... (ufun investigation logic remains, sets ufun_is_usable if Option A is viable) ...
-        # For brevity, I'll skip re-pasting the ufun investigation block. It's assumed to be here.
-        if os.path.exists("env.test") and self.ufun:
-            print(f"Info ({self.id}): self.ufun type: {type(self.ufun)}")
-            if hasattr(self.ufun, 'outcome_space') and self.ufun.outcome_space and hasattr(self.ufun.outcome_space, 'cartesian_issues'):
-                 print(f"Info ({self.id}): self.ufun.outcome_space.cartesian_issues: {self.ufun.outcome_space.cartesian_issues}")
-            if best_combination : 
-                first_nid, first_outcome_tuple = best_combination[0]
-                outcome_as_dict = {QUANTITY: first_outcome_tuple[QUANTITY], TIME: first_outcome_tuple[TIME], UNIT_PRICE: first_outcome_tuple[UNIT_PRICE]}
-                try:
-                    utility_val = self.ufun(outcome_as_dict)
-                    if os.path.exists("env.test"): print(f"Info ({self.id}): self.ufun(sample_outcome_dict={outcome_as_dict}) = {utility_val}")
-                    if 0.0 < utility_val < 1.0: ufun_is_usable = True
-                    elif utility_val == 0.0 and hasattr(self, 'get_nmi') and self.get_nmi(first_nid) and first_outcome_tuple[UNIT_PRICE] == self.get_nmi(first_nid).issues[UNIT_PRICE].max_value: ufun_is_usable = True
-                    elif utility_val == 1.0 and hasattr(self, 'get_nmi') and self.get_nmi(first_nid) and first_outcome_tuple[UNIT_PRICE] == self.get_nmi(first_nid).issues[UNIT_PRICE].min_value: ufun_is_usable = True
-                except Exception: pass # Silently try tuple if dict fails
-                if not ufun_is_usable: # Try tuple if dict failed or conditions not met
-                    try:
-                        utility_val_tuple = self.ufun(first_outcome_tuple)
-                        if os.path.exists("env.test"): print(f"Info ({self.id}): self.ufun(sample_outcome_tuple={first_outcome_tuple}) = {utility_val_tuple}")
-                        if 0.0 < utility_val_tuple < 1.0: ufun_is_usable = True
-                    except Exception: pass
-
-        if best_combination:
-            if ufun_is_usable and self.ufun: # Option A
-                # ... (Option A logic as previously implemented) ...
-                total_normalized_utility = 0.0
-                num_offers_in_combo = len(best_combination)
-                for nid_combo, outcome_tuple_combo in best_combination: # Corrected iteration
-                    outcome_as_dict_combo = {QUANTITY: outcome_tuple_combo[QUANTITY], TIME: outcome_tuple_combo[TIME], UNIT_PRICE: outcome_tuple_combo[UNIT_PRICE]}
-                    try:
-                        offer_utility = self.ufun(outcome_as_dict_combo)
-                        total_normalized_utility += offer_utility
-                    except Exception as e:
-                        if os.path.exists("env.test"): print(f"Warning ({self.id}): Error in ufun call for {nid_combo}: {e}.")
-                        total_normalized_utility += 0 
-                if num_offers_in_combo > 0: norm_profit = total_normalized_utility / num_offers_in_combo
-                else: norm_profit = 0.0
-                norm_profit = max(0.0, min(1.0, norm_profit))
-                if os.path.exists("env.test"): print(f"Info ({self.id}): Profit Norm Option A (ufun avg). norm_profit = {norm_profit:.3f}")
-            else: # Option B
-                # ... (Option B logic as previously implemented) ...
-                if os.path.exists("env.test"): print(f"Info ({self.id}): Profit Norm Option B (heuristic). ufun_is_usable={ufun_is_usable}")
-                if raw_profit_of_best_combination <= 0: norm_profit = 0.0
-                else:
-                    expected_max_profit_for_combo = 0.0
-                    cat_sale_price = self.awi.profile.catalog_prices[self.awi.my_output_product_idx] if hasattr(self.awi.profile, 'catalog_prices') and self.awi.my_output_product_idx < len(self.awi.profile.catalog_prices) else (self.im.processing_cost_per_unit + 5) * 1.5
-                    cat_buy_price = self.awi.profile.catalog_prices[self.awi.my_input_product_idx] if hasattr(self.awi.profile, 'catalog_prices') and self.awi.my_input_product_idx < len(self.awi.profile.catalog_prices) else self.im.processing_cost_per_unit * 0.5
-                    for nid_b, outcome_tuple_b in best_combination: # Corrected iteration
-                        qty_b, _, _ = outcome_tuple_b
-                        if self._is_supplier(nid_b): expected_max_profit_for_combo += (cat_buy_price - 1) * qty_b
-                        else: 
-                            cost_of_goods = self.im.processing_cost_per_unit + cat_buy_price
-                            expected_max_profit_for_combo += (cat_sale_price - cost_of_goods) * qty_b
-                    if expected_max_profit_for_combo > 0: norm_profit = raw_profit_of_best_combination / expected_max_profit_for_combo
-                    elif raw_profit_of_best_combination > 0: norm_profit = 0.75
-                    else: norm_profit = 0.5
-                norm_profit = max(0.0, min(1.0, norm_profit))
-
         if os.path.exists("env.test"):
-            nids_in_best_str = [item[0] for item in best_combination] if best_combination else "None"
-            print(f"CounterAll ({self.id}): Best combo NIDs: {nids_in_best_str}, norm_score: {norm_score:.3f}, raw_profit: {raw_profit_of_best_combination:.2f}, norm_profit: {norm_profit:.3f}")
+            nids_in_best_str = [item[0] for item in best_combination_items] if best_combination_items else "None"
+            print(f"CounterAll ({self.id} @ {self.awi.current_step}): Best combo NIDs: {nids_in_best_str}, norm_score: {norm_score:.3f}, norm_profit: {norm_profit:.3f}")
+            # CounterAll ({self.id} @ {self.awi.current_step}): 最佳组合 NID: {nids_in_best_str}, norm_score: {norm_score:.3f}, norm_profit: {norm_profit:.3f}
 
-        # Decision Logic
-        if best_combination is None:
-            for nid in offers.keys():
-                responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-            return responses
+        if best_combination_items is None: # No valid combination found / 未找到有效组合
+            if os.path.exists("env.test"): print(f"Info ({self.id} @ {self.awi.current_step}): No best combination found by _evaluate_offer_combinations. All offers rejected.")
+            # 信息 ({self.id} @ {self.awi.current_step}): _evaluate_offer_combinations 未找到最佳组合。所有报价均被拒绝。
+            return responses # All already set to REJECT / 所有均已设置为拒绝
 
-        best_combo_nids = {nid for nid, _ in best_combination}
+        best_combo_outcomes_dict = dict(best_combination_items)
+        best_combo_nids_set = set(best_combo_outcomes_dict.keys())
 
-        if norm_score > self.p_threshold and norm_profit > self.q_threshold: # Case 1
-            if os.path.exists("env.test"): print(f"Info ({self.id}): Case 1 Triggered (Accept Best Combo)")
-            for nid, outcome in best_combination:
+        # --- Main Decision Logic ---
+        # --- 主要决策逻辑 ---
+
+        # Case 1: norm_score > p_threshold AND norm_profit > q_threshold
+        # Action: Accept the best combination. If unmet needs remain, counter others.
+        # 情况1: norm_score > p_threshold 且 norm_profit > q_threshold
+        # 操作: 接受最佳组合。如果仍有未满足的需求，则对其他方还价。
+        if norm_score > self.p_threshold and norm_profit > self.q_threshold:
+            if os.path.exists("env.test"): print(f"Info ({self.id} @ {self.awi.current_step}): Case 1: Accept Best Combo (Score OK, Profit OK). Counter others if need.")
+            # 信息 ({self.id} @ {self.awi.current_step}): 情况1: 接受最佳组合 (分数OK, 利润OK)。如果需要则对其他方还价。
+
+            # 1.1 Accept the offers in the best combination
+            # 1.1 接受最佳组合中的报价
+            for nid, outcome in best_combo_outcomes_dict.items():
                 responses[nid] = SAOResponse(ResponseType.ACCEPT_OFFER, outcome)
-            for nid in offers.keys():
-                if nid not in best_combo_nids:
-                    responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, None) # Placeholder for future counter for unmet
-        
-        elif norm_score <= self.p_threshold and norm_profit > self.q_threshold: # Case 2
-            if os.path.exists("env.test"): print(f"Info ({self.id}): Case 2 Triggered (Counter for Inventory Opt.)")
-            for nid, outcome in offers.items():
-                current_qty, current_time, current_price = outcome
-                new_qty, new_price = current_qty, current_price
-                if self._is_supplier(nid): # Buying
-                    new_price = current_price * 0.98
-                    new_qty = int(max(1, current_qty * 1.05))
-                else: # Selling
-                    new_price = current_price * 1.02
-                    new_qty = int(max(1, current_qty * 0.95))
-                responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, (new_qty, current_time, new_price))
 
-        elif norm_score > self.p_threshold and norm_profit <= self.q_threshold: # Case 3
-            if os.path.exists("env.test"): print(f"Info ({self.id}): Case 3 Triggered (Counter for Price Opt.)")
-            for nid, outcome in offers.items():
-                current_qty, current_time, current_price = outcome
-                new_price = current_price
-                if self._is_supplier(nid): # Buying
-                    new_price = current_price * 0.95
-                else: # Selling
-                    new_price = current_price * 1.05
-                responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, (current_qty, current_time, new_price))
-        
-        else: # Case 4: norm_score <= self.p_threshold AND norm_profit <= self.q_threshold
-            if os.path.exists("env.test"): print(f"Info ({self.id}): Case 4 Triggered (Counter for Both or Reject)")
-            for nid, outcome in offers.items():
-                current_qty, current_time, current_price = outcome
-                new_qty, new_price = current_qty, current_price
-                if self._is_supplier(nid): # Buying
-                    new_price = current_price * 0.95
-                    new_qty = int(max(1, current_qty * 1.05))
-                else: # Selling
-                    new_price = current_price * 1.05
-                    new_qty = int(max(1, current_qty * 0.95))
-                responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, (new_qty, current_time, new_price))
-                # Fallback to simple reject if more complex counter is not desired for case 4
-                # responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-        
+            # 1.2 Counter offers to OTHERS if unmet needs exist (primarily for procurement of raw materials)
+            # 1.2 如果存在未满足的需求，则向其他方提出还价 (主要针对原材料采购)
+            # Simulate accepted offers in a temporary IM to get a more accurate remaining need.
+            # 在临时IM中模拟已接受的报价，以获得更准确的剩余需求。
+            temp_im_for_case1_counters = self.im.deepcopy()
+            for nid_accepted, outcome_accepted in best_combo_outcomes_dict.items():
+                is_supply_contract = self._is_supplier(nid_accepted)
+                contract_type = IMContractType.SUPPLY if is_supply_contract else IMContractType.DEMAND
+                material_type = MaterialType.RAW if is_supply_contract else MaterialType.PRODUCT
+                # Create a unique ID for the temporary contract for simulation
+                # 为模拟创建临时合约的唯一ID
+                temp_contract_id = f"temp_accept_{nid_accepted}_{self.id}_{self.awi.current_step}_{uuid4()}"
+
+                sim_contract = IMContract(
+                    contract_id=temp_contract_id, partner_id=nid_accepted, type=contract_type,
+                    quantity=int(outcome_accepted[QUANTITY]), price=outcome_accepted[UNIT_PRICE],
+                    delivery_time=outcome_accepted[TIME], material_type=material_type, bankruptcy_risk=0.0
+                )
+                temp_im_for_case1_counters.add_transaction(sim_contract) # This updates plan in temp_im / 这会更新 temp_im 中的计划
+
+            # Get remaining raw material insufficiency after hypothetically accepting the best combo
+            # 在假设接受最佳组合后，获取剩余的原材料不足量
+            remaining_need_after_accepts = temp_im_for_case1_counters.get_total_insufficient_raw(
+                self.awi.current_step, horizon=14
+            )
+
+            if remaining_need_after_accepts > 0:
+                # Identify negotiators not in the best combo, who are suppliers (for raw material needs)
+                # 识别不在最佳组合中且为供应商的谈判者 (针对原材料需求)
+                negotiators_to_counter_case1 = [
+                    nid for nid in offers.keys()
+                    if nid not in best_combo_nids_set and self._is_supplier(nid)
+                ]
+                if negotiators_to_counter_case1:
+                    # Distribute the remaining need among these negotiators
+                    # 将剩余需求分配给这些谈判者
+                    qty_per_negotiator_case1 = math.ceil(remaining_need_after_accepts / len(negotiators_to_counter_case1))
+                    qty_per_negotiator_case1 = max(1, qty_per_negotiator_case1) # Ensure at least 1 / 确保至少为1
+
+                    for nid_to_counter in negotiators_to_counter_case1:
+                        original_offer = offers[nid_to_counter]
+                        # Generate counter-offer focusing on inventory (filling the need)
+                        # 生成以库存为重点的还价 (填补需求)
+                        counter_outcome = self._generate_counter_offer(
+                            nid_to_counter, original_offer,
+                            optimize_for_inventory=True,
+                            optimize_for_profit=False, # Primary focus is filling the need / 主要重点是填补需求
+                            inventory_target_quantity=qty_per_negotiator_case1
+                        )
+                        if counter_outcome:
+                            responses[nid_to_counter] = SAOResponse(ResponseType.REJECT_OFFER, counter_outcome)
+
+        # Cases 2 & 4 Merged: norm_score <= p_threshold
+        # Action: Reject best combination. Counter all offers.
+        # Inventory optimization is primary. If norm_profit also <= q_threshold, optimize profit too.
+        # 情况2和4合并: norm_score <= p_threshold
+        # 操作: 拒绝最佳组合。对所有报价进行还价。
+        # 库存优化是首要的。如果 norm_profit 也 <= q_threshold，则同时优化利润。
+        elif norm_score <= self.p_threshold:
+            also_optimize_for_profit = (norm_profit <= self.q_threshold) # True for original Case 4 / 对于原始情况4为 True
+
+            if also_optimize_for_profit:
+                if os.path.exists("env.test"): print(f"Info ({self.id} @ {self.awi.current_step}): Case 2/4 (Merged - Case 4 type): Counter ALL for Inventory then Profit (Score BAD, Profit BAD).")
+                # 信息 ({self.id} @ {self.awi.current_step}): 情况2/4 (合并 - 情况4类型): 对所有报价进行库存优化然后利润优化 (分数差, 利润差)。
+            else: # norm_profit > self.q_threshold (original Case 2) / norm_profit > self.q_threshold (原始情况2)
+                if os.path.exists("env.test"): print(f"Info ({self.id} @ {self.awi.current_step}): Case 2/4 (Merged - Case 2 type): Counter ALL for Inventory Opt (Score BAD, Profit OK).")
+                # 信息 ({self.id} @ {self.awi.current_step}): 情况2/4 (合并 - 情况2类型): 对所有报价进行库存优化 (分数差, 利润OK)。
+
+            # Do NOT accept any offers from `best_combination` or any other.
+            # Counter all offers based on the determined optimization strategy.
+            # 不接受来自 `best_combination` 或任何其他组合的任何报价。
+            # 根据确定的优化策略对所有报价进行还价。
+            for nid, original_offer in offers.items():
+                counter_outcome = self._generate_counter_offer(
+                    nid, original_offer,
+                    optimize_for_inventory=True,
+                    optimize_for_profit=also_optimize_for_profit
+                )
+                if counter_outcome:
+                    responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, counter_outcome)
+
+        # Case 3: norm_score > p_threshold AND norm_profit <= q_threshold
+        # Action: Reject best combination. Counter all offers focusing on profit optimization.
+        # 情况3: norm_score > p_threshold 且 norm_profit <= q_threshold
+        # 操作: 拒绝最佳组合。对所有报价进行以利润优化为重点的还价。
+        elif norm_profit <= self.q_threshold: # This implies norm_score > p_threshold due to the sequence of checks / 由于检查顺序，这意味着 norm_score > p_threshold
+            if os.path.exists("env.test"): print(f"Info ({self.id} @ {self.awi.current_step}): Case 3: Counter ALL for Price Opt (Score OK, Profit BAD).")
+            # 信息 ({self.id} @ {self.awi.current_step}): 情况3: 对所有报价进行价格优化 (分数OK, 利润差)。
+
+            # Do NOT accept any offers.
+            # Counter all offers to improve profit; inventory score was deemed acceptable.
+            # 不接受任何报价。
+            # 对所有报价进行还价以提高利润；库存分数被认为是可接受的。
+            for nid, original_offer in offers.items():
+                counter_outcome = self._generate_counter_offer(
+                    nid, original_offer,
+                    optimize_for_inventory=False, # Inventory score from best_combo was good / best_combo 的库存分数良好
+                    optimize_for_profit=True
+                )
+                if counter_outcome:
+                    responses[nid] = SAOResponse(ResponseType.REJECT_OFFER, counter_outcome)
+
+        else:
+            # This path should ideally not be reached if all conditions are covered.
+            # All offers will remain REJECTED by default.
+            # 如果所有条件都已覆盖，则理想情况下不应到达此路径。
+            # 默认情况下，所有报价都将保持被拒绝状态。
+            if os.path.exists("env.test"):
+                print(f"Warning ({self.id} @ {self.awi.current_step}): counter_all logic fell through. All offers rejected by default.")
+                # 警告 ({self.id} @ {self.awi.current_step}): counter_all 逻辑未覆盖所有情况。默认拒绝所有报价。
+
         return responses
 
     # ------------------------------------------------------------------
@@ -902,7 +1291,7 @@ class LitaAgentCIR(StdSyncAgent):
 
         new_c = IMContract(
             contract_id=contract.id, partner_id=partner, type=im_type,
-            quantity=agreement["quantity"], price=agreement["unit_price"],
+            quantity=int(agreement["quantity"]), price=agreement["unit_price"],
             delivery_time=agreement["time"], bankruptcy_risk=0.0, 
             material_type=mat_type,
         )
@@ -924,7 +1313,7 @@ class LitaAgentCIR(StdSyncAgent):
 
     def _print_daily_status_report(self, result) -> None:
         """输出每日库存、生产和销售状态报告，包括未来预测"""
-        if not self.im:
+        if not self.im or not os.path.exists("env.test"):
             return
         
         current_day = self.awi.current_step
@@ -947,17 +1336,17 @@ class LitaAgentCIR(StdSyncAgent):
             raw_summary = self.im.get_inventory_summary(forecast_day, MaterialType.RAW)
             product_summary = self.im.get_inventory_summary(forecast_day, MaterialType.PRODUCT)
             
-            raw_current_stock = int(raw_summary.get('current_stock', 0.0))
-            raw_estimated = int(raw_summary.get('estimated_available', 0.0))
+            raw_current_stock = raw_summary.get('current_stock', 0)
+            raw_estimated = raw_summary.get('estimated_available', 0)
             
-            product_current_stock = int(product_summary.get('current_stock', 0.0))
-            product_estimated = int(product_summary.get('estimated_available', 0.0))
+            product_current_stock = product_summary.get('current_stock', 0)
+            product_estimated = product_summary.get('estimated_available', 0)
             
             # 计划生产量 - CustomIM stores production_plan as Dict[day, qty]
-            planned_production = int(self.im.production_plan.get(forecast_day, 0.0))
+            planned_production = self.im.production_plan.get(forecast_day, 0)
             
             # 剩余产能
-            remaining_capacity = int(self.im.get_available_production_capacity(forecast_day))
+            remaining_capacity = self.im.get_available_production_capacity(forecast_day)
             
             # 已签署的销售合同数量 - CustomIM stores these in self.pending_demand_contracts
             signed_sales = 0
@@ -978,232 +1367,10 @@ class LitaAgentCIR(StdSyncAgent):
         print(separator)
         print()
 
-    # ---------------- capacity / budget ----------------
-    def _has_capacity(self, offer_outcome: Outcome) -> bool: # Changed to Outcome type
-        # Assuming offer_outcome is (quantity, time, price)
-        qty, time, _ = offer_outcome
-        # If agent is selling (i.e. partner is a consumer, offer is for PRODUCT)
-        # This needs context of who the partner is to determine if agent is seller.
-        # For now, let's assume if we check capacity, it's for selling.
-        # A better way might be to pass `is_seller_perspective` boolean.
-        # Let's assume this is called when agent considers *making* a product to sell.
-        # Or, if it is checking capacity for a received buy offer (agent would be seller).
-        
-        # For selling products:
-        inv_summary = self.im.get_inventory_summary(time, MaterialType.PRODUCT)
-        estimated_product_available = inv_summary.get("estimated_available", 0.0)
-        
-        # Available production capacity on that day for new production
-        # Note: get_available_production_capacity is for a specific day, not cumulative.
-        # If the offer's delivery time `time` is far, production could happen on any day up to `time`.
-        # This is a simplification: assumes production for this offer happens on `time`.
-        # A more detailed check would see if `qty` can be produced *by* `time`.
-        # current_plan_for_day_time = self.im.production_plan.get(time, 0.0)
-        # capacity_on_delivery_day = self.im.get_available_production_capacity(time)
-        
-        # JIT planning means production is scheduled to meet demands.
-        # So, if we accept a new demand (sell offer), plan_production will try to fit it.
-        # The check should be: can plan_production accommodate this *additional* qty by 'time'?
-        # This is complex. A simpler check: is current estimated_available + potential future prod. enough?
-        # For now, let's use a simplified check based on estimated_available which already considers current plan.
-        # If estimated_available (which includes planned production) is enough, then yes.
-        # This doesn't check if *new* production for *this specific offer* can be added if current plan uses all capacity.
-        
-        # A simpler check for selling:
-        # Can we satisfy quantity `qty` by day `time` given current inventory and production plan?
-        # `estimated_available` from `get_inventory_summary` for products already factors in planned production.
-        return qty <= estimated_product_available
-
-    def _has_budget(self, off: Offer, budget: float) -> bool:
-        return True if self._is_seller(off) else off.price*off.quantity <= budget
-
-    # ---------------- price concede ----------------
-    def _concede_price(self, off: Offer, λ: float):
-        tgt = self._target_price(off)
-        delta = abs(off.price - tgt)
-        return max(tgt, off.price-λ*delta) if self._is_seller(off) else min(tgt, off.price+λ*delta)
-
-    def _target_price(self, offer_outcome: Outcome, is_seller_perspective: bool): # Changed to Outcome
-        # Assuming offer_outcome is (quantity, time, price)
-        qty, time, _ = offer_outcome
-        if is_seller_perspective: # Agent is selling a PRODUCT
-            # Cost of producing: avg cost of raw materials + processing cost
-            raw_summary = self.im.get_inventory_summary(time, MaterialType.RAW)
-            # Use estimated_average_cost for future raw material cost projection
-            avg_raw_cost = raw_summary.get("estimated_average_cost", 0.0) 
-            # If avg_raw_cost is 0 (e.g. no raw stock/pending), use a fallback or market price if available
-            if avg_raw_cost == 0 and self._market_material_price_avg > 0 : # Fallback to market average
-                 avg_raw_cost = self._market_material_price_avg
-
-            total_unit_cost_to_produce = avg_raw_cost + self.im.processing_cost_per_unit
-            return total_unit_cost_to_produce * (1 + self.min_profit_margin)
-        else: # Agent is buying RAW material
-            # What's the value of this raw material to us?
-            # Could be based on expected sale price of product minus processing cost.
-            # Or, if there's an urgent need, it might be higher.
-            # For now, let's use a reference based on average product prices if available.
-            # This is a simplification, as "value" of raw material is context-dependent.
-            product_summary = self.im.get_inventory_summary(time, MaterialType.PRODUCT)
-            avg_product_sell_price_est = product_summary.get("estimated_average_cost", 0.0) # This is cost, not price.
-                                                                                        # Need a better proxy for expected sell price.
-            # If we have a market product price average, use that.
-            if self._market_product_price_avg > 0:
-                avg_product_sell_price_est = self._market_product_price_avg
-            elif avg_product_sell_price_est == 0: # If product cost is also zero (no stock/plan)
-                # Fallback: use a high arbitrary value for raw material if no other info
-                # This implies we are willing to buy unless it's extremely expensive.
-                # A better approach: use a default expected profit margin on a default product price.
-                # For now, let's say target buy price is related to our cost of making product with it.
-                 return (self.im.processing_cost_per_unit * (1+self.min_profit_margin)) * 0.8 # e.g. 80% of some baseline product value
-            
-            # Target buy price for raw: (Expected product sale price - processing cost) * (1 - some margin for ourselves)
-            # Simplified: value_of_raw = avg_product_sell_price_est - self.im.processing_cost_per_unit
-            # We want to buy it for less than this value.
-            value_of_raw_to_agent = avg_product_sell_price_est - self.im.processing_cost_per_unit
-            return max(0.01, value_of_raw_to_agent * (1 - self.min_profit_margin)) # Buy for cheaper than its value to us
-
-
-    # ---------------- util ----------------
-    # _is_seller and _is_consumer are fine.
-    # The _is_seller(self, off: Offer) was specific to the Offer class.
-    # We need a version for negotiator_id or a general way to know context.
-    # The existing _is_supplier(pid) and _is_consumer(pid) are better.
-
 # ----------------------------------------------------
 # Inventory Cost Score Calculation Helper
 # ----------------------------------------------------
-def calculate_inventory_cost_score(
-    im_state: CustomInventoryManager,
-    current_day: int,
-    last_simulation_day: int, # Typically awi.n_steps
-    unit_shortfall_penalty: float,
-    unit_storage_cost: float # Assuming a single storage cost for simplicity, or it can be passed as a dict/tuple
-) -> float:
-    total_cost_score = 0.0
 
-    # Ensure the production plan within the im_state is up-to-date for the relevant horizon
-    im_state.plan_production(up_to_day=last_simulation_day)
-
-    # A. Calculate Product Shortfall Penalty
-    # This needs to simulate day-by-day product availability vs. demand.
-    # We'll make a temporary copy to simulate forward without altering the original im_state's current_day.
-    sim_eval_im = im_state.deepcopy() # Make a copy to simulate operations without affecting the original
-    
-    # Ensure the simulation starts from the correct day for evaluation
-    sim_eval_im.current_day = current_day 
-
-    for d in range(current_day, last_simulation_day + 1):
-        # 1. Demands due on day 'd'
-        total_demand_qty_on_d = 0.0
-        for contract in sim_eval_im.pending_demand_contracts:
-            if contract.delivery_time == d:
-                total_demand_qty_on_d += contract.quantity
-        
-        if total_demand_qty_on_d == 0: # No demand, no shortfall for this day based on contracts
-            # Still need to account for storage for this day if we continue the loop here.
-            # The storage calculation below will handle it.
-            pass
-
-        # 2. Product stock at the start of day 'd' (before day 'd' production)
-        # This should be stock after day d-1 operations.
-        # get_inventory_summary(d, ...) gives stock at start of day d.
-        product_stock_at_start_of_d = sim_eval_im.get_inventory_summary(d, MaterialType.PRODUCT)['current_stock']
-        
-        # 3. Raw materials available for production on day 'd'
-        # This should be raw stock at start of day d, plus any deliveries on day d.
-        # For simplicity, let's assume get_inventory_summary(d, MaterialType.RAW)['current_stock']
-        # correctly reflects raw materials that *can* be used for production on day d.
-        # This means it includes materials that arrived on day d *before* production starts.
-        # In CustomInventoryManager, _receive_materials happens before _execute_production.
-        # So, raw_stock_info for day 'd' after _receive_materials would be needed.
-        # A simpler proxy: raw stock at start of day 'd'. If deliveries on 'd' are crucial,
-        # this might underestimate producible amount.
-        # Let's use current_stock at start of day d for raw materials.
-        raw_stock_for_prod_on_d = sim_eval_im.get_inventory_summary(d, MaterialType.RAW)['current_stock']
-        
-        # 4. Actual production on day 'd'
-        planned_production_on_d = sim_eval_im.production_plan.get(d, 0.0)
-        producible_on_d = min(planned_production_on_d, raw_stock_for_prod_on_d, sim_eval_im.daily_production_capacity)
-        
-        # 5. Total products available to deliver on day 'd'
-        total_available_to_deliver_on_d = product_stock_at_start_of_d + producible_on_d
-        
-        # 6. Calculate shortfall for day 'd'
-        if total_demand_qty_on_d > total_available_to_deliver_on_d:
-            shortfall_on_d = total_demand_qty_on_d - total_available_to_deliver_on_d
-            total_cost_score += shortfall_on_d * unit_shortfall_penalty
-            if os.path.exists("env.test"):
-                print(f"Debug (calc_inv_cost @ day {d}): Demand={total_demand_qty_on_d}, Avail={total_available_to_deliver_on_d}, Shortfall={shortfall_on_d}, Penalty={shortfall_on_d * unit_shortfall_penalty}")
-
-        # For storage cost calculation, we need EOD stock.
-        # Simulate day processing to update batches for next day's SOD stock.
-        # This is a simplified simulation of what process_day_end_operations does,
-        # focusing only on inventory changes relevant to future stock levels.
-        
-        # Temp IM to simulate this day's operations for accurate next-day SOD stock
-        temp_day_sim_im = sim_eval_im.deepcopy() # Use a copy of the current state of sim_eval_im for this day's simulation
-        temp_day_sim_im.current_day = d # Set to current processing day
-        
-        # Simulate this day's operations (simplified, focusing on inventory changes)
-        # 1. Receive materials for day d (updates raw_material_batches)
-        temp_day_sim_im._receive_materials(d)
-        # 2. Execute production for day d (updates raw and product_batches)
-        temp_day_sim_im._execute_production(d) # Uses its own production_plan.get(d,0)
-        # 3. Deliver products for day d (updates product_batches)
-        temp_day_sim_im._deliver_products(d)
-        
-        # Update sim_eval_im's batches to reflect EOD state of day 'd'
-        # This makes sim_eval_im.get_inventory_summary(d+1,...) give correct SOD for d+1
-        sim_eval_im.raw_material_batches = temp_day_sim_im.raw_material_batches
-        sim_eval_im.product_batches = temp_day_sim_im.product_batches
-        sim_eval_im.pending_supply_contracts = temp_day_sim_im.pending_supply_contracts
-        sim_eval_im.pending_demand_contracts = temp_day_sim_im.pending_demand_contracts
-        # No need to advance sim_eval_im.current_day here, as the loop variable 'd' controls the day being processed.
-
-
-    # B. Calculate Total Storage Cost
-    # Iterate again, this time using the original im_state, assuming its current_day is the actual start
-    # or use a fresh copy if the above loop modified im_state in ways not intended for storage calculation.
-    # For storage, we need SOD stock which is then stored for the whole day.
-    # The loop for shortfall above *did* modify sim_eval_im's batches.
-    # So, we need a fresh start for storage, or use the final state of sim_eval_im if that's desired.
-    # The prompt says: "current_stock from get_inventory_summary(d, ...) refers to stock at the beginning of day d"
-    # This means we can iterate using the *original* im_state for storage calculation if we interpret it as
-    # calculating storage cost for *future* days based on the *initial* state + plan.
-    # However, if decisions (like accepting an offer) are made based on this score, the storage cost
-    # should reflect the state *after* those decisions.
-    # Given this is a helper to score a *potential* state (im_state), we calculate storage on that state.
-    
-    # Re-initialize a sim for storage cost calculation based on the *final state* of inventory after all demands met/shortfalled
-    # This uses the sim_eval_im which has processed deliveries/productions up to last_simulation_day
-    
-    # Let's recalculate storage costs based on the state of 'im_state' as passed, assuming it's the state to evaluate.
-    # The shortfall loop *simulated* operations on `sim_eval_im`.
-    # For calculating storage cost of `im_state`, we should use `im_state` directly as it represents
-    # the state *after* a hypothetical decision (e.g. accepting an offer).
-    # The production plan of im_state is already updated.
-
-    for d in range(current_day, last_simulation_day + 1):
-        raw_stock_info = im_state.get_inventory_summary(d, MaterialType.RAW)
-        product_stock_info = im_state.get_inventory_summary(d, MaterialType.PRODUCT)
-        
-        # As per prompt clarification: 'current_stock' is SOD, stored for the entirety of day d.
-        daily_storage_cost = (raw_stock_info.get('current_stock', 0.0) * im_state.raw_storage_cost_per_unit_per_day + \
-                              product_stock_info.get('current_stock', 0.0) * im_state.product_storage_cost_per_unit_per_day)
-        total_cost_score += daily_storage_cost
-        if os.path.exists("env.test"):
-            print(f"Debug (calc_inv_cost @ day {d}): RawStock={raw_stock_info.get('current_stock',0):.0f}, ProdStock={product_stock_info.get('current_stock',0):.0f}, StorageCost={daily_storage_cost:.2f}")
-
-    return total_cost_score
-
-
-# SDK respond wrappers
-    def accept(self, nid: int):
-        return super().respond(nid, self.actions.ACCEPT_OFFER)
-    def reject(self, nid: int):
-        return super().respond(nid, self.actions.REJECT_OFFER)
-    def counter(self, nid: int, offer: Offer):
-        return super().respond(nid, self.actions.COUNTER_OFFER, offer)
 
 if __name__ == "__main__":
     if os.path.exists("env.test"):
