@@ -46,7 +46,7 @@ from .inventory_manager_n import (
 # Main agent implementation
 
 class LitaAgentCIR(StdSyncAgent):
-    """重构后的 LitaAgent CIR。支持三类采购策略与产能约束销售。"""
+    """重构后的 LitaAgent CIR。"""
 
     # ------------------------------------------------------------------
     # 🌟 1. 初始化

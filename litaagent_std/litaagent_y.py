@@ -1474,7 +1474,7 @@ class LitaAgentY(StdSyncAgent):
             
             # 格式化并输出
             day_str = f"{forecast_day} (T+{day_offset})" if day_offset == 0 else f"{forecast_day} (T+{day_offset})"
-            print(f"| {day_str:^6} | {raw_current_stock:^10} | {raw_estimated:^12} | {planned_production:^8} | {remaining_capacity:^8} | {product_current_stock:^10} | {product_estimated:^12} | {signed_sales:^12} | {result["delivered_products"] if day_offset == 0 else 0:^12} |")
+            print(f"| {day_str:^6} | {raw_current_stock:^10} | {raw_estimated:^12} | {planned_production:^8} | {remaining_capacity:^8} | {product_current_stock:^10} | {product_estimated:^12} | {signed_sales:^12} | {(result.get("delivered_products", 0) if day_offset == 0 else 0):^12} |")
         
         print(separator)
         print()
