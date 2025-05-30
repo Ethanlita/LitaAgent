@@ -11,12 +11,13 @@ from negmas import SAOResponse, ResponseType, Outcome, SAOState
 from scml.std import *
 from scml.runner import WorldRunner
 
+from litaagent_std.litaagent_cir import LitaAgentCIR
 from litaagent_std.litaagent_n import LitaAgentN
 from litaagent_std.litaagent_y import LitaAgentY
 
 # create a runner that encapsulates a number of configs to evaluate agents
 # in the same conditions every time
-CONFIGS, REPS, STEPS = 10, 5, 10
+CONFIGS, REPS, STEPS = 10, 5, 25
 context = ANACStdContext( # what are the rounds here, number of trials, process (needs processes or not), etc. and align with the actual parameters of the live competitoin.
     n_steps=STEPS, n_processes=3, world_params=dict(construct_graphs=True)
 )
@@ -28,8 +29,8 @@ full_market_runner = WorldRunner.from_runner(
 )
 
 #%% create a world with a single agent and run it
-single_agent_runner(LitaAgentY)
-single_agent_runner.draw_worlds_of(LitaAgentY)
+single_agent_runner(LitaAgentCIR)
+single_agent_runner.draw_worlds_of(LitaAgentCIR)
 
 #%% plot the results
 single_agent_runner.plot_stats(agg=False)

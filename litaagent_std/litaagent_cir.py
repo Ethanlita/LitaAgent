@@ -36,7 +36,7 @@ from scml.std import (
 from negmas import SAOState, SAOResponse, Outcome, Contract, ResponseType
 
 # 内部工具 & manager
-from .inventory_manager_n import (
+from .inventory_manager_cir import (
     IMContract,
     IMContractType,
     MaterialType,
@@ -59,7 +59,7 @@ class LitaAgentCIR(StdSyncAgent):
         concession_curve_power: float = 1.5, 
         capacity_tight_margin_increase: float = 0.07, 
         procurement_cash_flow_limit_percent: float = 0.75, # Added from Step 6
-        p_threshold: float = 0.7, # Threshold for combined score
+        p_threshold: float = 0.25, # Threshold for combined score
         q_threshold: float = 0.0, # Threshold for individual norm_profit (unused in current logic directly, but for future)
         **kwargs,
     ) -> None:
@@ -257,7 +257,7 @@ class LitaAgentCIR(StdSyncAgent):
             for nid in supplier_negotiators:
                 nmi_s = self.get_nmi(nid)
                 min_q_s = 1 # Default min quantity
-                if nmi_s and QUANTITY in nmi_s.issues and nmi_s.issues[QUANTITY] is not None:
+                if nmi_s and nmi_s.issues[QUANTITY] is not None:
                     min_q_s = int(round(nmi_s.issues[QUANTITY].min_value))
                 supplier_min_q_map[nid] = max(1, min_q_s) # Ensure min_q is at least 1
 
@@ -285,20 +285,15 @@ class LitaAgentCIR(StdSyncAgent):
                 min_t_nmi, max_t_nmi = current_day + 1, n_steps - 1
 
                 if nmi:
-                    if QUANTITY in nmi.issues and nmi.issues[QUANTITY] is not None:
+                    if nmi.issues[QUANTITY] is not None:
                         # min_q_nmi already fetched
-                        if nmi.issues[QUANTITY].max_value is not None:
-                             max_q_nmi = nmi.issues[QUANTITY].max_value
-                    if UNIT_PRICE in nmi.issues and nmi.issues[UNIT_PRICE] is not None:
-                        if nmi.issues[UNIT_PRICE].min_value is not None:
-                            min_p_nmi = nmi.issues[UNIT_PRICE].min_value
-                        if nmi.issues[UNIT_PRICE].max_value is not None:
-                            max_p_nmi_from_nmi = nmi.issues[UNIT_PRICE].max_value
-                    if TIME in nmi.issues and nmi.issues[TIME] is not None:
-                        if nmi.issues[TIME].min_value is not None:
-                            min_t_nmi = max(min_t_nmi, nmi.issues[TIME].min_value)
-                        if nmi.issues[TIME].max_value is not None:
-                            max_t_nmi = min(max_t_nmi, nmi.issues[TIME].max_value)
+                        max_q_nmi = nmi.issues[QUANTITY].max_value
+                    if nmi.issues[UNIT_PRICE] is not None:
+                        min_p_nmi = nmi.issues[UNIT_PRICE].min_value
+                        max_p_nmi_from_nmi = nmi.issues[UNIT_PRICE].max_value
+                    if nmi.issues[TIME] is not None:
+                        min_t_nmi = max(min_t_nmi, nmi.issues[TIME].min_value)
+                        max_t_nmi = min(max_t_nmi, nmi.issues[TIME].max_value)
 
                 # Determine proposal quantity for this supplier
                 # Propose up to remaining need, but not less than NMI min, and not more than NMI max.
@@ -365,7 +360,7 @@ class LitaAgentCIR(StdSyncAgent):
                 for nid_c in consumer_negotiators: # Renamed to avoid conflict
                     nmi_c = self.get_nmi(nid_c)
                     min_q_c = 1
-                    if nmi_c and QUANTITY in nmi_c.issues and nmi_c.issues[QUANTITY] is not None:
+                    if nmi_c and nmi_c.issues[QUANTITY] is not None:
                         min_q_c = int(round(nmi_c.issues[QUANTITY].min_value))
                     consumer_min_q_map[nid_c] = max(1, min_q_c)
 
@@ -389,18 +384,13 @@ class LitaAgentCIR(StdSyncAgent):
                     min_t_nmi, max_t_nmi = current_day + 1, n_steps - 1
 
                     if nmi:
-                        if QUANTITY in nmi.issues and nmi.issues[QUANTITY] is not None:
-                            if nmi.issues[QUANTITY].max_value is not None:
+                        if nmi.issues[QUANTITY] is not None:
                                 max_q_nmi = nmi.issues[QUANTITY].max_value
-                        if UNIT_PRICE in nmi.issues and nmi.issues[UNIT_PRICE] is not None:
-                            if nmi.issues[UNIT_PRICE].min_value is not None:
+                        if nmi.issues[UNIT_PRICE] is not None:
                                 min_p_nmi_from_nmi = nmi.issues[UNIT_PRICE].min_value
-                            if nmi.issues[UNIT_PRICE].max_value is not None:
                                 max_p_nmi = nmi.issues[UNIT_PRICE].max_value
-                        if TIME in nmi.issues and nmi.issues[TIME] is not None:
-                            if nmi.issues[TIME].min_value is not None:
+                        if nmi.issues[TIME] is not None:
                                 min_t_nmi = max(min_t_nmi, nmi.issues[TIME].min_value)
-                            if nmi.issues[TIME].max_value is not None:
                                 max_t_nmi = min(max_t_nmi, nmi.issues[TIME].max_value)
 
                     propose_q_for_this_consumer = min(remaining_sellable_quantity, max_q_nmi)
@@ -724,7 +714,7 @@ class LitaAgentCIR(StdSyncAgent):
         # For calculating storage cost of `im_state`, we should use `im_state` directly as it represents
         # the state *after* a hypothetical decision (e.g. accepting an offer).
         # The production plan of im_state is already updated.
-
+        """
         for d in range(current_day, last_simulation_day + 1):
             if(os.path.exists("env.test")):
                 print(f"Debug (calc_inv_cost @ day {d}): Current day in im: {im_state.current_day} (Should be equal)")
@@ -740,8 +730,11 @@ class LitaAgentCIR(StdSyncAgent):
                 print(
                     f"Debug (calc_inv_cost @ day {d}): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
             im_state.process_day_end_operations(d)
+        """
+
         # C. Calculate excess inventory penalty
         # Get Real Inventory the day after last day, and add a penalty
+        """
         im_curday = im_state.current_day
         if im_curday == last_simulation_day - 1:
             im_state.process_day_end_operations(im_curday)
@@ -751,6 +744,12 @@ class LitaAgentCIR(StdSyncAgent):
         remain_product = im_state.get_inventory_summary(im_state.current_day, MaterialType.PRODUCT)['current_stock']
         inventory_penalty = (remain_raw + remain_product) *  self.awi.current_disposal_cost
         total_cost_score += inventory_penalty
+        """
+        excess_inventory = 0
+        excess_raw = im_state.get_inventory_summary(last_simulation_day + 1, MaterialType.RAW)
+        excess_product = im_state.get_inventory_summary(last_simulation_day + 1, MaterialType.PRODUCT)
+        excess_inventory = (excess_raw['current_stock'] + excess_product['current_stock']) * self.awi.current_disposal_cost
+        total_cost_score += excess_inventory
 
         return total_cost_score
 
