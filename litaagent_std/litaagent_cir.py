@@ -59,7 +59,7 @@ class LitaAgentCIR(StdSyncAgent):
         concession_curve_power: float = 1.5, 
         capacity_tight_margin_increase: float = 0.07, 
         procurement_cash_flow_limit_percent: float = 0.75, # Added from Step 6
-        p_threshold: float = 0.25, # Threshold for combined score
+        p_threshold: float = 0.7, # Threshold for combined score
         q_threshold: float = 0.0, # Threshold for individual norm_profit (unused in current logic directly, but for future)
         **kwargs,
     ) -> None:
@@ -714,7 +714,7 @@ class LitaAgentCIR(StdSyncAgent):
         # For calculating storage cost of `im_state`, we should use `im_state` directly as it represents
         # the state *after* a hypothetical decision (e.g. accepting an offer).
         # The production plan of im_state is already updated.
-        """
+
         for d in range(current_day, last_simulation_day + 1):
             if(os.path.exists("env.test")):
                 print(f"Debug (calc_inv_cost @ day {d}): Current day in im: {im_state.current_day} (Should be equal)")
@@ -730,11 +730,8 @@ class LitaAgentCIR(StdSyncAgent):
                 print(
                     f"Debug (calc_inv_cost @ day {d}): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
             im_state.process_day_end_operations(d)
-        """
-
         # C. Calculate excess inventory penalty
         # Get Real Inventory the day after last day, and add a penalty
-        """
         im_curday = im_state.current_day
         if im_curday == last_simulation_day - 1:
             im_state.process_day_end_operations(im_curday)
@@ -744,12 +741,6 @@ class LitaAgentCIR(StdSyncAgent):
         remain_product = im_state.get_inventory_summary(im_state.current_day, MaterialType.PRODUCT)['current_stock']
         inventory_penalty = (remain_raw + remain_product) *  self.awi.current_disposal_cost
         total_cost_score += inventory_penalty
-        """
-        excess_inventory = 0
-        excess_raw = im_state.get_inventory_summary(last_simulation_day + 1, MaterialType.RAW)
-        excess_product = im_state.get_inventory_summary(last_simulation_day + 1, MaterialType.PRODUCT)
-        excess_inventory = (excess_raw['current_stock'] + excess_product['current_stock']) * self.awi.current_disposal_cost
-        total_cost_score += excess_inventory
 
         return total_cost_score
 

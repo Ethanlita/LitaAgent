@@ -116,7 +116,7 @@ class InventoryManagerCIR:
             self.pending_demand_contracts.append(contract)
             self.pending_demand_contracts.sort(key=lambda c: c.delivery_time)
         else:
-            print(f"Warning (add_transaction): Unknown contract type for contract {contract.contract_id},RAW: {contract}")
+            print(f"Warning (add_transaction): Unknown contract type for contract {contract.contract_id}")
             return False
         
         # In a full system, adding a transaction, especially a demand, might trigger re-planning.
