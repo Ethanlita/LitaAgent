@@ -516,18 +516,28 @@ class InventoryManagerCIR:
         return total_shortfall
 
     def plan_production(self, up_to_day: Optional[int] = None):
+        # 修改点：将 up_to_day 的默认值设为实际的最后一天索引
+        # ---
+        # Modified: Set the default value of up_to_day to the actual last day index
         if up_to_day is None:
-            up_to_day = self.max_simulation_day
+            up_to_day = self.max_simulation_day - 1 # max_simulation_day 是总步数 (e.g., 50), 所以最后一天索引是 max_simulation_day - 1 / max_simulation_day is the total number of steps (e.g., 50), so the last day index is max_simulation_day - 1
 
-        # Clear the existing production plan for days >= self.current_day
-        for day_to_clear in range(self.current_day, up_to_day + 1):
+        # 清空当前的生产计划（重新规划）
+        # ---
+        # Clear the current production plan (re-planning)
+        # 确保只清除从当前天到规划截止日期的计划
+        # ---
+        # Ensure only plans from current_day to up_to_day are cleared
+        for day_to_clear in range(self.current_day, up_to_day + 1): # up_to_day is inclusive
             if day_to_clear in self.production_plan:
                 del self.production_plan[day_to_clear]
 
         demands_by_day: Dict[int, int] = {}
         for contract in self.pending_demand_contracts:
+            # 只考虑在规划窗口内的需求 [self.current_day, up_to_day]
+            # ---
             # Only consider demands within the planning window [self.current_day, up_to_day]
-            if self.current_day <= contract.delivery_time <= up_to_day:
+            if self.current_day <= contract.delivery_time <= up_to_day: # up_to_day is inclusive
                 demands_by_day[contract.delivery_time] = demands_by_day.get(contract.delivery_time, 0) + contract.quantity
         
         # Iterate backwards for demand days to implement JIT (schedule later demands first)
@@ -552,10 +562,10 @@ class InventoryManagerCIR:
                     self.production_plan[prod_day] = self.production_plan.get(prod_day, 0) + can_plan_on_prod_day
                     remaining_to_plan_for_this_demand -= can_plan_on_prod_day
             
-            if remaining_to_plan_for_this_demand > 0:
-                if os.path.exists("env.test"):
-                    print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} due on day {demand_delivery_day}. "
-                          f"Unplanned quantity: {remaining_to_plan_for_this_demand}. This might be due to capacity limits or demands exceeding capacity even if planned from self.current_day.")
+            if remaining_to_plan_for_this_demand > 0 and os.path.exists("env.test"):
+                print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} due on day {demand_delivery_day}. "
+                      f"Unplanned quantity: {remaining_to_plan_for_this_demand}.")
+
 
 
     def get_available_production_capacity(self, day: int) -> int:

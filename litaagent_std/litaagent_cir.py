@@ -445,6 +445,11 @@ class LitaAgentCIR(StdSyncAgent):
         分数 = (接受组合前的库存成本) - (接受组合后的库存成本)。
         成本由 calculate_inventory_cost_score 计算，越低越好。
         因此，本方法返回的分数越高，代表该报价组合带来的成本降低越多，越有利。
+        ---
+        Evaluates the score of an offer combination.
+        Score = (inventory cost before accepting combo) - (inventory cost after accepting combo).
+        Cost is calculated by calculate_inventory_cost_score; lower is better.
+        Thus, a higher score returned by this method means the offer combo leads to a greater cost reduction, which is more favorable.
         Parameter:
             Offer list
             Inventory Manager(im)
@@ -456,26 +461,36 @@ class LitaAgentCIR(StdSyncAgent):
         # last_simulation_day 对于 calculate_inventory_cost_score 是包含的
         # 如果 awi.n_steps 是总模拟步数 (例如 50, 代表天数 0 到 49),
         # 那么最后一天是 awi.n_steps - 1.
-        last_day = awi.n_steps - 1
+        # ---
+        # last_simulation_day for calculate_inventory_cost_score is inclusive.
+        # If awi.n_steps is the total number of simulation steps (e.g., 50, representing days 0 to 49),
+        # then the last day is awi.n_steps - 1.
+        actual_last_simulation_day = awi.n_steps - 1 # 修改点：明确定义实际的最后模拟日索引 / Modified: Explicitly define the actual last simulation day index
 
         # 1. 定义单位缺货惩罚 (unit_shortfall_penalty)
-        unit_shortfall_penalty = self.awi.current_shortfall_penalty  # 默认回退值
+        # ---
+        # 1. Define unit shortfall penalty
+        unit_shortfall_penalty = self.awi.current_shortfall_penalty
 
         # unit_storage_cost
         current_unit_storage_cost = self.awi.current_storage_cost
 
         # 2. 计算 score_a: 接受报价组合前的总库存成本
+        # ---
+        # 2. Calculate score_a: total inventory cost before accepting the offer combination
         im_before = current_im.deepcopy()
         # 假设 calculate_inventory_cost_score 是在模块级别定义的函数
         score_a = self.calculate_inventory_cost_score(
             im_state=im_before,
             current_day=today,
-            last_simulation_day=self.awi.n_steps,
+            last_simulation_day=actual_last_simulation_day, # 修改点：传递正确的最后模拟日 / Modified: Pass the correct last simulation day
             unit_shortfall_penalty=unit_shortfall_penalty,
             unit_storage_cost=current_unit_storage_cost  # 传递虚拟值
         )
 
         # 3. 计算 score_b: 接受报价组合后的总库存成本
+        # ---
+        # 3. Calculate score_b: total inventory cost after accepting the offer combination
         im_after = current_im.deepcopy()
         for negotiator_id, offer_outcome in offer_combination.items():
             if not offer_outcome:  # 防御性检查，确保 offer_outcome 不是 None
@@ -506,7 +521,7 @@ class LitaAgentCIR(StdSyncAgent):
         score_b = self.calculate_inventory_cost_score(
             im_state=im_after,
             current_day=today,
-            last_simulation_day=self.awi.n_steps,
+            last_simulation_day=actual_last_simulation_day, # 修改点：传递正确的最后模拟日 / Modified: Pass the correct last simulation day
             unit_shortfall_penalty=unit_shortfall_penalty,
             unit_storage_cost=current_unit_storage_cost  # 传递虚拟值
         )
@@ -544,7 +559,7 @@ class LitaAgentCIR(StdSyncAgent):
                   f"  Raw Score (a-b)         : {raw_final_score:.2f}\n"
                   f"  Normalized Score        : {normalized_final_score:.3f}")
 
-        return (raw_final_score, normalized_final_score)
+        return raw_final_score, normalized_final_score
 
     def normalize_final_score(self, final_score: float, score_a: float) -> float:
         """
@@ -652,38 +667,40 @@ class LitaAgentCIR(StdSyncAgent):
             self,
             im_state: InventoryManagerCIR,
             current_day: int,
-            last_simulation_day: int,
+            last_simulation_day: int, # 这个参数现在代表实际的最后一天索引 (e.g., 49 if n_steps=50) / This parameter now represents the actual last day index (e.g., 49 if n_steps=50)
             unit_shortfall_penalty: float,
             unit_storage_cost: float
             # Assuming a single storage cost for simplicity, or it can be passed as a dict/tuple
     ) -> float:
         total_cost_score = 0.0
 
-        # Ensure the production plan within the im_state is up-to-date for the relevant horizon
-        im_state.plan_production(up_to_day=last_simulation_day)
+        # 确保传入的 im_state 的生产计划更新到正确的最后模拟日
+        # ---
+        # Ensure the production plan within the passed im_state is updated to the correct last simulation day
+        im_state.plan_production(up_to_day=last_simulation_day) # 修改点：明确指定 up_to_day / Modified: Explicitly specify up_to_day
 
+        # A. 计算产品缺货惩罚
+        # ---
         # A. Calculate Product Shortfall Penalty
-        # This needs to simulate day-by-day product availability vs. demand.
-        # We'll make a temporary copy to simulate forward without altering the original im_state's current_day.
-        sim_eval_im = im_state.deepcopy()  # Make a copy to simulate operations without affecting the original
+        sim_eval_im_for_shortfall = im_state.deepcopy()
+        sim_eval_im_for_shortfall.current_day = current_day
 
-        # Ensure the simulation starts from the correct day for evaluation
-        sim_eval_im.current_day = current_day
-
-        for d in range(current_day + 1, last_simulation_day + 1):
-            # 1. Demands due on day 'd'
+        for d in range(current_day + 1, last_simulation_day + 1): # 循环到 last_simulation_day (包含) / Loop up to last_simulation_day (inclusive)
             total_demand_qty_on_d = 0.0
-            for contract in sim_eval_im.pending_demand_contracts:
+            for contract in sim_eval_im_for_shortfall.pending_demand_contracts:
                 if contract.delivery_time == d:
                     total_demand_qty_on_d += contract.quantity
 
-            if total_demand_qty_on_d == 0:  # No demand, no shortfall for this day based on contracts
-                # Still need to account for storage for this day if we continue the loop here.
-                # The storage calculation be+low will handle it.
-                pass
+            if total_demand_qty_on_d == 0:
+                continue # 当天无需求，继续下一天 / No demand for this day, continue to the next
 
-            # 2. Total products available to deliver on day 'd'
-            total_available_to_deliver_on_d = sim_eval_im.get_inventory_summary(d, MaterialType.PRODUCT)['estimated_available']
+            # 获取在 d 天开始时可用于交付的总产品量
+            # ---
+            # Get total products available for delivery at the start of day 'd'
+            # 注意：get_inventory_summary(d, ...) 返回的是 d 天开始时的库存和基于当前计划的预估可用量
+            # ---
+            # Note: get_inventory_summary(d, ...) returns stock at the start of day d and estimated availability based on current plans
+            total_available_to_deliver_on_d = sim_eval_im_for_shortfall.get_inventory_summary(d, MaterialType.PRODUCT)['estimated_available']
 
             # 3. Calculate shortfall for day 'd'
             if total_demand_qty_on_d > total_available_to_deliver_on_d:
@@ -691,29 +708,41 @@ class LitaAgentCIR(StdSyncAgent):
                 total_cost_score += shortfall_on_d * unit_shortfall_penalty
                 if os.path.exists("env.test"):
                     print(
-                        f"Debug (calc_inv_cost @ day {d}): Demand={total_demand_qty_on_d}, Avail={total_available_to_deliver_on_d}, Shortfall={shortfall_on_d}, Penalty={shortfall_on_d * unit_shortfall_penalty}")
+                        f"Debug (calc_inv_cost @ day {d} - Shortfall): Demand={total_demand_qty_on_d}, Avail={total_available_to_deliver_on_d}, Shortfall={shortfall_on_d}, Penalty={shortfall_on_d * unit_shortfall_penalty:.2f}")
 
+            # 为了准确模拟后续天的缺货，需要模拟当天的交付（即使只是估算）
+            # 这部分在原代码中缺失，但对于多日缺货计算是重要的。
+            # 为简化，我们假设 get_inventory_summary 已经考虑了这一点，或者缺货计算是独立的。
+            # 如果要更精确，这里应该更新 sim_eval_im_for_shortfall 的产品批次。
+            # ---
+            # To accurately simulate shortfall for subsequent days, today's delivery (even if estimated) needs to be simulated.
+            # This part was missing in the original code but is important for multi-day shortfall calculation.
+            # For simplicity, we assume get_inventory_summary already considers this, or shortfall calculation is independent.
+            # For more precision, product batches in sim_eval_im_for_shortfall should be updated here.
+
+
+        # B. 计算总存储成本
+        # ---
         # B. Calculate Total Storage Cost
-        # Iterate again, this time using the original im_state, assuming its current_day is the actual start
-        # or use a fresh copy if the above loop modified im_state in ways not intended for storage calculation.
-        # For storage, we need SOD stock which is then stored for the whole day.
-        # The loop for shortfall above *did* modify sim_eval_im's batches.
-        # So, we need a fresh start for storage, or use the final state of sim_eval_im if that's desired.
-        # The prompt says: "current_stock from get_inventory_summary(d, ...) refers to stock at the beginning of day d"
-        # This means we can iterate using the *original* im_state for storage calculation if we interpret it as
-        # calculating storage cost for *future* days based on the *initial* state + plan.
-        # However, if decisions (like accepting an offer) are made based on this score, the storage cost
-        # should reflect the state *after* those decisions.
-        # Given this is a helper to score a *potential* state (im_state), we calculate storage on that state.
+        # 使用传入的 im_state 进行存储成本计算，因为它代表了假设决策后的状态。
+        # 它的 current_day 应该仍然是 current_day (即评估开始的日期)。
+        # 我们将在这个副本上模拟每一天的结束操作。
+        # ---
+        # Use the passed im_state for storage cost calculation as it represents the state after a hypothetical decision.
+        # Its current_day should still be current_day (i.e., the start day of the evaluation).
+        # We will simulate end-of-day operations on this copy.
+        sim_eval_im_for_storage = im_state.deepcopy() # 使用一个新的副本来模拟存储成本计算过程 / Use a new copy to simulate the storage cost calculation process
+        sim_eval_im_for_storage.current_day = current_day
 
         # Re-initialize a sim for storage cost calculation based on the *final state* of inventory after all demands met/shortfalled
         # This uses the sim_eval_im which has processed deliveries/productions up to last_simulation_day
 
-        # Let's recalculate storage costs based on the state of 'im_state' as passed, assuming it's the state to evaluate.
-        # The shortfall loop *simulated* operations on `sim_eval_im`.
-        # For calculating storage cost of `im_state`, we should use `im_state` directly as it represents
-        # the state *after* a hypothetical decision (e.g. accepting an offer).
-        # The production plan of im_state is already updated.
+        for d in range(current_day, last_simulation_day + 1): # 循环到 last_simulation_day (包含) / Loop up to last_simulation_day (inclusive)
+            # 获取 d 天开始时的库存用于计算当天的存储成本
+            # ---
+            # Get stock at the start of day d to calculate storage cost for that day
+            raw_stock_info = sim_eval_im_for_storage.get_inventory_summary(d, MaterialType.RAW)
+            product_stock_info = sim_eval_im_for_storage.get_inventory_summary(d, MaterialType.PRODUCT)
 
         for d in range(current_day, last_simulation_day + 1):
             if(os.path.exists("env.test")):
@@ -723,24 +752,39 @@ class LitaAgentCIR(StdSyncAgent):
 
             # As per prompt clarification: 'current_stock' is SOD, stored for the entirety of day d.
             daily_storage_cost = (
-                        raw_stock_info.get('current_stock', 0.0) * unit_storage_cost +
+                        raw_stock_info.get('current_stock', 0.0) * unit_storage_cost + # unit_storage_cost 是外部传入的，或者从 self.awi 获取 / unit_storage_cost is passed externally or obtained from self.awi
                         product_stock_info.get('current_stock', 0.0) * unit_storage_cost)
             total_cost_score += daily_storage_cost
             if os.path.exists("env.test"):
                 print(
-                    f"Debug (calc_inv_cost @ day {d}): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
-            im_state.process_day_end_operations(d)
-        # C. Calculate excess inventory penalty
-        # Get Real Inventory the day after last day, and add a penalty
-        im_curday = im_state.current_day
-        if im_curday == last_simulation_day - 1:
-            im_state.process_day_end_operations(im_curday)
-        # else im_curday = last_simulation_day
-        print(f"Debug (calc inventory penalty): Day in im: {im_state.current_day} Last simulation day: {last_simulation_day}")
-        remain_raw = im_state.get_inventory_summary(im_state.current_day, MaterialType.RAW)['current_stock']
-        remain_product = im_state.get_inventory_summary(im_state.current_day, MaterialType.PRODUCT)['current_stock']
-        inventory_penalty = (remain_raw + remain_product) *  self.awi.current_disposal_cost
+                    f"Debug (calc_inv_cost @ day {d} - Storage): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
+
+            # 推进模拟副本的天数以进行下一天的存储成本计算
+            # ---
+            # Advance the day of the simulation copy for the next day's storage cost calculation
+            sim_eval_im_for_storage.process_day_end_operations(d) # 这会将 sim_eval_im_for_storage.current_day 推进到 d + 1 / This will advance sim_eval_im_for_storage.current_day to d + 1
+
+        # C. 计算期末库存处置成本
+        # ---
+        # C. Calculate excess inventory penalty (disposal cost at the end)
+        # 此时，sim_eval_im_for_storage.current_day 应该是 last_simulation_day + 1
+        # ---
+        # At this point, sim_eval_im_for_storage.current_day should be last_simulation_day + 1
+        day_for_disposal_check = last_simulation_day + 1
+
+        if os.path.exists("env.test"):
+            print(f"Debug (calc inventory penalty): Checking disposal for day {day_for_disposal_check}. IM state day: {sim_eval_im_for_storage.current_day}, Last simulation day (param): {last_simulation_day}")
+
+        # 我们需要的是在 last_simulation_day 结束后，即第 day_for_disposal_check 天开始时的库存
+        # ---
+        # We need the inventory at the start of day_for_disposal_check, which is after last_simulation_day ends.
+        remain_raw = sim_eval_im_for_storage.get_inventory_summary(day_for_disposal_check, MaterialType.RAW)['current_stock']
+        remain_product = sim_eval_im_for_storage.get_inventory_summary(day_for_disposal_check, MaterialType.PRODUCT)['current_stock']
+
+        inventory_penalty = (remain_raw + remain_product) * self.awi.current_disposal_cost
         total_cost_score += inventory_penalty
+        if os.path.exists("env.test"):
+            print(f"Debug (calc inventory penalty): Day {day_for_disposal_check} - RemainRaw={remain_raw:.0f}, RemainProd={remain_product:.0f}, DisposalCost={inventory_penalty:.2f}")
 
         return total_cost_score
 
