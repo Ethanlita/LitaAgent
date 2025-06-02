@@ -499,7 +499,8 @@ class LitaAgentCIR(StdSyncAgent):
         # 2. 计算 score_a: 接受报价组合前的总库存成本
         # ---
         # 2. Calculate score_a: total inventory cost before accepting the offer combination
-        im_before = current_im.deepcopy()
+        im_before = deepcopy(current_im)
+        im_before.is_deepcopy = True
         # 假设 calculate_inventory_cost_score 是在模块级别定义的函数
         score_a = self.calculate_inventory_cost_score(
             im_state=im_before,
@@ -512,7 +513,8 @@ class LitaAgentCIR(StdSyncAgent):
         # 3. 计算 score_b: 接受报价组合后的总库存成本
         # ---
         # 3. Calculate score_b: total inventory cost after accepting the offer combination
-        im_after = current_im.deepcopy()
+        im_after = deepcopy(current_im)
+        im_after.is_deepcopy = True
         for negotiator_id, offer_outcome in offer_combination.items():
             if not offer_outcome:  # 防御性检查，确保 offer_outcome 不是 None
                 if os.path.exists("env.test"):
@@ -701,7 +703,8 @@ class LitaAgentCIR(StdSyncAgent):
         # A. 计算产品缺货惩罚
         # ---
         # A. Calculate Product Shortfall Penalty
-        sim_eval_im_for_shortfall = im_state.deepcopy()
+        sim_eval_im_for_shortfall = deepcopy(im_state)
+        sim_eval_im_for_shortfall.is_deepcopy = True
         sim_eval_im_for_shortfall.current_day = current_day
 
         for d in range(current_day + 1, last_simulation_day + 1): # 循环到 last_simulation_day (包含) / Loop up to last_simulation_day (inclusive)
@@ -725,9 +728,6 @@ class LitaAgentCIR(StdSyncAgent):
             if total_demand_qty_on_d > total_available_to_deliver_on_d:
                 shortfall_on_d = total_demand_qty_on_d - total_available_to_deliver_on_d
                 total_cost_score += shortfall_on_d * unit_shortfall_penalty
-                if os.path.exists("env.test"):
-                    print(f"Debug (calc_inv_cost @ day {d} - Shortfall): Demand={total_demand_qty_on_d}, Avail={total_available_to_deliver_on_d}, Shortfall={shortfall_on_d}, Penalty={shortfall_on_d * unit_shortfall_penalty:.2f}")
-
             # 为了准确模拟后续天的缺货，需要模拟当天的交付（即使只是估算）
             # 这部分在原代码中缺失，但对于多日缺货计算是重要的。
             # 为简化，我们假设 get_inventory_summary 已经考虑了这一点，或者缺货计算是独立的。
@@ -749,7 +749,8 @@ class LitaAgentCIR(StdSyncAgent):
         # Use the passed im_state for storage cost calculation as it represents the state after a hypothetical decision.
         # Its current_day should still be current_day (i.e., the start day of the evaluation).
         # We will simulate end-of-day operations on this copy.
-        sim_eval_im_for_storage = im_state.deepcopy() # 使用一个新的副本来模拟存储成本计算过程 / Use a new copy to simulate the storage cost calculation process
+        sim_eval_im_for_storage = deepcopy(im_state) # 使用一个新的副本来模拟存储成本计算过程 / Use a new copy to simulate the storage cost calculation process
+        sim_eval_im_for_storage.is_deepcopy = True
         sim_eval_im_for_storage.current_day = current_day
 
         # Re-initialize a sim for storage cost calculation based on the *final state* of inventory after all demands met/shortfalled
@@ -1475,6 +1476,26 @@ class LitaAgentCIR(StdSyncAgent):
             print(f"CounterAll ({self.id} @ {self.awi.current_step}): Best combo NIDs: {nids_in_best_str}, norm_score: {norm_score:.3f}, norm_profit: {norm_profit:.3f}")
             # CounterAll ({self.id} @ {self.awi.current_step}): 最佳组合 NID: {nids_in_best_str}, norm_score: {norm_score:.3f}, norm_profit: {norm_profit:.3f}
 
+        # --- 新增调试输出 ---
+        # --- Added debug output ---
+        if os.path.exists("env.test"):
+            if best_combination_items:
+                best_combo_details_str_list = []
+                for nid_best, outcome_best in best_combination_items:
+                    best_combo_details_str_list.append(
+                        f"NID({nid_best}): Q({outcome_best[QUANTITY]}) P({outcome_best[UNIT_PRICE]:.2f}) T({outcome_best[TIME]})"
+                    )
+                best_combo_str_for_log = ", ".join(best_combo_details_str_list)
+                print(
+                    f"CounterAll ({self.id} @ {self.awi.current_step}): Selected Best Combo Details: [{best_combo_str_for_log}]")
+                # CounterAll ({self.id} @ {self.awi.current_step}): 选中的最佳组合详细信息: [{best_combo_str_for_log}]
+            else:
+                print(
+                    f"CounterAll ({self.id} @ {self.awi.current_step}): No best combination selected by _evaluate_offer_combinations.")
+                # CounterAll ({self.id} @ {self.awi.current_step}): _evaluate_offer_combinations 未选中最佳组合。
+        # --- 调试输出结束 ---
+        # --- End of debug output ---
+
         if best_combination_items is None: # No valid combination found / 未找到有效组合
             if os.path.exists("env.test"): print(f"Info ({self.id} @ {self.awi.current_step}): No best combination found by _evaluate_offer_combinations. All offers rejected.")
             # 信息 ({self.id} @ {self.awi.current_step}): _evaluate_offer_combinations 未找到最佳组合。所有报价均被拒绝。
@@ -1503,7 +1524,8 @@ class LitaAgentCIR(StdSyncAgent):
             # 1.2 如果存在未满足的需求，则向其他方提出还价 (主要针对原材料采购)
             # Simulate accepted offers in a temporary IM to get a more accurate remaining need.
             # 在临时IM中模拟已接受的报价，以获得更准确的剩余需求。
-            temp_im_for_case1_counters = self.im.deepcopy()
+            temp_im_for_case1_counters = deepcopy(self.im)
+            temp_im_for_case1_counters.is_deepcopy = True
             for nid_accepted, outcome_accepted in best_combo_outcomes_dict.items():
                 is_supply_contract = self._is_supplier(nid_accepted)
                 contract_type = IMContractType.SUPPLY if is_supply_contract else IMContractType.DEMAND

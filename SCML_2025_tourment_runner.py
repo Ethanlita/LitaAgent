@@ -3,6 +3,7 @@ from scml.oneshot import *
 from scml.std import *
 
 from litaagent_std.litaagent_cir import LitaAgentCIR
+from litaagent_std.litaagent_y import LitaAgentY
 
 agent_types = [
     SyncRandomStdAgent,
@@ -10,6 +11,7 @@ agent_types = [
     GreedyOneShotAgent,
     RandomStdAgent,
     LitaAgentCIR,
+    LitaAgentY
 ]
 
 world = SCML2024StdWorld(
@@ -18,9 +20,6 @@ world = SCML2024StdWorld(
 )
 
 _, _ = world.draw()
-
-# 这是调试代码
-# input()
 
 # Run the tournament
 world.run_with_progress()  # may take few minutes
