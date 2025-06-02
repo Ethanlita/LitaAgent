@@ -59,13 +59,13 @@ class LitaAgentCIR(StdSyncAgent):
         concession_curve_power: float = 1.5,
         capacity_tight_margin_increase: float = 0.07,
         procurement_cash_flow_limit_percent: float = 0.75,
-        p_threshold: float = 0.7,
-        q_threshold: float = 0.0,
+        p_threshold: float = 0.5,
+        q_threshold: float = -0.2,
         # 新增参数用于控制组合评估策略
         # ---
         # New parameters to control combination evaluation strategy
-        combo_evaluation_strategy: str = "beam_search",  # 可选 "k_max", "beam_search", "simulated_annealing" / Options: "k_max", "beam_search", "simulated_annealing"
-        max_combo_size_for_k_max: int = 2, # 当 strategy == "k_max" 时使用 / Used when strategy == "k_max"
+        combo_evaluation_strategy: str = "k_max",  # 可选 "k_max", "beam_search", "simulated_annealing", "exhaustive_search" / Options: "k_max", "beam_search", "simulated_annealing", "exhaustive_search" # MODIFIED
+        max_combo_size_for_k_max: int = 6, # 当 strategy == "k_max" 时使用 / Used when strategy == "k_max"
         beam_width_for_beam_search: int = 3, # 当 strategy == "beam_search" 时使用 / Used when strategy == "beam_search"
         iterations_for_sa: int = 200, # 当 strategy == "simulated_annealing" 时使用 / Used when strategy == "simulated_annealing"
         sa_initial_temp: float = 1.0, # SA 初始温度 / SA initial temperature
@@ -77,9 +77,9 @@ class LitaAgentCIR(StdSyncAgent):
         # —— 参数 ——
         self.total_insufficient = None
         self.today_insufficient = None
-        self.procurement_cash_flow_limit_percent = procurement_cash_flow_limit_percent # Added from Step 6
-        self.concession_curve_power = concession_curve_power # Added from Step 9.b
-        self.capacity_tight_margin_increase = capacity_tight_margin_increase # Added from Step 9.d
+        self.procurement_cash_flow_limit_percent = procurement_cash_flow_limit_percent
+        self.concession_curve_power = concession_curve_power
+        self.capacity_tight_margin_increase = capacity_tight_margin_increase
         self.p_threshold = p_threshold
         self.q_threshold = q_threshold
 
@@ -88,14 +88,13 @@ class LitaAgentCIR(StdSyncAgent):
         # Store parameters related to combination evaluation strategy
         self.combo_evaluation_strategy = combo_evaluation_strategy
         self.max_combo_size_for_k_max = max_combo_size_for_k_max
-        self.beam_width = beam_width_for_beam_search # 重命名以避免与方法参数冲突 / Renamed to avoid conflict with method parameter
+        self.beam_width = beam_width_for_beam_search
         self.sa_iterations = iterations_for_sa
         self.sa_initial_temp = sa_initial_temp
         self.sa_cooling_rate = sa_cooling_rate
 
         if os.path.exists("env.test"):
             print(f"🤖 LitaAgentCIR {self.id} initialized with: \n"\
-                  # ... (其他打印) ...
                   f"  combo_evaluation_strategy='{self.combo_evaluation_strategy}', \n"\
                   f"  max_combo_size_for_k_max={self.max_combo_size_for_k_max}, \n"\
                   f"  beam_width={self.beam_width}, \n"\
@@ -806,6 +805,64 @@ class LitaAgentCIR(StdSyncAgent):
 
         return total_cost_score
 
+    def _evaluate_offer_combinations_exhaustive( # NEW METHOD
+            self,
+            offers: Dict[str, Outcome],
+            im: InventoryManagerCIR,
+            awi: OneShotAWI,
+    ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
+        """
+        使用“全局搜索”（枚举所有非空子集）策略评估组合，主要基于库存得分。
+        确保评估的组合至少包含一个offer。
+        ---
+        Evaluates combinations using the "exhaustive search" (all non-empty subsets) strategy,
+        primarily based on inventory score.
+        Ensures that evaluated combinations contain at least one offer.
+        """
+        if not offers:
+            return None, -1.0
+
+        offer_items_list: List[Tuple[str, Outcome]] = list(offers.items())
+        num_offers_available = len(offer_items_list)
+
+        best_combination_items: Optional[List[Tuple[str, Outcome]]] = None
+        highest_norm_score: float = -1.0
+
+        # 警告：如果 num_offers_available 很大 (例如 > 15-20)，这个循环会非常慢
+        # ---
+        # WARNING: This loop can be very slow if num_offers_available is large (e.g., > 15-20)
+        if num_offers_available > 15 and os.path.exists("env.test"): # Add a practical warning
+            print(f"Warning ({self.id} @ {awi.current_step}): Exhaustive search with {num_offers_available} offers. This might be very slow.")
+
+        for i in range(1, num_offers_available + 1): # Loop for all possible combination sizes
+            for combo_as_tuple_of_tuples in iter_combinations(offer_items_list, i):
+                current_combination_list_of_tuples = list(combo_as_tuple_of_tuples)
+                current_combination_dict = dict(current_combination_list_of_tuples)
+
+                _raw_cost_reduction, current_norm_score = self.score_offers(
+                    offer_combination=current_combination_dict,
+                    current_im=im,
+                    awi=awi
+                )
+
+                if current_norm_score > highest_norm_score:
+                    highest_norm_score = current_norm_score
+                    best_combination_items = current_combination_list_of_tuples
+                elif current_norm_score == highest_norm_score and best_combination_items:
+                    # 如果分数相同，优先选择包含 offer 数量较少的组合
+                    # ---
+                    # If scores are the same, prefer combinations with fewer offers
+                    if len(current_combination_list_of_tuples) < len(best_combination_items):
+                        best_combination_items = current_combination_list_of_tuples
+
+        if os.path.exists("env.test") and best_combination_items:
+            best_combo_nids_str = [item[0] for item in best_combination_items]
+            print(f"Debug ({self.id} @ {awi.current_step}): ExhaustiveSearch Best Combo (by NormScore): NIDs: {best_combo_nids_str}, "\
+                  f"NormScore: {highest_norm_score:.3f}")
+        elif os.path.exists("env.test"):
+             print(f"Debug ({self.id} @ {awi.current_step}): ExhaustiveSearch: No suitable non-empty offer combination found (by NormScore).")
+
+        return best_combination_items, highest_norm_score
 
     def _evaluate_offer_combinations_k_max(
             self,
@@ -1162,6 +1219,8 @@ class LitaAgentCIR(StdSyncAgent):
 
         if self.combo_evaluation_strategy == "k_max":
             best_combination_items, best_norm_score = self._evaluate_offer_combinations_k_max(offers, im, awi)
+        elif self.combo_evaluation_strategy == "exhaustive_search":  # MODIFIED: Added exhaustive_search
+            best_combination_items, best_norm_score = self._evaluate_offer_combinations_exhaustive(offers, im, awi)
         elif self.combo_evaluation_strategy == "beam_search":
             best_combination_items, best_norm_score = self._evaluate_offer_combinations_beam_search(offers, im, awi)
         elif self.combo_evaluation_strategy == "simulated_annealing":
