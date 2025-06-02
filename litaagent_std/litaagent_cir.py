@@ -56,11 +56,20 @@ class LitaAgentCIR(StdSyncAgent):
     def __init__(
         self,
         *args,
-        concession_curve_power: float = 1.5, 
-        capacity_tight_margin_increase: float = 0.07, 
-        procurement_cash_flow_limit_percent: float = 0.75, # Added from Step 6
-        p_threshold: float = 0.7, # Threshold for combined score
-        q_threshold: float = 0.0, # Threshold for individual norm_profit (unused in current logic directly, but for future)
+        concession_curve_power: float = 1.5,
+        capacity_tight_margin_increase: float = 0.07,
+        procurement_cash_flow_limit_percent: float = 0.75,
+        p_threshold: float = 0.7,
+        q_threshold: float = 0.0,
+        # 新增参数用于控制组合评估策略
+        # ---
+        # New parameters to control combination evaluation strategy
+        combo_evaluation_strategy: str = "beam_search",  # 可选 "k_max", "beam_search", "simulated_annealing" / Options: "k_max", "beam_search", "simulated_annealing"
+        max_combo_size_for_k_max: int = 2, # 当 strategy == "k_max" 时使用 / Used when strategy == "k_max"
+        beam_width_for_beam_search: int = 3, # 当 strategy == "beam_search" 时使用 / Used when strategy == "beam_search"
+        iterations_for_sa: int = 200, # 当 strategy == "simulated_annealing" 时使用 / Used when strategy == "simulated_annealing"
+        sa_initial_temp: float = 1.0, # SA 初始温度 / SA initial temperature
+        sa_cooling_rate: float = 0.95, # SA 冷却速率 / SA cooling rate
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -73,13 +82,25 @@ class LitaAgentCIR(StdSyncAgent):
         self.capacity_tight_margin_increase = capacity_tight_margin_increase # Added from Step 9.d
         self.p_threshold = p_threshold
         self.q_threshold = q_threshold
-        
-        if os.path.exists("env.test"): # Added from Step 11
-            print(f"🤖 LitaAgentY {self.id} initialized with: \n"
-                  f"  procurement_cash_flow_limit_percent={self.procurement_cash_flow_limit_percent:.2f}, \n"
-                  f"  concession_curve_power={self.concession_curve_power:.2f}, \n"
-                  f"  capacity_tight_margin_increase={self.capacity_tight_margin_increase:.3f}\n"
-                  f"  p_threshold={self.p_threshold:.2f}, q_threshold={self.q_threshold:.2f}")
+
+        # 存储组合评估策略相关的参数
+        # ---
+        # Store parameters related to combination evaluation strategy
+        self.combo_evaluation_strategy = combo_evaluation_strategy
+        self.max_combo_size_for_k_max = max_combo_size_for_k_max
+        self.beam_width = beam_width_for_beam_search # 重命名以避免与方法参数冲突 / Renamed to avoid conflict with method parameter
+        self.sa_iterations = iterations_for_sa
+        self.sa_initial_temp = sa_initial_temp
+        self.sa_cooling_rate = sa_cooling_rate
+
+        if os.path.exists("env.test"):
+            print(f"🤖 LitaAgentCIR {self.id} initialized with: \n"\
+                  # ... (其他打印) ...
+                  f"  combo_evaluation_strategy='{self.combo_evaluation_strategy}', \n"\
+                  f"  max_combo_size_for_k_max={self.max_combo_size_for_k_max}, \n"\
+                  f"  beam_width={self.beam_width}, \n"\
+                  f"  sa_iterations={self.sa_iterations}")
+    # ... (其他方法) ...
 
         # —— 运行时变量 ——
         self.im: Optional[InventoryManagerCIR] = None # Updated type hint
@@ -304,7 +325,7 @@ class LitaAgentCIR(StdSyncAgent):
                     # If min_q_nmi is greater than remaining need, we can't propose to this supplier for this need.
                     # Or if calculated quantity is invalid.
                     if os.path.exists("env.test") and propose_q_for_this_supplier > 0 :
-                         print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - Skipping supplier {nid}. "
+                         print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - Skipping supplier {nid}. "\
                                f"Min Q ({min_q_nmi}) > remaining need ({remaining_procurement_need}) or invalid propose_q ({propose_q_for_this_supplier}).")
                     continue
 
@@ -327,7 +348,7 @@ class LitaAgentCIR(StdSyncAgent):
                     proposals[nid] = (propose_q, propose_t, propose_p)
                     remaining_procurement_need -= propose_q
                     if os.path.exists("env.test"):
-                        print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - To {nid}: Q={propose_q}, T={propose_t}, P={propose_p:.2f}. "
+                        print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - To {nid}: Q={propose_q}, T={propose_t}, P={propose_p:.2f}. "\
                               f"Remaining need: {remaining_procurement_need}")
 
             if remaining_procurement_need > 0 and os.path.exists("env.test"):
@@ -368,7 +389,7 @@ class LitaAgentCIR(StdSyncAgent):
                 remaining_sellable_quantity = estimated_sellable_quantity
 
                 if os.path.exists("env.test"):
-                    print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - Estimated sellable products: {estimated_sellable_quantity}. "
+                    print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - Estimated sellable products: {estimated_sellable_quantity}. "\
                           f"Available consumers: {len(sorted_consumer_nids)}.")
 
                 for nid in sorted_consumer_nids:
@@ -398,7 +419,7 @@ class LitaAgentCIR(StdSyncAgent):
 
                     if propose_q_for_this_consumer <= 0 or propose_q_for_this_consumer > remaining_sellable_quantity:
                         if os.path.exists("env.test") and propose_q_for_this_consumer > 0:
-                            print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - Skipping consumer {nid}. "
+                            print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - Skipping consumer {nid}. "\
                                   f"Min Q ({min_q_nmi}) > remaining sellable ({remaining_sellable_quantity}) or invalid propose_q ({propose_q_for_this_consumer}).")
                         continue
 
@@ -420,7 +441,7 @@ class LitaAgentCIR(StdSyncAgent):
                         proposals[nid] = (propose_q, propose_t, propose_p)
                         remaining_sellable_quantity -= propose_q
                         if os.path.exists("env.test"):
-                             print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - To {nid}: Q={propose_q}, T={propose_t}, P={propose_p:.2f}. "
+                             print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - To {nid}: Q={propose_q}, T={propose_t}, P={propose_p:.2f}. "\
                                    f"Remaining sellable: {remaining_sellable_quantity}")
 
                 if remaining_sellable_quantity > 0 and os.path.exists("env.test"):
@@ -495,8 +516,7 @@ class LitaAgentCIR(StdSyncAgent):
         for negotiator_id, offer_outcome in offer_combination.items():
             if not offer_outcome:  # 防御性检查，确保 offer_outcome 不是 None
                 if os.path.exists("env.test"):
-                    print(
-                        f"Warning ({self.id} @ {today}): Null offer_outcome for negotiator {negotiator_id} in combination. Skipping.")
+                    print(f"Warning ({self.id} @ {today}): Null offer_outcome for negotiator {negotiator_id} in combination. Skipping.")
                 continue
 
             quantity, time, unit_price = offer_outcome
@@ -529,8 +549,7 @@ class LitaAgentCIR(StdSyncAgent):
         # 4. 确保成本分数 a 和 b 不为负 (成本理论上应 >= 0)
         if score_a < 0:
             if os.path.exists("env.test"):
-                print(
-                    f"Warning ({self.id} @ {today}): score_a (cost_before) is negative: {score_a:.2f}. Clamping to 0.")
+                print(f"Warning ({self.id} @ {today}): score_a (cost_before) is negative: {score_a:.2f}. Clamping to 0.")
             score_a = 0.0
         if score_b < 0:
             if os.path.exists("env.test"):
@@ -553,10 +572,10 @@ class LitaAgentCIR(StdSyncAgent):
                     offer_details_str_list.append(f"NID({nid}):NullOutcome")
             offers_str = ", ".join(offer_details_str_list) if offer_details_str_list else "No offers in combo"
 
-            print(f"ScoreOffers ({self.id} @ {today}): Combo Eval: [{offers_str}]\n"
-                  f"  Cost Before (score_a)   : {score_a:.2f}\n"
-                  f"  Cost After (score_b)    : {score_b:.2f}\n"
-                  f"  Raw Score (a-b)         : {raw_final_score:.2f}\n"
+            print(f"ScoreOffers ({self.id} @ {today}): Combo Eval: [{offers_str}]\n"\
+                  f"  Cost Before (score_a)   : {score_a:.2f}\n"\
+                  f"  Cost After (score_b)    : {score_b:.2f}\n"\
+                  f"  Raw Score (a-b)         : {raw_final_score:.2f}\n"\
                   f"  Normalized Score        : {normalized_final_score:.3f}")
 
         return raw_final_score, normalized_final_score
@@ -707,8 +726,7 @@ class LitaAgentCIR(StdSyncAgent):
                 shortfall_on_d = total_demand_qty_on_d - total_available_to_deliver_on_d
                 total_cost_score += shortfall_on_d * unit_shortfall_penalty
                 if os.path.exists("env.test"):
-                    print(
-                        f"Debug (calc_inv_cost @ day {d} - Shortfall): Demand={total_demand_qty_on_d}, Avail={total_available_to_deliver_on_d}, Shortfall={shortfall_on_d}, Penalty={shortfall_on_d * unit_shortfall_penalty:.2f}")
+                    print(f"Debug (calc_inv_cost @ day {d} - Shortfall): Demand={total_demand_qty_on_d}, Avail={total_available_to_deliver_on_d}, Shortfall={shortfall_on_d}, Penalty={shortfall_on_d * unit_shortfall_penalty:.2f}")
 
             # 为了准确模拟后续天的缺货，需要模拟当天的交付（即使只是估算）
             # 这部分在原代码中缺失，但对于多日缺货计算是重要的。
@@ -756,8 +774,7 @@ class LitaAgentCIR(StdSyncAgent):
                         product_stock_info.get('current_stock', 0.0) * unit_storage_cost)
             total_cost_score += daily_storage_cost
             if os.path.exists("env.test"):
-                print(
-                    f"Debug (calc_inv_cost @ day {d} - Storage): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
+                print(f"Debug (calc_inv_cost @ day {d} - Storage): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
 
             # 推进模拟副本的天数以进行下一天的存储成本计算
             # ---
@@ -788,6 +805,339 @@ class LitaAgentCIR(StdSyncAgent):
 
         return total_cost_score
 
+
+    def _evaluate_offer_combinations_k_max(
+            self,
+            offers: Dict[str, Outcome],
+            im: InventoryManagerCIR,
+            awi: OneShotAWI,
+    ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
+        """
+        使用“限制K大小” 策略评估组合，主要基于库存得分。
+        确保评估的组合至少包含一个offer。
+        ---
+        Evaluates combinations using the "limit K size" strategy, primarily based on inventory score.
+        Ensures that evaluated combinations contain at least one offer.
+        """
+        if not offers:
+            return None, -1.0
+
+        # 将字典形式的 offers 转换为 (negotiator_id, Outcome) 元组的列表，方便组合
+        offer_items_list: List[Tuple[str, Outcome]] = list(offers.items())
+
+        best_combination_items: Optional[List[Tuple[str, Outcome]]] = None
+        highest_norm_score: float = -1.0
+
+        for i in range(1, min(len(offer_items_list), self.max_combo_size_for_k_max) + 1):
+            for combo_as_tuple_of_tuples in iter_combinations(offer_items_list, i):
+                # combo_as_tuple_of_tuples 保证了组合非空，因为 i 从 1 开始
+                # ---
+                # combo_as_tuple_of_tuples ensures the combination is non-empty as i starts from 1
+                current_combination_list_of_tuples = list(combo_as_tuple_of_tuples)
+                current_combination_dict = dict(current_combination_list_of_tuples)
+
+                # 直接调用 score_offers 获取 norm_score
+                # ---
+                # Directly call score_offers to get norm_score
+                _raw_cost_reduction, current_norm_score = self.score_offers(
+                    offer_combination=current_combination_dict,
+                    current_im=im,
+                    awi=awi
+                )
+
+                if current_norm_score > highest_norm_score:
+                    highest_norm_score = current_norm_score
+                    best_combination_items = current_combination_list_of_tuples
+                elif current_norm_score == highest_norm_score and best_combination_items:
+                    if len(current_combination_list_of_tuples) < len(best_combination_items):
+                        best_combination_items = current_combination_list_of_tuples
+
+        if os.path.exists("env.test") and best_combination_items:
+            best_combo_nids_str = [item[0] for item in best_combination_items]
+            print(f"Debug ({self.id} @ {awi.current_step}): K-Max Best Combo (by NormScore): NIDs: {best_combo_nids_str}, "\
+                  f"NormScore: {highest_norm_score:.3f}")
+        elif os.path.exists("env.test"):
+             print(f"Debug ({self.id} @ {awi.current_step}): K-Max: No suitable non-empty offer combination found (by NormScore).")
+
+        return best_combination_items, highest_norm_score
+
+    def _evaluate_offer_combinations_beam_search(
+            self,
+            offers: Dict[str, Outcome],
+            im: InventoryManagerCIR,
+            awi: OneShotAWI,
+    ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
+        """
+        使用 Beam Search 策略评估组合，主要基于库存得分。
+        确保评估的组合至少包含一个offer。
+        ---
+        Evaluates combinations using the Beam Search strategy, primarily based on inventory score.
+        Ensures that evaluated combinations contain at least one offer.
+        """
+        if not offers:
+            return None, -1.0
+
+        offer_items_list = list(offers.items())
+
+        # beam 存储 (组合字典, norm_score) 元组
+        # 初始束可以包含一个“哨兵”空组合，其分数为极低，以启动流程，
+        # 但在选择和扩展时，我们只关心非空组合。
+        # ---
+        # beam stores (combo_dict, norm_score) tuples
+        # Initial beam can contain a "sentinel" empty combo with a very low score to start the process,
+        # but we only care about non-empty combinations during selection and expansion.
+        beam: List[Tuple[Dict[str, Outcome], float]] = [({}, -float('inf'))]
+
+        # 迭代构建组合
+        # ---
+        # Iteratively build combinations
+        for k_round in range(len(offer_items_list)): # 最多 M 轮 / At most M rounds
+            candidates: List[Tuple[Dict[str, Outcome], float]] = []
+            # processed_in_this_round 用于避免在同一轮次对完全相同的组合（基于NID集合）进行多次评估
+            # ---
+            # processed_in_this_round is used to avoid evaluating the exact same combination (based on NID set) multiple times in the same round
+            processed_combo_keys_in_this_round = set()
+
+            for current_combo_dict, _current_norm_score in beam:
+                for offer_idx, (nid, outcome) in enumerate(offer_items_list):
+                    if nid not in current_combo_dict: # 确保不重复添加同一个伙伴的报价到当前路径
+                                                      # ---
+                                                      # Ensure not adding the same partner's offer repeatedly to the current path
+                        new_combo_dict_list = list(current_combo_dict.items())
+                        new_combo_dict_list.append((nid, outcome))
+                        new_combo_dict_list.sort(key=lambda x: x[0]) # 排序以确保组合键的唯一性
+                                                                    # ---
+                                                                    # Sort to ensure uniqueness of the combination key
+
+                        # new_combo_dict_list 现在至少包含一个元素
+                        # ---
+                        # new_combo_dict_list now contains at least one element
+                        new_combo_tuple_key = tuple(item[0] for item in new_combo_dict_list)
+
+                        if new_combo_tuple_key in processed_combo_keys_in_this_round:
+                            continue
+                        processed_combo_keys_in_this_round.add(new_combo_tuple_key)
+
+                        new_combo_dict_final = dict(new_combo_dict_list)
+
+                        # 只有非空组合才进行评估
+                        # ---
+                        # Only evaluate non-empty combinations
+                        if new_combo_dict_final:
+                            _raw, norm_score = self.score_offers(
+                                offer_combination=new_combo_dict_final,
+                                current_im=im,
+                                awi=awi
+                            )
+                            candidates.append((new_combo_dict_final, norm_score))
+
+            if not candidates:
+                break # 没有新的有效候选组合可以生成 / No new valid candidates can be generated
+
+            # 将上一轮束中的有效（非空）组合也加入候选，因为它们可能是最终解
+            # ---
+            # Add valid (non-empty) combinations from the previous beam to candidates, as they might be the final solution
+            for prev_combo_dict, prev_norm_score in beam:
+                if prev_combo_dict: # 只添加非空组合 / Only add non-empty combinations
+                    # 避免重复添加已在candidates中的组合
+                    # ---
+                    # Avoid re-adding combinations already in candidates (based on object identity or a proper key)
+                    # 为简单起见，这里假设如果它在beam中，并且是有效的，就值得再次考虑
+                    # ---
+                    # For simplicity, assume if it was in the beam and valid, it's worth considering again
+                    # 更健壮的做法是检查是否已在candidates中（基于内容）
+                    # ---
+                    # A more robust approach would be to check if already in candidates (based on content)
+                    candidates.append((prev_combo_dict, prev_norm_score))
+
+            # 去重，因为上一轮的beam可能与新生成的candidates有重合
+            # ---
+            # Deduplicate, as the previous beam might overlap with newly generated candidates
+            unique_candidates_dict: Dict[Tuple[str, ...], Tuple[Dict[str, Outcome], float]] = {}
+            for cand_dict, cand_score in candidates:
+                if not cand_dict: continue # 忽略空的候选 / Ignore empty candidates
+                cand_key = tuple(sorted(cand_dict.keys()))
+                if cand_key not in unique_candidates_dict or cand_score > unique_candidates_dict[cand_key][1]:
+                    unique_candidates_dict[cand_key] = (cand_dict, cand_score)
+
+            sorted_candidates = sorted(list(unique_candidates_dict.values()), key=lambda x: x[1], reverse=True)
+            beam = sorted_candidates[:self.beam_width]
+
+            if not beam or not beam[0][0]: # 如果束为空，或者束中最好的也是空组合（不应发生）
+                                           # ---
+                                           # If beam is empty, or the best in beam is an empty combo (should not happen)
+                break
+            if beam[0][1] < -0.99: # 如果最好的候选 norm_score 仍然极差
+                                   # ---
+                                   # If the best candidate's norm_score is still extremely poor
+                break
+
+        # 从最终的束中选择适应度最高的非空组合
+        # ---
+        # Select the non-empty combination with the highest fitness from the final beam
+        final_best_combo_dict: Optional[Dict[str, Outcome]] = None
+        final_best_norm_score: float = -1.0
+
+        for combo_d, n_score in beam:
+            if combo_d: # 确保组合非空 / Ensure combination is non-empty
+                if n_score > final_best_norm_score:
+                    final_best_norm_score = n_score
+                    final_best_combo_dict = combo_d
+
+        if final_best_combo_dict:
+            if os.path.exists("env.test"):
+                best_combo_nids_str = list(final_best_combo_dict.keys())
+                print(f"Debug ({self.id} @ {awi.current_step}): BeamSearch Best Combo (by NormScore): NIDs: {best_combo_nids_str}, "\
+                      f"NormScore: {final_best_norm_score:.3f}")
+            return list(final_best_combo_dict.items()), final_best_norm_score
+        else:
+            if os.path.exists("env.test"):
+                 print(f"Debug ({self.id} @ {awi.current_step}): BeamSearch: No suitable non-empty offer combination found (by NormScore).")
+            return None, -1.0
+
+    def _evaluate_offer_combinations_simulated_annealing(
+            self,
+            offers: Dict[str, Outcome],
+            im: InventoryManagerCIR,
+            awi: OneShotAWI,
+    ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
+        """
+        使用模拟退火策略评估组合，主要基于库存得分。
+        确保最终选择的组合至少包含一个offer（如果可能）。
+        ---
+        Evaluates combinations using the Simulated Annealing strategy, primarily based on inventory score.
+        Ensures the finally selected combination contains at least one offer (if possible).
+        """
+        if not offers:
+            return None, -1.0
+
+        offer_items_list = list(offers.items())
+        num_offers = len(offer_items_list)
+
+        # 初始解：可以从随机选择一个报价开始，以确保初始解非空
+        # ---
+        # Initial solution: can start by randomly selecting one offer to ensure the initial solution is non-empty
+        if num_offers > 0:
+            initial_nid, initial_outcome = random.choice(offer_items_list)
+            current_solution_dict: Dict[str, Outcome] = {initial_nid: initial_outcome}
+        else: # 理论上不会到这里，因为上面有 if not offers 判断
+              # ---
+              # Theoretically won't reach here due to the 'if not offers' check above
+            return None, -1.0
+
+        _raw_init, current_norm_score = self.score_offers(current_solution_dict, im, awi)
+
+        best_solution_dict = deepcopy(current_solution_dict)
+        best_norm_score = current_norm_score
+
+        temp = self.sa_initial_temp
+        iterations_done = 0
+
+        for i in range(self.sa_iterations):
+            iterations_done = i + 1
+            if temp < 1e-3:
+                break
+
+            neighbor_solution_dict = deepcopy(current_solution_dict)
+            if num_offers == 0: break # Should not happen due to initial check / 由于初始检查，不应发生
+
+            action_type = random.choice(["add", "remove", "swap"])
+            action_successful = False # 标记邻域操作是否成功生成了一个与当前不同的解
+                                      # ---
+                                      # Flag if neighborhood operation successfully generated a different solution
+
+            if action_type == "add" and len(neighbor_solution_dict) < num_offers:
+                available_to_add = [item for item in offer_items_list if item[0] not in neighbor_solution_dict]
+                if available_to_add:
+                    nid_to_add, outcome_to_add = random.choice(available_to_add)
+                    neighbor_solution_dict[nid_to_add] = outcome_to_add
+                    action_successful = True
+            elif action_type == "remove" and len(neighbor_solution_dict) > 1: # 确保移除后至少还可能有一个（如果目标是保持非空）
+                                                                              # 或者允许移除到空，但后续评估要处理
+                                                                              # ---
+                                                                              # Ensure at least one might remain after removal (if goal is to keep non-empty)
+                                                                              # Or allow removal to empty, but subsequent evaluation must handle it
+                nid_to_remove = random.choice(list(neighbor_solution_dict.keys()))
+                del neighbor_solution_dict[nid_to_remove]
+                action_successful = True
+            elif action_type == "swap" and neighbor_solution_dict: # 确保当前解非空才能交换
+                                                                    # ---
+                                                                    # Ensure current solution is non-empty to swap
+                available_to_add = [item for item in offer_items_list if item[0] not in neighbor_solution_dict]
+                if available_to_add: # 必须有东西可以换入
+                                     # ---
+                                     # Must have something to swap in
+                    nid_to_remove = random.choice(list(neighbor_solution_dict.keys()))
+                    removed_outcome = neighbor_solution_dict.pop(nid_to_remove)
+
+                    possible_to_add_for_swap = [item for item in available_to_add if item[0] != nid_to_remove]
+                    if possible_to_add_for_swap:
+                        nid_to_add, outcome_to_add = random.choice(possible_to_add_for_swap)
+                        neighbor_solution_dict[nid_to_add] = outcome_to_add
+                        action_successful = True
+                    else: # 没有其他可换入的，把移除的加回去
+                          # ---
+                          # No other to swap in, add the removed one back
+                        neighbor_solution_dict[nid_to_remove] = removed_outcome
+
+            if not action_successful or not neighbor_solution_dict: # 如果邻域操作未改变解，或导致空解，则跳过此次迭代
+                                                                    # （除非我们允许评估空解，但这里我们要求非空）
+                                                                    # ---
+                                                                    # If neighborhood op didn't change solution, or resulted in empty solution, skip iteration
+                                                                    # (unless we allow evaluating empty solutions, but here we require non-empty)
+                if not neighbor_solution_dict and current_solution_dict : # 如果邻居变空了，但当前非空，则重新生成邻居
+                    continue                                             # If neighbor became empty but current is not, regenerate neighbor
+
+            # 只有当邻域解非空时才评估
+            # ---
+            # Only evaluate if the neighbor solution is non-empty
+            if not neighbor_solution_dict:
+                neighbor_norm_score = -float('inf') # 给空解一个极差的分数
+                                                    # ---
+                                                    # Give empty solution a very poor score
+            else:
+                _raw_neighbor, neighbor_norm_score = self.score_offers(
+                    neighbor_solution_dict, im, awi
+                )
+
+            if neighbor_norm_score > current_norm_score:
+                current_solution_dict = deepcopy(neighbor_solution_dict)
+                current_norm_score = neighbor_norm_score
+                if current_norm_score > best_norm_score and current_solution_dict: # 确保最佳解也非空
+                                                                                    # ---
+                                                                                    # Ensure best solution is also non-empty
+                    best_solution_dict = deepcopy(current_solution_dict)
+                    best_norm_score = current_norm_score
+            elif temp > 1e-9: # 仅当温度足够高时才考虑接受差解
+                              # ---
+                              # Only consider accepting worse solutions if temperature is high enough
+                delta_fitness = current_norm_score - neighbor_norm_score
+                acceptance_probability = math.exp(-delta_fitness / temp)
+                if random.random() < acceptance_probability and neighbor_solution_dict: # 确保接受的也是非空解
+                                                                                          # ---
+                                                                                          # Ensure accepted is also non-empty
+                    current_solution_dict = deepcopy(neighbor_solution_dict)
+                    current_norm_score = neighbor_norm_score
+
+            temp *= self.sa_cooling_rate
+
+        if os.path.exists("env.test"):
+            if best_solution_dict:
+                best_combo_nids_str = list(best_solution_dict.keys())
+                print(f"Debug ({self.id} @ {awi.current_step}): SA Best Combo (by NormScore): NIDs: {best_combo_nids_str}, "\
+                      f"NormScore: {best_norm_score:.3f} (Iterations: {iterations_done})")
+            else: # Should not happen if we ensure best_solution_dict is always non-empty from a valid start
+                  # ---
+                  # 如果我们确保 best_solution_dict 总是从一个有效的起点开始并且非空，则不应发生
+                 print(f"Debug ({self.id} @ {awi.current_step}): SA: No suitable non-empty offer combination found (by NormScore).")
+
+        if not best_solution_dict: # 如果最终最佳解是空（理论上不应发生，因为初始解非空）
+                                   # ---
+                                   # If the final best solution is empty (theoretically shouldn't happen as initial is non-empty)
+            return None, -1.0
+
+        return list(best_solution_dict.items()), best_norm_score
+
     def _evaluate_offer_combinations(
             self,
             offers: Dict[str, Outcome],
@@ -795,81 +1145,48 @@ class LitaAgentCIR(StdSyncAgent):
             awi: OneShotAWI,
     ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float, float]:
         """
-            评估所有可能的报价组合，并返回得分最高的组合及其分数和盈利。
-
-            一个组合至少包含一个报价，最多包含所有传入的报价。
-            “分数”是指由 score_offers 方法计算得到的归一化分数。
-            “盈利”是指由 score_offers 方法计算得到的原始成本降低量 (score_a - score_b)。
-
-            返回:
-                Tuple[Optional[List[Tuple[str, Outcome]]], float, float]:
-                - 最佳报价组合 (以 (negotiator_id, Outcome) 元组列表的形式表示)，如果没有有效组合则为 None。
-                - 最佳组合的归一化分数 (如果在 [0,1] 区间，否则为 -1.0 表示无有效分数)。
-                - 最佳组合的原始盈利 (成本降低量)(这玩意没什么意义，不要在意他)
+            评估报价组合，主要基于库存得分 (norm_score)。
+            在确定最佳组合后，再为其计算一次利润得分 (norm_profit)。
+            确保返回的最佳组合至少包含一个offer（如果输入offers非空）。
+            ---
+            Evaluates offer combinations, primarily based on inventory score (norm_score).
+            Profit score (norm_profit) is calculated once for the determined best combination.
+            Ensures the returned best combination contains at least one offer (if input offers is non-empty).
         """
         if not offers:
-            return None, -1.0, 0.0  # 没有报价，无法形成组合
-
-        # 将字典形式的 offers 转换为 (negotiator_id, Outcome) 元组的列表，方便组合
-        offer_items_list: List[Tuple[str, Outcome]] = list(offers.items())
+            return None, -1.0, 0.0
 
         best_combination_items: Optional[List[Tuple[str, Outcome]]] = None
-        # 归一化分数通常在 [0, 1] 区间，初始化为区间外的值
-        highest_normalized_score: float = -1.0
-        # 盈利
-        profit_of_best_combination: float = 0.0
+        best_norm_score: float = -1.0 # 初始化为无效分数 / Initialize to an invalid score
 
-        # 遍历所有可能的组合大小，从1到len(offer_items_list)
-        for i in range(1, len(offer_items_list) + 1):
-            # 生成当前大小的所有组合
-            # iter_combinations 返回的是元组的元组，例如 ((nid1, out1), (nid2, out2))
-            for combo_as_tuple_of_tuples in iter_combinations(offer_items_list, i):
-                current_combination_list_of_tuples = list(combo_as_tuple_of_tuples)
-                current_combination_dict = dict(current_combination_list_of_tuples)
+        if self.combo_evaluation_strategy == "k_max":
+            best_combination_items, best_norm_score = self._evaluate_offer_combinations_k_max(offers, im, awi)
+        elif self.combo_evaluation_strategy == "beam_search":
+            best_combination_items, best_norm_score = self._evaluate_offer_combinations_beam_search(offers, im, awi)
+        elif self.combo_evaluation_strategy == "simulated_annealing":
+            best_combination_items, best_norm_score = self._evaluate_offer_combinations_simulated_annealing(offers, im, awi)
+        else:
+            if os.path.exists("env.test"):
+                print(f"Warning ({self.id} @ {awi.current_step}): Unknown combo_evaluation_strategy '{self.combo_evaluation_strategy}'. Defaulting to 'k_max'.")
+            best_combination_items, best_norm_score = self._evaluate_offer_combinations_k_max(offers, im, awi)
 
-                # 1. 计算成本降低量和归一化分数
-                # 调用 score_offers 获取原始成本降低和归一化分数
-                # 假设 score_offers 返回 (raw_cost_reduction, normalized_score)
-                raw_cost_reduction, normalized_score = self.score_offers(
-                    offer_combination=current_combination_dict,
-                    current_im=im,
-                    awi=awi
-                )
-
-                # 2. 计算该组合的直接盈利
-                raw_current_profit, normalized_current_profit = self._calculate_combination_profit_and_normalize(
-                    offer_combination=current_combination_dict,
-                    awi=awi
-                )
-
-                if os.path.exists("env.test"):
-                    combo_nids_str = [item[0] for item in current_combination_list_of_tuples]
-                    print(f"Debug ({self.id} @ {awi.current_step}): Evaluating Combo NIDs: {combo_nids_str}, "
-                          f"RawCostReduction(Deprecated): {raw_cost_reduction:.2f}, NormScore: {normalized_score:.3f}, "
-                          f"CalculatedProfit: {normalized_current_profit:.2f}")
-
-                # 更新最佳组合
-                if normalized_score > highest_normalized_score:
-                    highest_normalized_score = normalized_score
-                    best_combination_items = current_combination_list_of_tuples
-                    profit_of_best_combination = normalized_current_profit
-                elif normalized_score == highest_normalized_score:
-                    # 如果归一化分数相同，选择原始盈利（成本降低量）更大的那个
-                    if normalized_current_profit > profit_of_best_combination:
-                        best_combination_items = current_combination_list_of_tuples
-                        profit_of_best_combination = normalized_current_profit
-
-        if os.path.exists("env.test"):
-            if best_combination_items:
+        if best_combination_items: # 确保找到了一个非空的最佳组合
+                                   # ---
+                                   # Ensure a non-empty best combination was found
+            best_combo_dict = dict(best_combination_items)
+            _actual_profit, norm_profit_of_best = self._calculate_combination_profit_and_normalize(
+                offer_combination=best_combo_dict,
+                awi=awi
+            )
+            if os.path.exists("env.test"):
                 best_combo_nids_str = [item[0] for item in best_combination_items]
-                print(f"Debug ({self.id} @ {awi.current_step}): Best Combo Found: NIDs: {best_combo_nids_str}, "
-                      f"HighestNormScore: {highest_normalized_score:.3f}, "
-                      f"ProfitOfBest (CostReduction): {profit_of_best_combination:.2f}")
-            else:
-                print(f"Debug ({self.id} @ {awi.current_step}): No suitable offer combination found "
-                      f"(highest_normalized_score: {highest_normalized_score:.3f}).")
-
-        return best_combination_items, highest_normalized_score, profit_of_best_combination
+                print(f"Debug ({self.id} @ {awi.current_step}): Final Best Combo (Strategy: {self.combo_evaluation_strategy}): "\
+                      f"NIDs: {best_combo_nids_str}, NormScore: {best_norm_score:.3f}, Calculated NormProfit: {norm_profit_of_best:.3f}")
+            return best_combination_items, best_norm_score, norm_profit_of_best
+        else:
+            if os.path.exists("env.test"):
+                print(f"Debug ({self.id} @ {awi.current_step}): No non-empty best combination items found by strategy '{self.combo_evaluation_strategy}'.")
+            return None, -1.0, 0.0
 
     def _calculate_combination_profit_and_normalize(
             self,
@@ -905,8 +1222,7 @@ class LitaAgentCIR(StdSyncAgent):
             min_est_price = nmi.issues[UNIT_PRICE].min_value
             max_est_price = nmi.issues[UNIT_PRICE].max_value
             if nmi is None and os.path.exists("env.test"):  # Log if NMI was missing and fallback was used
-                print(
-                    f"Warning ({self.id} @ {awi.current_step}): NMI missing for {negotiator_id}. Using heuristic price bounds: min={min_est_price:.2f}, max={max_est_price:.2f}")
+                print(f"Warning ({self.id} @ {awi.current_step}): NMI missing for {negotiator_id}. Using heuristic price bounds: min={min_est_price:.2f}, max={max_est_price:.2f}")
 
             if is_selling_to_consumer:  # We are selling products
                 # Actual profit from this offer
@@ -950,10 +1266,10 @@ class LitaAgentCIR(StdSyncAgent):
         normalized_profit = max(-1.0, min(1.0, normalized_profit))
 
         if os.path.exists("env.test"):
-            print(f"Debug ({self.id} @ {awi.current_step}): ProfitCalcNorm[-1,1] (NMI-based) for Combo: "
-                  f"ActualProfit={actual_profit:.2f}, "
-                  f"MaxPotentialProfitScen={max_potential_profit_scenario:.2f} (Best Case Profit), "
-                  f"MinPotentialProfitScen={min_potential_profit_scenario:.2f} (Worst Case Profit), "
+            print(f"Debug ({self.id} @ {awi.current_step}): ProfitCalcNorm[-1,1] (NMI-based) for Combo: "\
+                  f"ActualProfit={actual_profit:.2f}, "\
+                  f"MaxPotentialProfitScen={max_potential_profit_scenario:.2f} (Best Case Profit), "\
+                  f"MinPotentialProfitScen={min_potential_profit_scenario:.2f} (Worst Case Profit), "\
                   f"NormalizedProfit={normalized_profit:.3f}")
 
         return actual_profit, normalized_profit
@@ -1120,8 +1436,7 @@ class LitaAgentCIR(StdSyncAgent):
         # 避免提出与原始报价相同的还价
         if new_q == orig_q and new_t == orig_t and abs(new_p - orig_p) < 1e-5:
             if os.path.exists("env.test"):
-                print(
-                    f"Debug ({self.id} @ {self.awi.current_step}): Counter for {negotiator_id} resulted in same as original. No counter generated.")
+                print(f"Debug ({self.id} @ {self.awi.current_step}): Counter for {negotiator_id} resulted in same as original. No counter generated.")
                 # 调试 ({self.id} @ {self.awi.current_step}): 对 {negotiator_id} 的还价与原始报价相同。未生成还价。
             return None
 
@@ -1399,7 +1714,6 @@ class LitaAgentCIR(StdSyncAgent):
             print(f"| {day_str:^6} | {raw_current_stock:^10} | {raw_estimated:^12} | {planned_production:^8} | {remaining_capacity:^8} | {product_current_stock:^10} | {product_estimated:^12} | {signed_sales:^12} | {delivered_today:^12} |")
         
         print(separator)
-        print()
 
 # ----------------------------------------------------
 # Inventory Cost Score Calculation Helper

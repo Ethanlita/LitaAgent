@@ -134,12 +134,12 @@ class LitaAgentY(StdSyncAgent):
         self.capacity_tight_margin_increase = capacity_tight_margin_increase # Added from Step 9.d
         
         if os.path.exists("env.test"): # Added from Step 11
-            print(f"🤖 LitaAgentY {self.id} initialized with: \n"
-                  f"  min_profit_margin={self.min_profit_margin:.3f}, \n"
-                  f"  initial_min_profit_margin={self.initial_min_profit_margin:.3f}, \n"
-                  f"  cheap_price_discount={self.cheap_price_discount:.2f}, \n"
-                  f"  procurement_cash_flow_limit_percent={self.procurement_cash_flow_limit_percent:.2f}, \n"
-                  f"  concession_curve_power={self.concession_curve_power:.2f}, \n"
+            print(f"🤖 LitaAgentY {self.id} initialized with: \n"\
+                  f"  min_profit_margin={self.min_profit_margin:.3f}, \n"\
+                  f"  initial_min_profit_margin={self.initial_min_profit_margin:.3f}, \n"\
+                  f"  cheap_price_discount={self.cheap_price_discount:.2f}, \n"\
+                  f"  procurement_cash_flow_limit_percent={self.procurement_cash_flow_limit_percent:.2f}, \n"\
+                  f"  concession_curve_power={self.concession_curve_power:.2f}, \n"\
                   f"  capacity_tight_margin_increase={self.capacity_tight_margin_increase:.3f}")
 
         # —— 运行时变量 ——
@@ -319,10 +319,10 @@ class LitaAgentY(StdSyncAgent):
             old_discount = self.cheap_price_discount
             self.update_profit_strategy(cheap_price_discount=final_new_cheap_discount)
             if os.path.exists("env.test"):
-                print(f"📈 Day {current_day} ({self.id}): cheap_price_discount changed from {old_discount:.2f} to {self.cheap_price_discount:.2f}. Reason: {reason}. "
+                print(f"📈 Day {current_day} ({self.id}): cheap_price_discount changed from {old_discount:.2f} to {self.cheap_price_discount:.2f}. Reason: {reason}. "\
                       f"InvRaw: {current_raw_inventory}, FutDemandRaw(10d): {future_total_demand}, MktPriceRaw: {market_avg_raw_price:.2f}")
         elif os.path.exists("env.test"): 
-            print(f"🔎 Day {current_day} ({self.id}): cheap_price_discount maintained at {self.cheap_price_discount:.2f}. Evaluated Reason: {reason}. "
+            print(f"🔎 Day {current_day} ({self.id}): cheap_price_discount maintained at {self.cheap_price_discount:.2f}. Evaluated Reason: {reason}. "\
                   f"InvRaw: {current_raw_inventory}, FutDemandRaw(10d): {future_total_demand}, MktPriceRaw: {market_avg_raw_price:.2f}")
 
     # Method from Step 9.b (Turn 30)
@@ -1310,8 +1310,8 @@ class LitaAgentY(StdSyncAgent):
                       f"Proc. Cost: {total_cost_of_linked_procurement:.2f} (Limit: {allowed_procurement_cost:.2f})")
                 break 
             descoped_sale_data = current_selected_sales_data.pop(0) 
-            if os.path.exists("env.test"): print(f"🚫 [{self.awi.current_step}] ({self.id}) Cash Flow Limit Exceeded. Descoping sales: {descoped_sale_data['contract_obj'].id} "
-                  f"(Profit: {descoped_sale_data['profit']:.2f}). "
+            if os.path.exists("env.test"): print(f"🚫 [{self.awi.current_step}] ({self.id}) Cash Flow Limit Exceeded. Descoping sales: {descoped_sale_data['contract_obj'].id} "\
+                  f"(Profit: {descoped_sale_data['profit']:.2f}). "\
                   f"Rev: {total_expected_revenue:.2f}, ProcCost: {total_cost_of_linked_procurement:.2f}, Limit: {allowed_procurement_cost:.2f}")
             if not current_selected_sales_data: 
                 if os.path.exists("env.test"): print(f"⚠️ [{self.awi.current_step}] ({self.id}) All sales descoped due to cash flow.")
@@ -1332,7 +1332,7 @@ class LitaAgentY(StdSyncAgent):
         final_signed_procurement_count = len(final_procurement_contract_ids)
         
         if os.path.exists("env.test"): 
-            print(f"✅ [{self.awi.current_step}] ({self.id}) Final Decision: Signing {len(final_signed_contracts_list)} contracts: "
+            print(f"✅ [{self.awi.current_step}] ({self.id}) Final Decision: Signing {len(final_signed_contracts_list)} contracts: "\
                   f"{final_signed_sales_count} sales, {final_signed_procurement_count} procurements. Est. profit: {final_total_profit_estimate:.2f}")
         return final_signed_contracts_list
 
