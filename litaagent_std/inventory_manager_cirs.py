@@ -525,7 +525,7 @@ class InventoryManagerCIRS:
 if __name__ == '__main__':
 
     # Initialize CustomInventoryManager
-    cim = InventoryManagerCIR(
+    cim = InventoryManagerCIRS(
         raw_storage_cost=0.01,
         product_storage_cost=0.02,
         processing_cost=2.0,

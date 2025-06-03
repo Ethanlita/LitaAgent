@@ -12,6 +12,7 @@ from scml.std import *
 from scml.runner import WorldRunner
 
 from litaagent_std.litaagent_cir import LitaAgentCIR
+from litaagent_std.litaagent_cirs import LitaAgentCIRS
 from litaagent_std.litaagent_n import LitaAgentN
 from litaagent_std.litaagent_p import LitaAgentP
 from litaagent_std.litaagent_y import LitaAgentY
@@ -30,8 +31,8 @@ full_market_runner = WorldRunner.from_runner(
 )
 
 #%% create a world with a single agent and run it
-single_agent_runner(LitaAgentCIR)
-single_agent_runner.draw_worlds_of(LitaAgentCIR)
+single_agent_runner(LitaAgentCIRS)
+single_agent_runner.draw_worlds_of(LitaAgentCIRS)
 
 #%% plot the results
 single_agent_runner.plot_stats(agg=False)
