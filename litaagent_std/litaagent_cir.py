@@ -447,9 +447,11 @@ class LitaAgentCIR(StdSyncAgent):
                     print(f"Warning ({self.id} @ {current_day}): FirstProposals (Demand) - Still have {remaining_sellable_quantity} sellable products after proposing to all consumers.")
             elif os.path.exists("env.test") and consumer_negotiators:
                  print(f"Debug ({self.id} @ {current_day}): FirstProposals (Demand) - No estimated sellable quantity or no consumers to propose to for sales.")
+        if os.path.exists("env.test"):
+            print(f"Making first proposals on day {current_day}, to {proposals}")
         return proposals
 
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
     # 🌟 5. counter_all — 谈判核心（分派到子模块）
     # ------------------------------------------------------------------
     def score_offers(

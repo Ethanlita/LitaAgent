@@ -391,78 +391,8 @@ class InventoryManagerCIR:
         raw_stock_today = self.get_inventory_summary(day, MaterialType.RAW)["current_stock"]
         return max(0, planned_production_today - raw_stock_today)
 
-    def get_total_insufficient_raw(self, day: int, horizon: int) -> float:
-        # Placeholder - Detailed implementation in Part 3 (with plan_production)
-        # This would sum get_today_insufficient_raw over the horizon, considering future deliveries.
-        # For now, a very basic sum based on current placeholder.
-        total_shortfall = 0.0
-        # This is a naive sum, as it doesn't account for deliveries within the horizon.
-        # A proper implementation needs to simulate day by day or use estimated_available from get_inventory_summary.
-        for i in range(horizon):
-            current_sim_day = day + i
-            # What is needed on current_sim_day based on production_plan
-            planned_prod_on_sim_day = self.production_plan.get(current_sim_day, 0.0)
-            if planned_prod_on_sim_day <= 0:
-                continue
-
-            # What is estimated to be available on current_sim_day (considering deliveries up to that day)
-            # but *before* consumption for that day's production.
-            # We need raw materials at the *start* of current_sim_day for that day's production.
-            # get_inventory_summary gives stock at start of 'day'.
-            # For production on current_sim_day, we need stock at start of current_sim_day.
-            raw_summary_for_sim_day = self.get_inventory_summary(current_sim_day, MaterialType.RAW)
-            estimated_raw_at_start_of_sim_day = raw_summary_for_sim_day["estimated_available"] 
-            # This estimated_available already subtracts production_plan up to current_sim_day.
-            # This is tricky. Let's re-evaluate:
-            # estimated_available for day D = (stock at D) + (incoming by D) - (outgoing by D, including prod plan for D)
-            # So, if estimated_available is negative, that's a shortfall.
-        # This method focuses on raw materials that should have arrived *before or on* `day`
-        # to satisfy production *on* `day`.
-        # The key is that for production on `day`, materials must be available at the *start* of `day`.
-        production_on_day = self.production_plan.get(day, 0.0)
-        if production_on_day <= 0:
-            return 0.0
-
-        available_raw_by_start_of_day = 0.0
-        # Sum from existing batches that arrived strictly before 'day'
-        for r_batch in self.raw_material_batches:
-            if r_batch.arrival_or_production_time < day: # Strictly before day
-                available_raw_by_start_of_day += r_batch.remaining_quantity
-
-        # Sum from pending supply contracts delivering strictly before 'day'
-        # These would have been processed into batches if day > self.current_day,
-        # but this method might be called for future days in simulations.
-        for s_contract in self.pending_supply_contracts:
-            if s_contract.delivery_time < day: # Strictly before day
-                # Avoid double counting if this method is called for a day after self.current_day
-                # and the batch list already reflects these deliveries.
-                # This check assumes this function is used for planning *before* process_day_end_operations for 'day'.
-                # A robust way is to only count from batches if day <= self.current_day,
-                # and for future days, sum from pending contracts.
-                # For simplicity here, let's assume it's about future planning.
-                # A more accurate way for future days would be to use get_inventory_summary(day, MaterialType.RAW)["current_stock"]
-                # However, the prompt asks for "materials that should have *already arrived*".
-                # This can be interpreted as materials that are part of inventory at the precise moment production for 'day' begins.
-                available_raw_by_start_of_day += s_contract.quantity
-
-        # A more direct way using get_inventory_summary for stock at start of 'day':
-        # available_raw_by_start_of_day = self.get_inventory_summary(day, MaterialType.RAW)["current_stock"]
-        # The above custom loop is closer to the prompt's "should have arrived" if day is in the future.
-        # Let's refine the custom loop to be more precise for future days:
-
-        true_available_raw_at_start_of_day = 0
-        # Batches already processed and in stock, available at start of 'day'
-        for r_batch in self.raw_material_batches:
-            if r_batch.arrival_or_production_time < day:
-                 true_available_raw_at_start_of_day += r_batch.remaining_quantity
-        # Supplies that will arrive and be processed into batches *before* 'day' starts.
-        # These are future supplies relative to self.current_day but before target 'day'.
-        for s_contract in self.pending_supply_contracts:
-            if self.current_day <= s_contract.delivery_time < day:
-                true_available_raw_at_start_of_day += s_contract.quantity
-
-        shortfall = max(0.0, production_on_day - true_available_raw_at_start_of_day)
-        return shortfall
+    # This method has been removed as it was a duplicate of the method below.
+    # The implementation below is more complete and is the one that should be used.
 
     def get_total_insufficient_raw(self, target_day: int, horizon: int) -> int:
         total_shortfall = 0
@@ -524,12 +454,42 @@ class InventoryManagerCIR:
             if self.current_day <= contract.delivery_time <= up_to_day: # up_to_day is inclusive
                 demands_by_day[contract.delivery_time] = demands_by_day.get(contract.delivery_time, 0) + contract.quantity
 
+        # Simulate raw material availability for each day in the planning window
+        # This will be updated as we plan production
+        simulated_raw_stock_by_day = {}
+
+        # Initialize with current raw stock
+        initial_raw_stock = 0
+        for r_batch in self.raw_material_batches:
+            if r_batch.arrival_or_production_time < self.current_day:
+                initial_raw_stock += r_batch.remaining_quantity
+
+        # Set initial stock for current day
+        simulated_raw_stock_by_day[self.current_day] = initial_raw_stock
+
+        # Add future deliveries to the appropriate days
+        for s_contract in self.pending_supply_contracts:
+            if self.current_day <= s_contract.delivery_time <= up_to_day:
+                delivery_day = s_contract.delivery_time
+                simulated_raw_stock_by_day[delivery_day] = simulated_raw_stock_by_day.get(delivery_day, 0) + s_contract.quantity
+
+        # Propagate stock to future days (without considering production yet)
+        for day in range(self.current_day + 1, up_to_day + 1):
+            if day not in simulated_raw_stock_by_day:
+                simulated_raw_stock_by_day[day] = 0
+            # Add previous day's remaining stock
+            simulated_raw_stock_by_day[day] += simulated_raw_stock_by_day.get(day - 1, 0)
+
         # Iterate backwards for demand days to implement JIT (schedule later demands first)
         sorted_demand_delivery_days = sorted(demands_by_day.keys(), reverse=True)
 
         for demand_delivery_day in sorted_demand_delivery_days:
             needed_for_demand_at_delivery_day = demands_by_day[demand_delivery_day]
             remaining_to_plan_for_this_demand = needed_for_demand_at_delivery_day
+
+            # --- BEGIN MODIFICATION FOR DETAILED LOGGING ---
+            bottleneck_details_for_this_demand: List[str] = []
+            # --- END MODIFICATION ---
 
             # Try to schedule production as late as possible for this demand
             # Production for demand_delivery_day can happen on or before demand_delivery_day
@@ -538,18 +498,61 @@ class InventoryManagerCIR:
                     break # All planned for this specific demand
 
                 # Capacity available on prod_day, considering already planned items for other demands
-                available_capacity_on_prod_day = self.daily_production_capacity - self.production_plan.get(prod_day, 0)
+                capacity_before_this_slice = self.daily_production_capacity - self.production_plan.get(prod_day, 0)
 
-                can_plan_on_prod_day = min(remaining_to_plan_for_this_demand, available_capacity_on_prod_day)
+                # Raw material available on prod_day
+                raw_before_this_slice = simulated_raw_stock_by_day.get(prod_day, 0)
 
+                # Potential to plan based on current remaining demand for *this* specific demand
+                potential_to_plan = remaining_to_plan_for_this_demand
+
+                # Can only plan what we have capacity and raw materials for
+                can_plan_on_prod_day = min(potential_to_plan, capacity_before_this_slice, raw_before_this_slice)
+
+                if can_plan_on_prod_day < potential_to_plan and potential_to_plan > 0:
+                    # Determine the bottleneck(s) for this specific prod_day and potential_to_plan
+                    is_capacity_bottleneck = (capacity_before_this_slice <= raw_before_this_slice and capacity_before_this_slice < potential_to_plan)
+                    is_raw_bottleneck = (raw_before_this_slice < capacity_before_this_slice and raw_before_this_slice < potential_to_plan)
+                    # This covers the case where both are equal and limiting
+                    is_both_equally_limiting = (raw_before_this_slice == capacity_before_this_slice and raw_before_this_slice < potential_to_plan)
+
+                    if is_both_equally_limiting:
+                        bottleneck_details_for_this_demand.append(f"Day {prod_day}:Cap&Raw_Limit({raw_before_this_slice:.0f})")
+                    elif is_capacity_bottleneck:
+                        bottleneck_details_for_this_demand.append(f"Day {prod_day}:Cap_Limit({capacity_before_this_slice:.0f})")
+                    elif is_raw_bottleneck:
+                        bottleneck_details_for_this_demand.append(f"Day {prod_day}:Raw_Limit({raw_before_this_slice:.0f})")
+                    # If can_plan_on_prod_day is 0 and potential_to_plan > 0, it implies either capacity_before_this_slice or raw_before_this_slice (or both) was 0.
+                    # The above conditions should capture this. For example, if cap=0, raw=10, potential=5 -> cap_limit. if cap=10, raw=0, potential=5 -> raw_limit. if cap=0, raw=0, potential=5 -> cap&raw_limit.
 
                 if can_plan_on_prod_day > 0:
+                    # Update production plan
                     self.production_plan[prod_day] = self.production_plan.get(prod_day, 0) + can_plan_on_prod_day
                     remaining_to_plan_for_this_demand -= can_plan_on_prod_day
 
+                    # Update simulated raw stock (consume raw materials)
+                    simulated_raw_stock_by_day[prod_day] -= can_plan_on_prod_day
+
+                    # Update future days' raw stock to reflect this consumption
+                    for future_day in range(prod_day + 1, up_to_day + 1):
+                        if future_day in simulated_raw_stock_by_day:
+                            simulated_raw_stock_by_day[future_day] -= can_plan_on_prod_day
+
             if remaining_to_plan_for_this_demand > 0 and os.path.exists("env.test") and not self.is_deepcopy:
-                print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} due on day {demand_delivery_day}. "\
-                      f"Unplanned quantity: {remaining_to_plan_for_this_demand}.")
+                reason_details_str = "; ".join(list(set(bottleneck_details_for_this_demand))) # Use set to show unique bottleneck messages
+                reason_str = ""
+                if reason_details_str:
+                    reason_str = f"Primary bottlenecks encountered: [{reason_details_str}]"
+                else:
+                    # This case should be rare if the demand was positive and planning was attempted.
+                    # It might indicate no valid production days or an unexpected state.
+                    reason_str = "Unable to schedule due to JIT window constraints (e.g., no available capacity or raw materials on any considered day)."
+
+                print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} units "
+                      f"due on day {demand_delivery_day}. "
+                      f"Reason: {reason_str}. "
+                      f"Unplanned quantity: {remaining_to_plan_for_this_demand:.2f}.")
+
 
 
 

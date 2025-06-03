@@ -16,10 +16,10 @@ from numpy.random import choice # type: ignore
 
 # SCML and NegMAS imports for scml==0.11.3
 # SCML 和 NegMAS 导入 (针对 scml==0.11.3)
-from scml.std.common import QUANTITY, TIME, UNIT_PRICE # Standard issue names / 标准问题名称
-from scml.std.agents import StdSyncAgent
-from negmas.sao.common import SAOResponse, ResponseType
-from negmas.outcomes import Outcome # Offers are Outcomes (dictionaries) / 报价是 Outcome 类型 (字典)
+from scml.std import QUANTITY, TIME, UNIT_PRICE # Standard issue names / 标准问题名称
+from scml.std import StdSyncAgent
+from negmas import SAOResponse, ResponseType
+from negmas import Outcome # Offers are Outcomes (dictionaries) / 报价是 Outcome 类型 (字典)
 
 # For typing (though type: ignore is used, good practice for future)
 # 类型提示 (尽管使用了 type: ignore, 但对未来是好习惯)
@@ -617,7 +617,11 @@ class LitaAgentP(StdSyncAgent):
         """
         if not self.awi: return None
         nmi = self.get_nmi(partner_id)
-        if not nmi or not nmi.issues or UNIT_PRICE not in nmi.issues: return None
+        if not nmi or not nmi.issues: return None
+        try:
+            if nmi.issues[UNIT_PRICE] is None: return None
+        except (KeyError, TypeError):
+            return None
 
         price_issue = nmi.issues[UNIT_PRICE]
         min_p = getattr(price_issue, 'min_value', None)
@@ -643,7 +647,11 @@ class LitaAgentP(StdSyncAgent):
         """
         if not self.awi: return None
         nmi = self.get_nmi(partner_id)
-        if not nmi or not nmi.issues or UNIT_PRICE not in nmi.issues: return None
+        if not nmi or not nmi.issues: return None
+        try:
+            if nmi.issues[UNIT_PRICE] is None: return None
+        except (KeyError, TypeError):
+            return None
 
         price_issue = nmi.issues[UNIT_PRICE]
         min_p = getattr(price_issue, 'min_value', None)
