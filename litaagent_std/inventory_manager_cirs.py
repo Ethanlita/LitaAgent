@@ -501,19 +501,6 @@ class InventoryManagerCIRS:
                         if future_day in simulated_raw_stock_by_day:
                             simulated_raw_stock_by_day[future_day] -= can_plan_on_prod_day
 
-            if remaining_to_plan_for_this_demand > 0 and os.path.exists("env.test") and not self.is_deepcopy:
-                reason_details_str = "; ".join(list(set(bottleneck_details_for_this_demand))) # Use set to show unique bottleneck messages
-                reason_str = ""
-                if reason_details_str:
-                    reason_str = f"Primary bottlenecks encountered: [{reason_details_str}]"
-                else:
-                    # This case should be rare if the demand was positive and planning was attempted.
-                    # It might indicate no valid production days or an unexpected state.
-                    reason_str = "Unable to schedule due to JIT window constraints (e.g., no available capacity or raw materials on any considered day)."
-
-
-
-
     def get_available_production_capacity(self, day: int) -> int:
         if day < self.current_day: # Cannot produce in the past
             return 0
@@ -529,7 +516,7 @@ if __name__ == '__main__':
         raw_storage_cost=0.01,
         product_storage_cost=0.02,
         processing_cost=2.0,
-        daily_production_capacity=30.0,
+        daily_production_capacity=30,
         max_simulation_day=10,
         current_day=0
     )

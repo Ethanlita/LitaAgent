@@ -36,7 +36,7 @@ from scml.std import (
 from negmas import SAOState, SAOResponse, Outcome, Contract, ResponseType
 
 # 内部工具 & manager
-from .inventory_manager_cir import (
+from .inventory_manager_cirs import (
     IMContract,
     IMContractType,
     MaterialType,
