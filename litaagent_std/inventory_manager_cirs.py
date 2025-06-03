@@ -95,487 +95,424 @@ class InventoryManagerCIRS:
         else:
             return False
 
-        # Re-plan production whenever a new contract is added
+        # In a full system, adding a transaction, especially a demand, might trigger re-planning.
         self.plan_production()
         return True
 
-    def get_inventory_summary(self, day: int, mtype: MaterialType) -> Dict[str, Any]:
-        """
-        Get a summary of inventory for a specific day and material type.
-        
-        Args:
-            day: The day for which to get the summary
-            mtype: The material type (RAW or PRODUCT)
-            
-        Returns:
-            Dict with inventory summary information
-        """
-        # Initialize summary
-        summary = {
-            "current_stock": 0,
-            "current_cost": 0.0,
-            "current_storage_cost": 0.0,
-            "current_avg_cost": 0.0,
-            "estimated_stock": 0.0,
-            "estimated_cost": 0.0,
-            "estimated_avg_cost": 0.0
+    def get_inventory_summary(self, day: int, mtype: MaterialType) -> Dict[str, int]:
+        """预期可用库存是*包括*了当天入库、生产或者交付的，现在库存是*不包括*还没生产的东西的，即使是未来的日期也会返回*实际上已经生产并入库的*产品库存量"""
+        batches_to_consider = self.raw_material_batches if mtype == MaterialType.RAW else self.product_batches
+        storage_cost_per_unit = self.raw_storage_cost_per_unit_per_day if mtype == MaterialType.RAW else self.product_storage_cost_per_unit_per_day
+
+        current_stock_qty = 0
+        total_cost_of_current_stock = 0.0
+
+        for batch in batches_to_consider:
+            if batch.arrival_or_production_time < day:
+                current_stock_qty += batch.remaining_quantity
+                storage_duration = max(0, day - batch.arrival_or_production_time)
+                cost_for_batch = batch.unit_cost * batch.remaining_quantity + \
+                                 storage_cost_per_unit * storage_duration * batch.remaining_quantity
+                total_cost_of_current_stock += cost_for_batch
+
+        average_cost_of_current_stock = (total_cost_of_current_stock / current_stock_qty) if current_stock_qty > 0 else 0.0
+
+        estimated_available_qty = current_stock_qty
+
+        # For estimated cost, start with the cost of current stock
+        estimated_total_cost = total_cost_of_current_stock
+        # Keep track of quantities added for weighted average of future items
+        future_qty_added_for_estimation = 0
+        cost_of_future_qty_added = 0.0
+
+        if mtype == MaterialType.RAW:
+            for contract in self.pending_supply_contracts:
+                # Only consider future deliveries up to 'day' that haven't logically arrived yet based on 'self.current_day'
+                if self.current_day <= contract.delivery_time <= day:
+                    estimated_available_qty += contract.quantity
+                    # For estimated cost, add cost of these future items (excluding storage for now)
+                    cost_of_future_qty_added += contract.price * contract.quantity
+                    future_qty_added_for_estimation += contract.quantity
+            # Raw materials are consumed by production.
+            # This assumes production plan is accurate for future consumption.
+            for prod_day in range(self.current_day, day + 1):
+                planned_prod = self.production_plan.get(prod_day, 0)
+                estimated_available_qty -= planned_prod
+                # Cost impact of consumption is complex for estimation; for now, focus on quantity.
+
+        elif mtype == MaterialType.PRODUCT:
+            # Products are added by production.
+            for prod_day in range(self.current_day, day + 1):
+                planned_prod = self.production_plan.get(prod_day, 0)
+                estimated_available_qty += planned_prod
+                # For estimated cost, if current stock is zero, we need to estimate cost of future production
+                if current_stock_qty == 0: # Simplified: only estimate if no current stock
+                    # This is a rough estimate. A better one would be avg raw cost at prod_day + processing.
+                    # For now, if production_plan is empty, this won't add much.
+                    # Using current avg raw cost as a proxy if available, else just processing cost.
+                    # This part remains very simplified due to plan_production being a placeholder.
+                    # Let's assume for simplicity: if plan_production is not implemented,
+                    # this cost contribution is primarily from processing_cost_per_unit for future items.
+                    # A more robust way is needed when plan_production is active.
+
+                    # Simplified: Use a proxy for cost of future products if no current stock
+                    # This needs more refinement when plan_production is detailed.
+                    # For now, let's say it's based on processing_cost and a hypothetical raw cost.
+                    # If self.raw_material_batches is not empty, use its latest cost.
+                    proxy_raw_cost = 0.0
+                    if self.raw_material_batches: # A very rough proxy
+                        proxy_raw_cost = self.raw_material_batches[-1].unit_cost
+
+                    cost_of_future_qty_added += planned_prod * (proxy_raw_cost + self.processing_cost_per_unit)
+                    future_qty_added_for_estimation += planned_prod
+
+
+            for contract in self.pending_demand_contracts:
+                if self.current_day <= contract.delivery_time <= day:
+                    estimated_available_qty -= contract.quantity
+
+        estimated_average_cost_val = 0.0
+        if estimated_available_qty > 0:
+            if current_stock_qty > 0 : # If there's current stock, its avg cost is a good base
+                 # Refined: weighted average of current stock cost and future items cost
+                total_estimated_qty_for_cost = current_stock_qty + future_qty_added_for_estimation
+                if total_estimated_qty_for_cost > 0:
+                     estimated_average_cost_val = (total_cost_of_current_stock + cost_of_future_qty_added) / total_estimated_qty_for_cost
+                else: # Should not happen if estimated_available_qty > 0
+                    estimated_average_cost_val = 0.0
+            elif future_qty_added_for_estimation > 0: # No current stock, but future items
+                estimated_average_cost_val = cost_of_future_qty_added / future_qty_added_for_estimation
+        else: # estimated_available_qty <= 0
+            estimated_average_cost_val = 0.0
+
+
+        return {
+            "current_stock": current_stock_qty,
+            "average_cost": average_cost_of_current_stock,
+            "estimated_available": estimated_available_qty,
+            "estimated_average_cost": estimated_average_cost_val
         }
-        
-        # Get the appropriate batches and storage cost based on material type
-        if mtype == MaterialType.RAW:
-            batches = self.raw_material_batches
-            storage_cost = self.raw_storage_cost_per_unit_per_day
-            pending_contracts = self.pending_supply_contracts
-        else:  # PRODUCT
-            batches = self.product_batches
-            storage_cost = self.product_storage_cost_per_unit_per_day
-            pending_contracts = self.pending_demand_contracts
-        
-        # Calculate current stock and costs
-        total_quantity = 0
-        total_base_cost = 0.0
-        total_storage_cost = 0.0
-        
-        for batch in batches:
-            if batch.remaining_quantity <= 0:
-                continue
-                
-            # Calculate days stored
-            days_stored = max(0, day - batch.arrival_or_production_time)
-            
-            # Calculate costs
-            base_cost = batch.unit_cost * batch.remaining_quantity
-            storage_cost_for_batch = storage_cost * days_stored * batch.remaining_quantity
-            
-            # Update totals
-            total_quantity += batch.remaining_quantity
-            total_base_cost += base_cost
-            total_storage_cost += storage_cost_for_batch
-        
-        # Update summary with current values
-        summary["current_stock"] = total_quantity
-        summary["current_cost"] = total_base_cost + total_storage_cost
-        summary["current_storage_cost"] = total_storage_cost
-        
-        # Calculate average cost if there's stock
-        if total_quantity > 0:
-            summary["current_avg_cost"] = (total_base_cost + total_storage_cost) / total_quantity
-        
-        # Calculate estimated future values
-        if mtype == MaterialType.RAW:
-            # For raw materials: current + future deliveries - planned production
-            future_deliveries = sum(c.quantity for c in pending_contracts 
-                                  if self.current_day <= c.delivery_time <= day)
-            
-            # Sum production plan from current day to the target day
-            planned_production = sum(self.production_plan.get(d, 0) 
-                                   for d in range(self.current_day, day))
-            
-            estimated_stock = total_quantity + future_deliveries - planned_production
-            
-        else:  # PRODUCT
-            # For products: current - future deliveries + planned production
-            future_deliveries = sum(c.quantity for c in pending_contracts 
-                                  if self.current_day <= c.delivery_time <= day)
-            
-            # Sum production plan from current day to the target day
-            planned_production = sum(self.production_plan.get(d, 0) 
-                                   for d in range(self.current_day, day + 1))
-            
-            estimated_stock = total_quantity - future_deliveries + planned_production
-        
-        # Update summary with estimated values
-        summary["estimated_stock"] = max(0, estimated_stock)  # Can't be negative
-        
-        # Calculate future costs (simplified - doesn't account for storage of future deliveries)
-        future_cost = sum(c.price * c.quantity for c in pending_contracts 
-                        if self.current_day <= c.delivery_time <= day)
-        
-        summary["estimated_cost"] = total_base_cost + total_storage_cost + future_cost
-        
-        # Calculate estimated average cost if there's estimated stock
-        if estimated_stock > 0:
-            summary["estimated_avg_cost"] = summary["estimated_cost"] / estimated_stock
-        
-        return summary
 
-    def _receive_materials(self, day_being_processed: int) -> None:
-        """
-        Process all supply contracts scheduled for delivery on the specified day.
-        Creates inventory batches for the received materials.
-        
-        Args:
-            day_being_processed: The day for which to process deliveries
-        """
-        # Find all supply contracts for the current day
-        contracts_to_receive = [c for c in self.pending_supply_contracts 
-                              if c.delivery_time == day_being_processed]
-        
-        if not contracts_to_receive:
-            return
-            
-        # Process each contract
-        for contract in contracts_to_receive:
-            # Verify contract is for raw materials
-            if contract.material_type != MaterialType.RAW:
-                continue
-                
-            # Create a new batch for the received materials
-            new_batch = Batch(
-                batch_id=contract.contract_id,
-                original_quantity=contract.quantity,
-                remaining_quantity=contract.quantity,
-                unit_cost=contract.price,
-                arrival_or_production_time=day_being_processed,
-                material_type=MaterialType.RAW
-            )
-            
-            # Add to inventory
-            self.raw_material_batches.append(new_batch)
-            
-            # Update statistics
-            self.total_raw_material_acquired += contract.quantity
-            
-            # Remove from pending contracts
-            self.pending_supply_contracts.remove(contract)
+    def _receive_materials(self, day_being_processed: int):
+        processed_contracts_indices = []
+        for i, contract in enumerate(self.pending_supply_contracts):
+            if contract.delivery_time == day_being_processed:
+                if contract.material_type != MaterialType.RAW:
+                    continue
 
-    def _execute_production(self, day_being_processed: int) -> None:
-        """
-        Execute production for the specified day according to the production plan.
-        Consumes raw materials and creates product batches.
-        
-        Args:
-            day_being_processed: The day for which to execute production
-        """
-        # Get planned production for this day
-        planned_production = self.production_plan.get(day_being_processed, 0)
-        
-        if planned_production <= 0:
-            return
-            
-        # Check if we have enough raw materials
-        total_raw_available = sum(batch.remaining_quantity for batch in self.raw_material_batches)
-        
-        if total_raw_available < planned_production:
-            # Not enough raw materials, adjust production
-            actual_production = total_raw_available
-        else:
-            actual_production = planned_production
-            
-        if actual_production <= 0:
-            return
-            
-        # Sort raw material batches by arrival time (FIFO)
+                new_batch = Batch(
+                    # batch_id=contract.contract_id, # Using contract_id might lead to non-unique batch_ids if contracts are renegotiated/split. Default UUID is safer.
+                    batch_id=str(uuid.uuid4()),
+                    original_quantity=contract.quantity,
+                    remaining_quantity=contract.quantity,
+                    unit_cost=contract.price,
+                    arrival_or_production_time=day_being_processed,
+                    material_type=MaterialType.RAW
+                )
+                self.raw_material_batches.append(new_batch)
+                self.total_raw_material_acquired += contract.quantity
+                processed_contracts_indices.append(i)
+
+        # Remove processed contracts (iterate in reverse to avoid index issues)
+        for i in sorted(processed_contracts_indices, reverse=True):
+            del self.pending_supply_contracts[i]
+
+        # Sort raw material batches by arrival time for strict FIFO if not already guaranteed
         self.raw_material_batches.sort(key=lambda b: b.arrival_or_production_time)
-        
-        # Consume raw materials
-        remaining_to_consume = actual_production
-        consumed_cost = 0.0  # Track the cost of consumed materials for product cost calculation
-        
-        for batch in self.raw_material_batches:
-            if remaining_to_consume <= 0:
+
+
+    def _execute_production(self, day_being_processed: int):
+        planned_qty_to_produce = self.production_plan.get(day_being_processed, 0)
+        if planned_qty_to_produce <= 0:
+            return
+
+        # Sort raw material batches to ensure FIFO
+        self.raw_material_batches.sort(key=lambda b: b.arrival_or_production_time)
+
+        available_raw_material = sum(b.remaining_quantity for b in self.raw_material_batches)
+
+        actual_produced_qty = min(planned_qty_to_produce, available_raw_material, self.daily_production_capacity)
+
+        if actual_produced_qty <= 0:
+            return
+
+        consumed_raw_material_cost = 0.0
+        qty_to_consume_for_production = actual_produced_qty # 1 unit of raw makes 1 unit of product
+
+        temp_batches_to_remove_indices = []
+        for i, batch in enumerate(self.raw_material_batches):
+            if qty_to_consume_for_production <= 0:
                 break
-                
+
+            consume_from_this_batch = min(qty_to_consume_for_production, batch.remaining_quantity)
+            consumed_raw_material_cost += consume_from_this_batch * batch.unit_cost
+            batch.remaining_quantity -= consume_from_this_batch
+            qty_to_consume_for_production -= consume_from_this_batch
+
             if batch.remaining_quantity <= 0:
-                continue
-                
-            # Determine how much to consume from this batch
-            consume_from_batch = min(batch.remaining_quantity, remaining_to_consume)
-            
-            # Update batch
-            batch.remaining_quantity -= consume_from_batch
-            
-            # Update tracking variables
-            consumed_cost += batch.unit_cost * consume_from_batch
-            remaining_to_consume -= consume_from_batch
-            
-        # Clean up empty batches
-        self.raw_material_batches = [b for b in self.raw_material_batches if b.remaining_quantity > 0]
-        
-        # Calculate average cost of consumed materials
-        avg_raw_cost = consumed_cost / actual_production if actual_production > 0 else 0
-        
-        # Create product batch
-        # Total cost includes raw material cost plus processing cost
-        product_unit_cost = avg_raw_cost + self.processing_cost_per_unit
-        
-        new_product_batch = Batch(
-            batch_id=f"PROD_{day_being_processed}_{uuid.uuid4().hex[:8]}",
-            original_quantity=actual_production,
-            remaining_quantity=actual_production,
-            unit_cost=product_unit_cost,
+                temp_batches_to_remove_indices.append(i)
+
+        for i in sorted(temp_batches_to_remove_indices, reverse=True):
+            del self.raw_material_batches[i]
+
+        production_cost_per_unit = (consumed_raw_material_cost / actual_produced_qty) + self.processing_cost_per_unit if actual_produced_qty > 0 else self.processing_cost_per_unit
+
+        product_batch = Batch(
+            batch_id=str(uuid.uuid4()),
+            original_quantity=actual_produced_qty,
+            remaining_quantity=actual_produced_qty,
+            unit_cost=production_cost_per_unit,
             arrival_or_production_time=day_being_processed,
             material_type=MaterialType.PRODUCT
         )
-        
-        # Add to inventory
-        self.product_batches.append(new_product_batch)
-        
-        # Update statistics
-        self.total_products_produced += actual_production
+        self.product_batches.append(product_batch)
+        self.total_products_produced += actual_produced_qty
 
-    def _deliver_products(self, day_being_processed: int) -> None:
-        """
-        Process all demand contracts scheduled for delivery on the specified day.
-        Removes products from inventory to fulfill contracts.
-        
-        Args:
-            day_being_processed: The day for which to process deliveries
-        """
-        # Find all demand contracts for the current day
-        contracts_to_deliver = [c for c in self.pending_demand_contracts 
-                              if c.delivery_time == day_being_processed]
-        
-        if not contracts_to_deliver:
-            return
-            
-        # Sort contracts by price (deliver highest price first if we have limited inventory)
-        contracts_to_deliver.sort(key=lambda c: c.price, reverse=True)
-        
-        # Process each contract
-        for contract in contracts_to_deliver:
-            # Verify contract is for products
-            if contract.material_type != MaterialType.PRODUCT:
-                continue
-                
-            # Check if we have enough products
-            total_products_available = sum(batch.remaining_quantity for batch in self.product_batches)
-            
-            if total_products_available < contract.quantity:
-                # Not enough products to fulfill contract
-                # In a real system, this would trigger a breach of contract
-                # For now, we'll just skip it and leave it in pending
-                continue
-                
-            # Sort product batches by production time (FIFO)
-            self.product_batches.sort(key=lambda b: b.arrival_or_production_time)
-            
-            # Consume products
-            remaining_to_deliver = contract.quantity
-            
-            for batch in self.product_batches:
-                if remaining_to_deliver <= 0:
-                    break
-                    
-                if batch.remaining_quantity <= 0:
+        # Sort product batches by arrival time for strict FIFO if not already guaranteed
+        self.product_batches.sort(key=lambda b: b.arrival_or_production_time)
+
+
+    def _deliver_products(self, day_being_processed: int):
+        processed_contracts_indices = []
+
+        # Sort product batches to ensure FIFO
+        self.product_batches.sort(key=lambda b: b.arrival_or_production_time)
+
+        for i, contract in enumerate(self.pending_demand_contracts):
+            if contract.delivery_time == day_being_processed:
+                if contract.material_type != MaterialType.PRODUCT:
                     continue
-                    
-                # Determine how much to take from this batch
-                take_from_batch = min(batch.remaining_quantity, remaining_to_deliver)
-                
-                # Update batch
-                batch.remaining_quantity -= take_from_batch
-                
-                # Update tracking variable
-                remaining_to_deliver -= take_from_batch
-                
-            # Clean up empty batches
-            self.product_batches = [b for b in self.product_batches if b.remaining_quantity > 0]
-            
-            # Update statistics
-            self.total_products_sold += contract.quantity
-            
-            # Remove from pending contracts
-            self.pending_demand_contracts.remove(contract)
 
-    def process_day_end_operations(self, day_being_processed: int) -> None:
-        """
-        Process all operations for the end of a day: receive materials, execute production,
-        and deliver products.
-        
-        Args:
-            day_being_processed: The day to process
-        """
-        if day_being_processed < self.current_day:
-            return
-            
-        # Process in order: receive, produce, deliver
+                qty_to_deliver = contract.quantity
+                available_product_stock = sum(b.remaining_quantity for b in self.product_batches)
+
+                actual_delivered_qty = min(qty_to_deliver, available_product_stock)
+
+                if actual_delivered_qty <= 0:
+                    processed_contracts_indices.append(i) # Still mark as processed for the day
+                    continue
+
+                temp_batches_to_remove_indices = []
+                qty_fulfilled_for_contract = 0
+                for batch_idx, batch in enumerate(self.product_batches):
+                    if qty_fulfilled_for_contract >= actual_delivered_qty:
+                        break
+
+                    deliver_from_this_batch = min(actual_delivered_qty - qty_fulfilled_for_contract, batch.remaining_quantity)
+                    batch.remaining_quantity -= deliver_from_this_batch
+                    qty_fulfilled_for_contract += deliver_from_this_batch
+
+                    if batch.remaining_quantity <= 0:
+                        temp_batches_to_remove_indices.append(batch_idx)
+
+                for batch_idx in sorted(temp_batches_to_remove_indices, reverse=True):
+                    del self.product_batches[batch_idx]
+
+                self.total_products_sold += actual_delivered_qty
+                processed_contracts_indices.append(i)
+
+        for i in sorted(processed_contracts_indices, reverse=True):
+            del self.pending_demand_contracts[i]
+
+
+    def process_day_end_operations(self, day_being_processed: int):
+
+        # 1. Receive materials scheduled for today
         self._receive_materials(day_being_processed)
+
+        # 2. Execute production planned for today
         self._execute_production(day_being_processed)
+
+        # 3. Deliver products scheduled for today
         self._deliver_products(day_being_processed)
-        
-        # Update current day
+
+        # 4. Advance current day
         self.current_day = day_being_processed + 1
-        
-        # Re-plan production after processing the day
-        self.plan_production()
+
+        # 5. Re-plan production for future (still a placeholder call)
+        # This should ideally use the new self.current_day as its starting point for planning
+        self.plan_production(up_to_day=self.max_simulation_day)
+
+        # Return a summary or status if needed
+        return {
+            "raw_batches_count": len(self.raw_material_batches),
+            "product_batches_count": len(self.product_batches),
+            "pending_supply_count": len(self.pending_supply_contracts),
+            "pending_demand_count": len(self.pending_demand_contracts),
+        }
+
 
     def get_today_insufficient_raw(self, day: int) -> int:
-        """
-        Calculate how much raw material is needed for today's production but not available.
-        
-        Args:
-            day: The day to check
-            
-        Returns:
-            Amount of raw material shortage for the day
-        """
-        # Get planned production for the day
-        planned_production = self.production_plan.get(day, 0)
-        
-        if planned_production <= 0:
+        # Placeholder - Detailed implementation in Part 3 (with plan_production)
+        # This would typically be: planned_production_for_day - current_raw_stock_for_day
+        # For now, if no production plan, it's 0.
+        planned_production_today = self.production_plan.get(day, 0)
+        if planned_production_today <= 0:
             return 0
-            
-        # Get available raw materials
-        available_raw = sum(batch.remaining_quantity for batch in self.raw_material_batches)
-        
-        # Calculate shortage
-        shortage = max(0, planned_production - available_raw)
-        
-        return shortage
+
+        # A simplified check on current raw stock at the start of 'day'
+        raw_stock_today = self.get_inventory_summary(day, MaterialType.RAW)["current_stock"]
+        return max(0, planned_production_today - raw_stock_today)
+
+    # This method has been removed as it was a duplicate of the method below.
+    # The implementation below is more complete and is the one that should be used.
 
     def get_total_insufficient_raw(self, target_day: int, horizon: int) -> int:
-        """
-        Calculate the total raw material shortage over a time horizon.
-        
-        Args:
-            target_day: The starting day
-            horizon: Number of days to look ahead
-            
-        Returns:
-            Total raw material shortage over the horizon
-        """
-        # Initialize variables
-        total_shortage = 0
-        cumulative_raw = sum(batch.remaining_quantity for batch in self.raw_material_batches)
-        
-        # Look at each day in the horizon
-        for day in range(target_day, target_day + horizon):
-            # Add any raw materials scheduled for delivery
-            incoming_raw = sum(c.quantity for c in self.pending_supply_contracts 
-                             if c.delivery_time == day)
-            cumulative_raw += incoming_raw
-            
-            # Subtract production needs
-            production_needs = self.production_plan.get(day, 0)
-            
-            if production_needs > cumulative_raw:
-                # Record shortage
-                day_shortage = production_needs - cumulative_raw
-                total_shortage += day_shortage
-                cumulative_raw = 0
-            else:
-                # Enough materials, update remaining
-                cumulative_raw -= production_needs
-                
-        return total_shortage
+        total_shortfall = 0
 
-    def plan_production(self, up_to_day: Optional[int] = None) -> None:
-        """
-        Plan production using a Just-In-Time (JIT) approach.
-        Attempts to schedule production as late as possible while still meeting demand.
-        
-        Args:
-            up_to_day: Optional maximum day to plan for (defaults to max_simulation_day)
-        """
+        # Initial simulated raw stock: sum of batches arrived before target_day
+        # AND pending contracts delivering before target_day but on/after current_day.
+        simulated_raw_stock = 0
+        for r_batch in self.raw_material_batches: # Already received stock
+            if r_batch.arrival_or_production_time < target_day:
+                simulated_raw_stock += r_batch.remaining_quantity
+
+        for s_contract in self.pending_supply_contracts: # Future stock arriving before target_day
+            if self.current_day <= s_contract.delivery_time < target_day:
+                simulated_raw_stock += s_contract.quantity
+
+        for i in range(horizon):
+            d = target_day + i # Current day in the horizon we are evaluating
+
+            # Add raw materials arriving *on* day d
+            # These are from pending_supply_contracts delivering on day 'd'
+            for s_contract in self.pending_supply_contracts:
+                if s_contract.delivery_time == d: # Arriving exactly on this simulated day 'd'
+                    simulated_raw_stock += s_contract.quantity
+
+            production_needed = self.production_plan.get(d, 0)
+
+            if production_needed > 0:
+                if simulated_raw_stock >= production_needed:
+                    simulated_raw_stock -= production_needed
+                else: # simulated_raw_stock < production_needed
+                    current_day_shortfall = production_needed - simulated_raw_stock
+                    total_shortfall += current_day_shortfall
+                    simulated_raw_stock = 0 # All stock used up for this day's production
+
+        return total_shortfall
+
+    def plan_production(self, up_to_day: Optional[int] = None):
+        # 修改点：将 up_to_day 的默认值设为实际的最后一天索引
+        # ---
+        # Modified: Set the default value of up_to_day to the actual last day index
         if up_to_day is None:
-            up_to_day = self.max_simulation_day
-            
-        # Clear existing production plan
-        self.production_plan = {}
-        
-        # Get current inventory levels
-        current_raw = sum(batch.remaining_quantity for batch in self.raw_material_batches)
-        current_product = sum(batch.remaining_quantity for batch in self.product_batches)
-        
-        # Organize future raw deliveries by day
-        raw_deliveries_by_day = {}
-        for contract in self.pending_supply_contracts:
-            if contract.delivery_time < self.current_day:
-                continue
-            raw_deliveries_by_day[contract.delivery_time] = raw_deliveries_by_day.get(contract.delivery_time, 0) + contract.quantity
-            
-        # Organize demand by day
-        demands_by_day = {}
+            up_to_day = self.max_simulation_day - 1 # max_simulation_day 是总步数 (e.g., 50), 所以最后一天索引是 max_simulation_day - 1 / max_simulation_day is the total number of steps (e.g., 50), so the last day index is max_simulation_day - 1
+
+        # 清空当前的生产计划（重新规划）
+        # ---
+        # Clear the current production plan (re-planning)
+        # 确保只清除从当前天到规划截止日期的计划
+        # ---
+        # Ensure only plans from current_day to up_to_day are cleared
+        for day_to_clear in range(self.current_day, up_to_day + 1): # up_to_day is inclusive
+            if day_to_clear in self.production_plan:
+                del self.production_plan[day_to_clear]
+
+        demands_by_day: Dict[int, int] = {}
         for contract in self.pending_demand_contracts:
-            if contract.delivery_time < self.current_day:
-                continue
-            demands_by_day[contract.delivery_time] = demands_by_day.get(contract.delivery_time, 0) + contract.quantity
-            
-        # Sort demand days in descending order (plan for latest demands first)
-        demand_days = sorted(demands_by_day.keys(), reverse=True)
-        
-        # Track available inventory through the planning process
-        available_raw = current_raw
-        available_product = current_product
-        
-        # For each demand day, plan production
-        for demand_delivery_day in demand_days:
-            if demand_delivery_day < self.current_day:
-                continue
-                
-            # How much do we need to deliver on this day?
-            demand_quantity = demands_by_day[demand_delivery_day]
-            
-            # If we already have enough product, no need to produce more
-            if available_product >= demand_quantity:
-                available_product -= demand_quantity
-                continue
-                
-            # Otherwise, we need to produce the difference
-            remaining_to_plan_for_this_demand = demand_quantity - available_product
-            available_product = 0  # We've allocated all available product
-            
-            # Plan production in reverse, starting from the day before delivery
-            planning_day = demand_delivery_day - 1
-            
-            # Track reasons for planning failures
-            planning_bottlenecks = []
-            
-            while remaining_to_plan_for_this_demand > 0 and planning_day >= self.current_day:
-                # Check if we have capacity on this day
-                day_capacity = self.daily_production_capacity
-                already_planned = self.production_plan.get(planning_day, 0)
-                available_capacity = max(0, day_capacity - already_planned)
-                
-                if available_capacity <= 0:
-                    planning_bottlenecks.append(f"No capacity on day {planning_day}")
-                    planning_day -= 1
-                    continue
-                    
-                # Calculate raw materials available by this day
-                raw_available_by_day = available_raw
-                for day in range(self.current_day, planning_day + 1):
-                    raw_available_by_day += raw_deliveries_by_day.get(day, 0)
-                    
-                # Subtract raw used in production before this day
-                for day in range(self.current_day, planning_day):
-                    raw_available_by_day -= self.production_plan.get(day, 0)
-                    
-                if raw_available_by_day <= 0:
-                    planning_bottlenecks.append(f"No raw materials on day {planning_day}")
-                    planning_day -= 1
-                    continue
-                    
-                # Determine how much we can produce on this day
-                can_produce = min(available_capacity, raw_available_by_day, remaining_to_plan_for_this_demand)
-                
-                if can_produce <= 0:
-                    planning_bottlenecks.append(f"Cannot produce on day {planning_day}")
-                    planning_day -= 1
-                    continue
-                    
-                # Update production plan
-                self.production_plan[planning_day] = self.production_plan.get(planning_day, 0) + can_produce
-                
-                # Update tracking variables
-                remaining_to_plan_for_this_demand -= can_produce
-                
-                # Move to previous day
-                planning_day -= 1
-                
-            # If we couldn't plan for all demand, log a warning
-            if remaining_to_plan_for_this_demand > 0:
-                # Create a summary of bottlenecks
-                reason_details = set(planning_bottlenecks)
-                reason_details_str = ", ".join(reason_details)
-                
+            # 只考虑在规划窗口内的需求 [self.current_day, up_to_day]
+            # ---
+            # Only consider demands within the planning window [self.current_day, up_to_day]
+            if self.current_day <= contract.delivery_time <= up_to_day: # up_to_day is inclusive
+                demands_by_day[contract.delivery_time] = demands_by_day.get(contract.delivery_time, 0) + contract.quantity
+
+        # Simulate raw material availability for each day in the planning window
+        # This will be updated as we plan production
+        simulated_raw_stock_by_day = {}
+
+        # Initialize with current raw stock
+        initial_raw_stock = 0
+        for r_batch in self.raw_material_batches:
+            if r_batch.arrival_or_production_time < self.current_day:
+                initial_raw_stock += r_batch.remaining_quantity
+
+        # Set initial stock for current day
+        simulated_raw_stock_by_day[self.current_day] = initial_raw_stock
+
+        # Add future deliveries to the appropriate days
+        for s_contract in self.pending_supply_contracts:
+            if self.current_day <= s_contract.delivery_time <= up_to_day:
+                delivery_day = s_contract.delivery_time
+                simulated_raw_stock_by_day[delivery_day] = simulated_raw_stock_by_day.get(delivery_day, 0) + s_contract.quantity
+
+        # Propagate stock to future days (without considering production yet)
+        for day in range(self.current_day + 1, up_to_day + 1):
+            if day not in simulated_raw_stock_by_day:
+                simulated_raw_stock_by_day[day] = 0
+            # Add previous day's remaining stock
+            simulated_raw_stock_by_day[day] += simulated_raw_stock_by_day.get(day - 1, 0)
+
+        # Iterate backwards for demand days to implement JIT (schedule later demands first)
+        sorted_demand_delivery_days = sorted(demands_by_day.keys(), reverse=True)
+
+        for demand_delivery_day in sorted_demand_delivery_days:
+            needed_for_demand_at_delivery_day = demands_by_day[demand_delivery_day]
+            remaining_to_plan_for_this_demand = needed_for_demand_at_delivery_day
+
+            # --- BEGIN MODIFICATION FOR DETAILED LOGGING ---
+            bottleneck_details_for_this_demand: List[str] = []
+            # --- END MODIFICATION ---
+
+            # Try to schedule production as late as possible for this demand
+            # Production for demand_delivery_day can happen on or before demand_delivery_day
+            for prod_day in range(demand_delivery_day, self.current_day - 1, -1):
+                if remaining_to_plan_for_this_demand <= 0:
+                    break # All planned for this specific demand
+
+                # Capacity available on prod_day, considering already planned items for other demands
+                capacity_before_this_slice = self.daily_production_capacity - self.production_plan.get(prod_day, 0)
+
+                # Raw material available on prod_day
+                raw_before_this_slice = simulated_raw_stock_by_day.get(prod_day, 0)
+
+                # Potential to plan based on current remaining demand for *this* specific demand
+                potential_to_plan = remaining_to_plan_for_this_demand
+
+                # Can only plan what we have capacity and raw materials for
+                can_plan_on_prod_day = min(potential_to_plan, capacity_before_this_slice, raw_before_this_slice)
+
+                if can_plan_on_prod_day < potential_to_plan and potential_to_plan > 0:
+                    # Determine the bottleneck(s) for this specific prod_day and potential_to_plan
+                    is_capacity_bottleneck = (capacity_before_this_slice <= raw_before_this_slice and capacity_before_this_slice < potential_to_plan)
+                    is_raw_bottleneck = (raw_before_this_slice < capacity_before_this_slice and raw_before_this_slice < potential_to_plan)
+                    # This covers the case where both are equal and limiting
+                    is_both_equally_limiting = (raw_before_this_slice == capacity_before_this_slice and raw_before_this_slice < potential_to_plan)
+
+                    if is_both_equally_limiting:
+                        bottleneck_details_for_this_demand.append(f"Day {prod_day}:Cap&Raw_Limit({raw_before_this_slice:.0f})")
+                    elif is_capacity_bottleneck:
+                        bottleneck_details_for_this_demand.append(f"Day {prod_day}:Cap_Limit({capacity_before_this_slice:.0f})")
+                    elif is_raw_bottleneck:
+                        bottleneck_details_for_this_demand.append(f"Day {prod_day}:Raw_Limit({raw_before_this_slice:.0f})")
+                    # If can_plan_on_prod_day is 0 and potential_to_plan > 0, it implies either capacity_before_this_slice or raw_before_this_slice (or both) was 0.
+                    # The above conditions should capture this. For example, if cap=0, raw=10, potential=5 -> cap_limit. if cap=10, raw=0, potential=5 -> raw_limit. if cap=0, raw=0, potential=5 -> cap&raw_limit.
+
+                if can_plan_on_prod_day > 0:
+                    # Update production plan
+                    self.production_plan[prod_day] = self.production_plan.get(prod_day, 0) + can_plan_on_prod_day
+                    remaining_to_plan_for_this_demand -= can_plan_on_prod_day
+
+                    # Update simulated raw stock (consume raw materials)
+                    simulated_raw_stock_by_day[prod_day] -= can_plan_on_prod_day
+
+                    # Update future days' raw stock to reflect this consumption
+                    for future_day in range(prod_day + 1, up_to_day + 1):
+                        if future_day in simulated_raw_stock_by_day:
+                            simulated_raw_stock_by_day[future_day] -= can_plan_on_prod_day
+
+            if remaining_to_plan_for_this_demand > 0 and os.path.exists("env.test") and not self.is_deepcopy:
+                reason_details_str = "; ".join(list(set(bottleneck_details_for_this_demand))) # Use set to show unique bottleneck messages
+                reason_str = ""
                 if reason_details_str:
                     reason_str = f"Primary bottlenecks encountered: [{reason_details_str}]"
                 else:
                     # This case should be rare if the demand was positive and planning was attempted.
                     # It might indicate no valid production days or an unexpected state.
                     reason_str = "Unable to schedule due to JIT window constraints (e.g., no available capacity or raw materials on any considered day)."
+
+
+
 
     def get_available_production_capacity(self, day: int) -> int:
         if day < self.current_day: # Cannot produce in the past
@@ -586,12 +523,76 @@ class InventoryManagerCIRS:
 
 # Example usage (optional, for testing during development)
 if __name__ == '__main__':
+
     # Initialize CustomInventoryManager
-    cim = InventoryManagerCIRS(
-        raw_storage_cost=0.01, 
+    cim = InventoryManagerCIR(
+        raw_storage_cost=0.01,
         product_storage_cost=0.02,
         processing_cost=2.0,
         daily_production_capacity=30.0,
         max_simulation_day=10,
         current_day=0
     )
+
+    # --- Test plan_production ---
+    # No demands initially, plan should be empty
+    cim.plan_production() # Call explicitly for controlled test
+
+    # Add demands. add_transaction calls plan_production() internally.
+    cim.add_transaction(IMContract("C1", IMContractType.DEMAND, 20, 10, 2, MaterialType.PRODUCT))
+    cim.add_transaction(IMContract("C2", IMContractType.DEMAND, 15, 11, 2, MaterialType.PRODUCT))
+    cim.add_transaction(IMContract("C3", IMContractType.DEMAND, 25, 12, 1, MaterialType.PRODUCT))
+    cim.add_transaction(IMContract("C4", IMContractType.DEMAND, 40, 13, 3, MaterialType.PRODUCT))
+
+    # --- Test Shortage Calculations ---
+    # Setup: current day = 0. Production plan is as above.
+    # Add raw material supplies. These will also call plan_production, but it should be idempotent for demands.
+    cim.add_transaction(IMContract("S1_new", IMContractType.SUPPLY, 15, 5, 0, MaterialType.RAW)) # 15 on Day 0
+
+    # Process day 0 to receive S1_new and produce based on Plan[0]=10
+    cim.process_day_end_operations(0) # current_day becomes 1. S1_new (15) received. 10 produced. Raw left: 5.
+
+    cim.add_transaction(IMContract("S2", IMContractType.SUPPLY, 5, 5.5, 1, MaterialType.RAW)) # 5 on Day 1. Plan re-calculated.
+
+    # Test get_today_insufficient_raw for Day 1 (current_day is 1)
+    # Production planned for Day 1 (today): Plan[1] = 30
+    # Available raw by start of Day 1 (strictly before day 1): Batch (5 from day 0). S2 arrives *on* Day 1, not counted for "already arrived".
+    # Shortfall for Day 1 = max(0, 30 - 5) = 25.
+    insufficient_day1 = cim.get_today_insufficient_raw(1)
+
+    # Test get_total_insufficient_raw for Day 1, horizon 3 (Days 1, 2, 3)
+    # Current Day = 1.
+    # Initial Simulated Raw Stock (before Day 1): 5 (from batch S1_new)
+    # Day 1 (d=1):
+    #   Incoming on Day 1: S2 (5). Simulated stock = 5 (initial) + 5 (S2) = 10.
+    #   Production needed on Day 1: Plan[1] = 30.
+    #   Shortfall D1: 30 - 10 = 20. Total Shortfall = 20. Simulated stock becomes 0.
+    # Day 2 (d=2):
+    #   Incoming on Day 2: None. Simulated stock = 0.
+    #   Production needed on Day 2: Plan[2] = 30.
+    #   Shortfall D2: 30 - 0 = 30. Total Shortfall = 20 + 30 = 50. Simulated stock = 0.
+    # Day 3 (d=3):
+    #   Incoming on Day 3: None. Simulated stock = 0.
+    #   Production needed on Day 3: Plan[3] = 30.
+    #   Shortfall D3: 30 - 0 = 30. Total Shortfall = 50 + 30 = 80. Simulated stock = 0.
+    total_insufficient_d1_h3 = cim.get_total_insufficient_raw(target_day=1, horizon=3)
+
+    # Test with more supply
+    cim.add_transaction(IMContract("S3", IMContractType.SUPPLY, 100, 6, 2, MaterialType.RAW)) # 100 on Day 2
+
+    # Recalculate total_insufficient_raw for Day 1, horizon 3 (Days 1, 2, 3) with S3
+    # Current Day = 1.
+    # Initial Simulated Raw Stock (before Day 1): 5 (from batch S1_new)
+    # Day 1 (d=1):
+    #   Incoming on Day 1: S2 (5). Simulated stock = 5 (initial) + 5 (S2) = 10.
+    #   Production needed: Plan[1] = 30.
+    #   Shortfall D1: 30 - 10 = 20. Total Shortfall = 20. Simulated stock = 0.
+    # Day 2 (d=2):
+    #   Incoming on Day 2: S3 (100). Simulated stock = 0 + 100 = 100.
+    #   Production needed: Plan[2] = 30.
+    #   Simulated stock becomes 100 - 30 = 70. No shortfall for Day 2. Total Shortfall = 20.
+    # Day 3 (d=3):
+    #   Incoming on Day 3: None. Simulated stock = 70.
+    #   Production needed: Plan[3] = 30.
+    #   Simulated stock becomes 70 - 30 = 40. No shortfall for Day 3. Total Shortfall = 20.
+    total_insufficient_d1_h3_with_S3 = cim.get_total_insufficient_raw(target_day=1, horizon=3)
