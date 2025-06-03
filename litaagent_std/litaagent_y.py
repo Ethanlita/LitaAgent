@@ -1306,7 +1306,7 @@ class LitaAgentY(StdSyncAgent):
             )
             allowed_procurement_cost = total_expected_revenue * self.procurement_cash_flow_limit_percent
             if total_cost_of_linked_procurement <= allowed_procurement_cost:
-                if os.path.exists("env.test"): print(f"💰 [{self.awi.current_step}] ({self.id}) Cash Flow OK. Revenue: {total_expected_revenue:.2f}, "
+                if os.path.exists("env.test"): print(f"💰 [{self.awi.current_step}] ({self.id}) Cash Flow OK. Revenue: {total_expected_revenue:.2f}, "\
                       f"Proc. Cost: {total_cost_of_linked_procurement:.2f} (Limit: {allowed_procurement_cost:.2f})")
                 break 
             descoped_sale_data = current_selected_sales_data.pop(0) 

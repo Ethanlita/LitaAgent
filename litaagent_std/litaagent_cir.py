@@ -249,6 +249,7 @@ class LitaAgentCIR(StdSyncAgent):
         价格根据NMI设置为代理的最优价格。
         需求/机会被分配给可用的伙伴。
         """
+        # return {}
         proposals: Dict[str, Outcome] = {}
         current_day = self.awi.current_step
         n_steps = self.awi.n_steps
@@ -288,7 +289,7 @@ class LitaAgentCIR(StdSyncAgent):
             remaining_procurement_need = target_procurement_quantity
 
             if os.path.exists("env.test"):
-                print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - Total raw material need: {target_procurement_quantity}. "
+                print(f"Debug ({self.id} @ {current_day}): FirstProposals (Supply) - Total raw material need: {target_procurement_quantity}. "\
                       f"Available suppliers: {len(sorted_supplier_nids)}.")
 
             for nid in sorted_supplier_nids:

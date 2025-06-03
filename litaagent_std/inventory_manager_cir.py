@@ -547,11 +547,11 @@ class InventoryManagerCIR:
                     # This case should be rare if the demand was positive and planning was attempted.
                     # It might indicate no valid production days or an unexpected state.
                     reason_str = "Unable to schedule due to JIT window constraints (e.g., no available capacity or raw materials on any considered day)."
-
-                print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} units "
-                      f"due on day {demand_delivery_day}. "
-                      f"Reason: {reason_str}. "
-                      f"Unplanned quantity: {remaining_to_plan_for_this_demand:.2f}.")
+                if os.path.exists("env.test") and self.is_deepcopy == False:
+                    print(f"Warning (plan_production): Could not fully plan for demand of {demands_by_day[demand_delivery_day]} units "
+                        f"due on day {demand_delivery_day}. "
+                        f"Reason: {reason_str}. "
+                        f"Unplanned quantity: {remaining_to_plan_for_this_demand:.2f}.")
 
 
 
