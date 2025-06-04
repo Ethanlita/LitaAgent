@@ -150,59 +150,62 @@ class LitaAgentCIR(StdSyncAgent):
     def before_step(self) -> None:
         """每天开始前，同步日内关键需求信息。"""
         assert self.im, "CustomInventoryManager 尚未初始化!"
-        current_day = self.awi.current_step 
-        self.today_insufficient = self.im.get_today_insufficient_raw(current_day)
-        self.total_insufficient = self.im.get_total_insufficient_raw(current_day, horizon=14) # Default horizon 14 days
-        if os.path.exists("env.test"): 
-            print(f"🌞 Day {current_day} ({self.id}) starting. CIM Day: {self.im.current_day}. Today Insufficient Raw: {self.today_insufficient}, Total Insufficient Raw (14d): {self.total_insufficient}")
-
+        current_day = self.awi.current_step
 
         # 初始化当日的完成量记录
         # Initialize today's completion records
         self.sales_completed.setdefault(current_day, 0)
         self.purchase_completed.setdefault(current_day, 0)
 
-        # 将外生协议写入im
-        # Write exogenous contracts into the inventory manager
+        # 首先将外生协议写入im (这会调用 plan_production 更新计划)
+        # First, write exogenous contracts into the inventory manager (this will call plan_production to update the plan)
         if self.awi.is_first_level:
             exogenous_contract_quantity = self.awi.current_exogenous_input_quantity
             exogenous_contract_price = self.awi.current_exogenous_input_price
-            if exogenous_contract_quantity > 0: # Added from Step 11
+            if exogenous_contract_quantity > 0:
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_supply" # More specific name
+                exogenous_contract_partner = "simulator_exogenous_supply"
                 exogenous_contract = IMContract(
-                    contract_id = exogenous_contract_id,
-                    partner_id = exogenous_contract_partner,
-                    type = IMContractType.SUPPLY,
-                    quantity = int(exogenous_contract_quantity),
-                    price = exogenous_contract_price,
-                    delivery_time = current_day, # Exogenous are for current day
-                    bankruptcy_risk = 0,
-                    material_type = MaterialType.RAW
+                    contract_id=exogenous_contract_id,
+                    partner_id=exogenous_contract_partner,
+                    type=IMContractType.SUPPLY,
+                    quantity=int(exogenous_contract_quantity),
+                    price=exogenous_contract_price,
+                    delivery_time=current_day, # Exogenous are for current day
+                    bankruptcy_risk=0,
+                    material_type=MaterialType.RAW
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"): # Added from Step 11
+                if os.path.exists("env.test"):
                     print(f"📥 Day {current_day} ({self.id}): Added exogenous SUPPLY contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
 
         elif self.awi.is_last_level:
             exogenous_contract_quantity = self.awi.current_exogenous_output_quantity
             exogenous_contract_price = self.awi.current_exogenous_output_price
-            if exogenous_contract_quantity > 0: # Added from Step 11
+            if exogenous_contract_quantity > 0:
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_demand" # More specific name
+                exogenous_contract_partner = "simulator_exogenous_demand"
                 exogenous_contract = IMContract(
-                    contract_id = exogenous_contract_id,
-                    partner_id = exogenous_contract_partner,
-                    type = IMContractType.DEMAND,
-                    quantity = exogenous_contract_quantity,
-                    price = exogenous_contract_price,
-                    delivery_time = current_day, # Exogenous are for current day
-                    bankruptcy_risk = 0,
-                    material_type = MaterialType.PRODUCT
+                    contract_id=exogenous_contract_id,
+                    partner_id=exogenous_contract_partner,
+                    type=IMContractType.DEMAND,
+                    quantity=int(exogenous_contract_quantity), # 确保是整数 / Ensure it's an integer
+                    price=exogenous_contract_price,
+                    delivery_time=current_day, # Exogenous are for current day
+                    bankruptcy_risk=0,
+                    material_type=MaterialType.PRODUCT
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"): # Added from Step 11
+                if os.path.exists("env.test"):
                     print(f"📤 Day {current_day} ({self.id}): Added exogenous DEMAND contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
+
+        # 在外生协议添加并重新规划生产后，再计算不足量
+        # After exogenous contracts are added and production is replanned, then calculate the insufficiency
+        self.today_insufficient = self.im.get_today_insufficient_raw(current_day)
+        self.total_insufficient = self.im.get_total_insufficient_raw(current_day, horizon=14) # Default horizon 14 days
+
+        if os.path.exists("env.test"):
+            print(f"🌞 Day {current_day} ({self.id}) starting. CIM Day: {self.im.current_day}. Today Insufficient Raw: {self.today_insufficient}, Total Insufficient Raw (14d): {self.total_insufficient} (calculated AFTER exogenous contracts and subsequent plan_production)")
 
 
     def step(self) -> None:
@@ -767,7 +770,8 @@ class LitaAgentCIR(StdSyncAgent):
 
         for d in range(current_day, last_simulation_day + 1):
             if(os.path.exists("env.test")):
-                print(f"Debug (calc_inv_cost @ day {d}): Current day in im: {im_state.current_day} (Should be equal)")
+                pass
+                # print(f"Debug (calc_inv_cost @ day {d}): Current day in im: {im_state.current_day} (Should be equal)")
             raw_stock_info = im_state.get_inventory_summary(d, MaterialType.RAW)
             product_stock_info = im_state.get_inventory_summary(d, MaterialType.PRODUCT)
 
@@ -777,7 +781,8 @@ class LitaAgentCIR(StdSyncAgent):
                         product_stock_info.get('current_stock', 0.0) * unit_storage_cost)
             total_cost_score += daily_storage_cost
             if os.path.exists("env.test"):
-                print(f"Debug (calc_inv_cost @ day {d} - Storage): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
+                pass
+                # print(f"Debug (calc_inv_cost @ day {d} - Storage): RawStock={raw_stock_info.get('current_stock', 0):.0f}, ProdStock={product_stock_info.get('current_stock', 0):.0f}, StorageCost={daily_storage_cost:.2f}")
 
             # 推进模拟副本的天数以进行下一天的存储成本计算
             # ---
