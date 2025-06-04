@@ -136,14 +136,6 @@ class LitaAgentYS(StdSyncAgent):
         self.concession_curve_power = concession_curve_power  # Added from Step 9.b
         self.capacity_tight_margin_increase = capacity_tight_margin_increase  # Added from Step 9.d
 
-        if os.path.exists("env.test"):  # Added from Step 11
-            print(f"🤖 LitaAgentY {self.id} initialized with: \n" \
-                  f"  min_profit_margin={self.min_profit_margin:.3f}, \n" \
-                  f"  initial_min_profit_margin={self.initial_min_profit_margin:.3f}, \n" \
-                  f"  cheap_price_discount={self.cheap_price_discount:.2f}, \n" \
-                  f"  procurement_cash_flow_limit_percent={self.procurement_cash_flow_limit_percent:.2f}, \n" \
-                  f"  concession_curve_power={self.concession_curve_power:.2f}, \n" \
-                  f"  capacity_tight_margin_increase={self.capacity_tight_margin_increase:.3f}")
 
         # —— 运行时变量 ——
         self.im: InventoryManager | None = None
@@ -181,8 +173,6 @@ class LitaAgentYS(StdSyncAgent):
             daily_production_capacity=self.awi.n_lines,
             max_day=self.awi.n_steps,
         )
-        if os.path.exists("env.test"):  # Added from Step 11
-            print(f"🤖 LitaAgentY {self.id} IM initialized. Daily Capacity: {self.im.daily_production_capacity}")
 
     def before_step(self) -> None:
         """每天开始前，同步日内关键需求信息。"""
@@ -190,9 +180,6 @@ class LitaAgentYS(StdSyncAgent):
         current_day = self.awi.current_step  # Use local var for f-string clarity
         self.today_insufficient = self.im.get_today_insufficient(current_day)
         self.total_insufficient = self.im.get_total_insufficient(current_day)
-        if os.path.exists("env.test"):  # Added from Step 11
-            print(
-                f"🌞 Day {current_day} ({self.id}) starting. Today Insufficient Raw: {self.today_insufficient}, Total Insufficient Raw (horizon): {self.total_insufficient}")
 
         # Update dynamic parameters (Added from Step 4 & 7)
         self._update_dynamic_stockpiling_parameters()
@@ -222,9 +209,6 @@ class LitaAgentYS(StdSyncAgent):
                     material_type=MaterialType.RAW
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"):  # Added from Step 11
-                    print(
-                        f"📥 Day {current_day} ({self.id}): Added exogenous SUPPLY contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
 
         elif self.awi.is_last_level:
             exogenous_contract_quantity = self.awi.current_exogenous_output_quantity
@@ -243,9 +227,6 @@ class LitaAgentYS(StdSyncAgent):
                     material_type=MaterialType.PRODUCT
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"):  # Added from Step 11
-                    print(
-                        f"📤 Day {current_day} ({self.id}): Added exogenous DEMAND contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
 
     def step(self) -> None:
         """每天结束时调用：执行 IM 的日终操作并刷新市场均价。"""
@@ -259,9 +240,6 @@ class LitaAgentYS(StdSyncAgent):
             self._market_material_price_avg = sum(self._recent_material_prices) / len(self._recent_material_prices)
         if self._recent_product_prices:
             self._market_product_price_avg = sum(self._recent_product_prices) / len(self._recent_product_prices)
-        if os.path.exists("env.test"):  # Added from Step 11
-            print(
-                f"🌙 Day {self.awi.current_step} ({self.id}) ending. Market Material Avg Price: {self._market_material_price_avg:.2f}, Market Product Avg Price: {self._market_product_price_avg:.2f}. IM is now on day {self.im.current_day}.")
 
         # 输出每日状态报告
         self._print_daily_status_report(result)
@@ -322,14 +300,6 @@ class LitaAgentYS(StdSyncAgent):
         if abs(self.cheap_price_discount - final_new_cheap_discount) > 1e-3:
             old_discount = self.cheap_price_discount
             self.update_profit_strategy(cheap_price_discount=final_new_cheap_discount)
-            if os.path.exists("env.test"):
-                print(
-                    f"📈 Day {current_day} ({self.id}): cheap_price_discount changed from {old_discount:.2f} to {self.cheap_price_discount:.2f}. Reason: {reason}. " \
-                    f"InvRaw: {current_raw_inventory}, FutDemandRaw(10d): {future_total_demand}, MktPriceRaw: {market_avg_raw_price:.2f}")
-        elif os.path.exists("env.test"):
-            print(
-                f"🔎 Day {current_day} ({self.id}): cheap_price_discount maintained at {self.cheap_price_discount:.2f}. Evaluated Reason: {reason}. " \
-                f"InvRaw: {current_raw_inventory}, FutDemandRaw(10d): {future_total_demand}, MktPriceRaw: {market_avg_raw_price:.2f}")
 
     # Method from Step 9.b (Turn 30)
     def get_avg_raw_cost_fallback(self, current_day_for_im_summary: int,
@@ -489,8 +459,6 @@ class LitaAgentYS(StdSyncAgent):
         if os.path.exists("env.test") and abs(final_conceded_price - current_price) > 1e-3:
             log_reason_parts.append(
                 f"RelTime:{rel_time:.2f} OppRate:{opp_rate:.2f} BaseMult:{base_mult:.2f} AdjMult:{adjusted_mult:.2f}")
-            print(
-                f"CONCESSION Day {self.awi.current_step} ({self.id}) for {pid} (RelTime: {rel_time:.2f}): CurrPrice={current_price:.2f}, Target={current_final_target_price:.2f}, Start={start_price:.2f}, Mult={adjusted_mult:.2f} -> NewPrice={final_conceded_price:.2f}. Reasons: {'|'.join(log_reason_parts)}")
         return final_conceded_price
 
     # ------------------------------------------------------------------
@@ -580,8 +548,6 @@ class LitaAgentYS(StdSyncAgent):
                             reason_log.append(
                                 f"ParetoTry: Time+ ({proposed_outcome_time}) for Price- ({proposed_outcome_price:.2f})")
 
-            if os.path.exists("env.test") and len(reason_log) > 1:
-                print(f"🔎 Day {self.awi.current_step} ({self.id}) Pareto Sales to {pid}: {' | '.join(reason_log)}")
 
         elif self._is_supplier(pid) and self.awi.current_shortfall_penalty > 1.0:
             qty_issue = self.get_nmi(pid).issues[QUANTITY]
@@ -590,8 +556,6 @@ class LitaAgentYS(StdSyncAgent):
                                        qty_issue.max_value if isinstance(qty_issue.max_value, int) else new_qty)
             if proposed_outcome_qty > qty:
                 reason_log.append(f"ProcurePenaltyQtyInc: {proposed_outcome_qty}")
-                if os.path.exists("env.test"): print(
-                    f"📦 Day {self.awi.current_step} ({self.id}) Pareto Buy from {pid}: {' | '.join(reason_log)}")
 
         final_qty_issue = self.get_nmi(pid).issues[QUANTITY]
         proposed_outcome_qty = max(final_qty_issue.min_value, min(proposed_outcome_qty,
@@ -771,14 +735,8 @@ class LitaAgentYS(StdSyncAgent):
                 price_for_proposal = max(price_for_proposal, absolute_min_profitable_price)
                 reason_log_parts.append(
                     f"CalcPrice: {initial_price:.2f} -> Clamped/MinEnsured: {price_for_proposal:.2f} (AbsMinProfitable: {absolute_min_profitable_price:.2f})")
-                if os.path.exists("env.test"):
-                    print(
-                        f"📈 Day {today} ({self.id}) Proposal to Consumer {pid}: Qty={final_qty}, Price={price_for_proposal:.2f}. Reasons: {' | '.join(reason_log_parts)}")
             else:
                 price_for_proposal = self._best_price(pid)
-                if os.path.exists("env.test"):
-                    print(
-                        f"📦 Day {today} ({self.id}) Proposal to Supplier {pid}: Qty={final_qty}, Price={price_for_proposal:.2f} (Best price for buying)")
             proposals[pid] = (final_qty, delivery_time, price_for_proposal)
         return proposals
 
@@ -959,7 +917,6 @@ class LitaAgentYS(StdSyncAgent):
                 else:
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, outcome_tuple)
                 accepted_quantities_for_planned_this_call[t] += accept_qty_int
-                if os.path.exists("env.test"): print(log_prefix + f"Accepted Qty {accept_qty_int}. " + log_details)
             else:
                 rejection_reason = ""
                 if accept_qty_int <= 0: rejection_reason += "NoHeadroomOrZeroAcceptQty;"
@@ -975,18 +932,12 @@ class LitaAgentYS(StdSyncAgent):
                         qty_for_counter = 1
                     elif qty_for_counter <= 0 and qty_original <= 0:
                         res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-                        if os.path.exists("env.test"): print(
-                            log_prefix + f"Rejected ({rejection_reason}). No valid counter. " + log_details)
                         continue
                     counter_offer_tuple = self._pareto_counter_offer(pid, qty_for_counter, t,
                                                                      conceded_actual_price_to_offer, state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_tuple)
-                    if os.path.exists("env.test"): print(
-                        log_prefix + f"Rejected ({rejection_reason}). Countering. " + log_details + f" Counter: Q:{counter_offer_tuple[0]} P:{counter_offer_tuple[2]:.2f} T:{counter_offer_tuple[1]}")
                 else:
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-                    if os.path.exists("env.test"): print(
-                        log_prefix + f"Rejected ({rejection_reason}). No counter. " + log_details)
         return res
 
     # ------------------------------------------------------------------
@@ -1035,7 +986,6 @@ class LitaAgentYS(StdSyncAgent):
             if accept_qty_int > 0 and price_is_cheap:
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
                 accepted_quantities_for_optional_this_call[t] += accept_qty_int
-                if os.path.exists("env.test"): print(log_prefix + f"Accepted Qty {accept_qty_int}. " + log_details)
             else:
                 rejection_reason = ""
                 if accept_qty_int <= 0: rejection_reason += "NoHeadroomOrZeroAcceptQty;"
@@ -1045,12 +995,8 @@ class LitaAgentYS(StdSyncAgent):
                     conceded_price = self._apply_concession(pid, cheap_threshold, state, price)
                     counter_offer_tuple = self._pareto_counter_offer(pid, qty_original, t, conceded_price, state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_tuple)
-                    if os.path.exists("env.test"): print(
-                        log_prefix + f"Rejected ({rejection_reason}). Countering. " + log_details + f" Counter: Q:{counter_offer_tuple[0]} P:{counter_offer_tuple[2]:.2f} T:{counter_offer_tuple[1]}")
                 else:
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-                    if os.path.exists("env.test"): print(
-                        log_prefix + f"Rejected ({rejection_reason}). No counter. " + log_details)
         return res
 
     # ------------------------------------------------------------------
@@ -1097,12 +1043,8 @@ class LitaAgentYS(StdSyncAgent):
                     counter_offer_outcome = self._pareto_counter_offer(pid, int(available_qty_for_offer), t, price,
                                                                        state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_outcome)
-                    if os.path.exists("env.test"): print(
-                        f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {qty} on Day {t}: Over capacity. Countering with Qty {available_qty_for_offer}.")
                 else:
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-                    if os.path.exists("env.test"): print(
-                        f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {qty} on Day {t}: No capacity. Rejecting.")
                 continue
 
             avg_raw_cost = self.get_avg_raw_cost_fallback(self.awi.current_step, pid)
@@ -1113,22 +1055,16 @@ class LitaAgentYS(StdSyncAgent):
             if self._is_production_capacity_tight(t, qty):
                 current_min_margin_for_calc += self.capacity_tight_margin_increase
                 reason_log_parts.append(f"CapacityTight! AdjustedMinMargin: {current_min_margin_for_calc:.3f}")
-                if os.path.exists("env.test"): print(
-                    f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {qty} on Day {t}: Capacity tight, using increased margin {current_min_margin_for_calc:.3f}.")
 
             min_sell_price = unit_cost * (1 + current_min_margin_for_calc)
 
             if price >= min_sell_price:
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
-                if os.path.exists("env.test"): print(
-                    f"✅ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Q:{qty} P:{price:.2f} T:{t}): Accepted. MinSellPrice={min_sell_price:.2f}. Reasons: {'|'.join(reason_log_parts)}")
             else:
                 target_price_for_counter = min_sell_price
                 conceded_price = self._apply_concession(pid, target_price_for_counter, state, price)
                 counter_offer = self._pareto_counter_offer(pid, qty, t, conceded_price, state)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
-                if os.path.exists("env.test"): print(
-                    f"❌ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Q:{qty} P:{price:.2f} T:{t}): Rejected (Price < MinSellPrice {min_sell_price:.2f}). Countering with P:{counter_offer[UNIT_PRICE]:.2f}. Reasons: {'|'.join(reason_log_parts)}")
         return res
 
     # ------------------------------------------------------------------
@@ -1139,8 +1075,6 @@ class LitaAgentYS(StdSyncAgent):
         for p in contract.partners:
             if p != self.id:
                 return p
-        if os.path.exists("env.test"): print(
-            f"⚠️ ({self.id}) Could not determine partner ID for contract {contract.id}, partners: {contract.partners}, my ID: {self.id}")
         return "unknown_partner"  # Should ideally not happen
 
     # Modified in Step 7 (Turn 20)
@@ -1171,8 +1105,6 @@ class LitaAgentYS(StdSyncAgent):
         assert self.im, "InventoryManager 尚未初始化"
         partner = self.get_partner_id(contract)
         if partner == "unknown_partner":
-            if os.path.exists("env.test"): print(
-                f"Error ({self.id}): Could not identify partner for contract {contract.id}. Skipping IM update.")
             return
 
         is_supply = partner in self.awi.my_suppliers
@@ -1183,8 +1115,6 @@ class LitaAgentYS(StdSyncAgent):
         mat_type = MaterialType.RAW if is_supply else MaterialType.PRODUCT
         agreement = contract.agreement
         if not agreement:
-            if os.path.exists("env.test"): print(
-                f"Error ({self.id}): Contract {contract.id} has no agreement. Skipping IM update.")
             return
 
         new_c = IMContract(
@@ -1215,34 +1145,18 @@ class LitaAgentYS(StdSyncAgent):
         elif not is_supply and agreement["time"] == self.awi.current_step:
             self.sales_completed[self.awi.current_step] += agreement["quantity"]
 
-        if os.path.exists("env.test"):
-            print(f"✅ [{self.awi.current_step}] ({self.id}) Contract {contract.id} added to IM: {new_c}")
 
     # Added from Step 8 (Turn 24), logging improved in Step 11 (Turn 37)
     def on_contracts_finalized(self, signed: List[Contract], cancelled: List[Contract],
                                rejected: List[Contract]) -> None:
         super().on_contracts_finalized(signed, cancelled, rejected)
         current_day = self.awi.current_step  # For logging
-        if os.path.exists("env.test"):
-            print(
-                f"📝 [{current_day}] ({self.id}) Contracts Finalized. Signed: {len(signed)}, Cancelled: {len(cancelled)}, Rejected: {len(rejected)}")
 
         if not self.im:
-            if os.path.exists("env.test"): print(
-                f"⚠️ [{current_day}] ({self.id}) IM not available in on_contracts_finalized. Cannot reconcile.")
             return
 
         for contract in cancelled:
-            if os.path.exists("env.test"):
-                print(
-                    f"🔔 [{current_day}] ({self.id}) Contract {contract.id} was cancelled at signing stage. Instructing IM to void it.")
             removed_from_im = self.im.void_negotiated_contract(contract.id)
-            if os.path.exists("env.test"):
-                if removed_from_im:
-                    print(f"✅ [{current_day}] ({self.id}) IM voided cancelled contract {contract.id}.")
-                else:
-                    print(
-                        f"⚠️ [{current_day}] ({self.id}) IM could not find contract {contract.id} to void (already processed or never added?).")
 
     # ------------------------------------------------------------------
     # 🌟 POST-NEGOTIATION SIGNING PHASE
@@ -1250,16 +1164,10 @@ class LitaAgentYS(StdSyncAgent):
     # Method from Step 2 (Turn 17), modified Step 6 (Turn 19), logging improved Step 11 (Turn 37)
     def sign_all_contracts(self, contracts: List[Contract]) -> List[Contract]:
         if self.im is None:
-            if os.path.exists("env.test"): print(
-                f"⚠️ Day {self.awi.current_step} ({self.id}) IM is None in sign_all_contracts. Signing all blindly.")
             for contract_obj_iter in contracts:
                 agreement = contract_obj_iter.agreement if contract_obj_iter.agreement else {}
-                if os.path.exists("env.test"): print(
-                    f"  Blindly signing contract {contract_obj_iter.id}. Details: Q={agreement.get(QUANTITY)}, P={agreement.get(UNIT_PRICE)}, T={agreement.get(TIME)}")
             return contracts
 
-        if os.path.exists("env.test"): print(
-            f"📝 [{self.awi.current_step}] ({self.id}) Received {len(contracts)} contracts for signing decision.")
         pending_sales_contracts_data: List[Dict[str, Any]] = []
         pending_procurement_contracts_data: List[Dict[str, Any]] = []
 
@@ -1267,13 +1175,9 @@ class LitaAgentYS(StdSyncAgent):
             partner_id = self.get_partner_id(contract_obj)
             agreement = contract_obj.agreement
             if not agreement:
-                if os.path.exists("env.test"): print(
-                    f"⚠️ [{self.awi.current_step}] ({self.id}) Contract {contract_obj.id} has no agreement. Skipping.")
                 continue
             quantity = agreement.get(QUANTITY, 0)
             if quantity <= 0:
-                if os.path.exists("env.test"): print(
-                    f"⚠️ [{self.awi.current_step}] ({self.id}) Contract {contract_obj.id} has zero/negative quantity ({quantity}). Skipping.")
                 continue
             unit_price = agreement.get(UNIT_PRICE, 0.0)
             delivery_time = agreement.get(TIME, self.awi.current_step)
@@ -1304,9 +1208,6 @@ class LitaAgentYS(StdSyncAgent):
                     "linked_to_sale": False, "original_quantity": quantity
                 })
 
-        if os.path.exists("env.test"):  # Added logging from Step 11
-            print(
-                f"ℹ️ [{self.awi.current_step}] ({self.id}) Parsed contracts. Sales: {len(pending_sales_contracts_data)}, Procurement: {len(pending_procurement_contracts_data)}.")
 
         pending_sales_contracts_data.sort(key=lambda x: x["profit"], reverse=True)
         available_procurement_contracts_data = [pc.copy() for pc in pending_procurement_contracts_data]
@@ -1315,22 +1216,16 @@ class LitaAgentYS(StdSyncAgent):
         candidate_sales_data_list: List[Dict[str, Any]] = []
         daily_production_commitment: Dict[int, int] = Counter()
 
-        if os.path.exists("env.test"): print(
-            f"ℹ️ [{self.awi.current_step}] ({self.id}) Phase 1: Initial greedy selection. Sales candidates: {len(pending_sales_contracts_data)}, Procure candidates: {len(available_procurement_contracts_data)}.")
 
         for s_data in pending_sales_contracts_data:
             min_acceptable_profit = self.min_profit_margin * (s_data["price"] * s_data["quantity"])
             if s_data["profit"] <= min_acceptable_profit:
-                if os.path.exists("env.test"): print(
-                    f"⏩ [{self.awi.current_step}] ({self.id}) Skipping sales contract {s_data['contract_obj'].id} due to low profit: {s_data['profit']:.2f} vs min acceptable profit: {min_acceptable_profit:.2f}.")
                 continue
 
             s_qty = s_data["quantity"]
             s_time = s_data["time"]
 
             if daily_production_commitment[s_time] + s_qty > self.im.daily_production_capacity:
-                if os.path.exists("env.test"): print(
-                    f"🚫 [{self.awi.current_step}] ({self.id}) Skipping sales contract {s_data['contract_obj'].id} (Qty:{s_qty} for Day:{s_time}) due to exceeding capacity. Committed: {daily_production_commitment[s_time]}, Capacity: {self.im.daily_production_capacity}")
                 continue
 
             materials_needed = s_qty
@@ -1367,18 +1262,11 @@ class LitaAgentYS(StdSyncAgent):
                             p_master_item["quantity"] -= linked_p_info_commit["quantity_taken"]
                             p_master_item["linked_to_sale"] = True
                             break
-            else:
-                if os.path.exists("env.test"): print(
-                    f"⚠️ [{self.awi.current_step}] ({self.id}) Sales contract {s_data['contract_obj'].id} (Qty:{s_qty}) lacks materials. Needed:{materials_needed}, SecuredFromStock:{secured_from_im_stock}, SecuredFromBatch:{secured_from_batch_procurements}. Skipping.")
 
-        if os.path.exists("env.test"): print(
-            f"ℹ️ [{self.awi.current_step}] ({self.id}) Phase 2: Cash Flow Check. Candidates after initial selection: {len(candidate_sales_data_list)} sales.")
         current_selected_sales_data = sorted(candidate_sales_data_list, key=lambda x: x["profit"])
 
         while True:
             if not current_selected_sales_data:
-                if os.path.exists("env.test"): print(
-                    f"⚠️ [{self.awi.current_step}] ({self.id}) Cash Flow: No sales contracts left. Signing 0 contracts.")
                 break
             total_expected_revenue = sum(s_d["quantity"] * s_d["price"] for s_d in current_selected_sales_data)
             unique_procurements_for_current_sales = {}
@@ -1393,18 +1281,9 @@ class LitaAgentYS(StdSyncAgent):
             )
             allowed_procurement_cost = total_expected_revenue * self.procurement_cash_flow_limit_percent
             if total_cost_of_linked_procurement <= allowed_procurement_cost:
-                if os.path.exists("env.test"): print(
-                    f"💰 [{self.awi.current_step}] ({self.id}) Cash Flow OK. Revenue: {total_expected_revenue:.2f}, " \
-                    f"Proc. Cost: {total_cost_of_linked_procurement:.2f} (Limit: {allowed_procurement_cost:.2f})")
                 break
             descoped_sale_data = current_selected_sales_data.pop(0)
-            if os.path.exists("env.test"): print(
-                f"🚫 [{self.awi.current_step}] ({self.id}) Cash Flow Limit Exceeded. Descoping sales: {descoped_sale_data['contract_obj'].id} " \
-                f"(Profit: {descoped_sale_data['profit']:.2f}). " \
-                f"Rev: {total_expected_revenue:.2f}, ProcCost: {total_cost_of_linked_procurement:.2f}, Limit: {allowed_procurement_cost:.2f}")
             if not current_selected_sales_data:
-                if os.path.exists("env.test"): print(
-                    f"⚠️ [{self.awi.current_step}] ({self.id}) All sales descoped due to cash flow.")
                 break
 
         final_signed_contracts_list: List[Contract] = []
@@ -1421,10 +1300,6 @@ class LitaAgentYS(StdSyncAgent):
         final_signed_sales_count = len(final_sales_contract_ids)
         final_signed_procurement_count = len(final_procurement_contract_ids)
 
-        if os.path.exists("env.test"):
-            print(
-                f"✅ [{self.awi.current_step}] ({self.id}) Final Decision: Signing {len(final_signed_contracts_list)} contracts: " \
-                f"{final_signed_sales_count} sales, {final_signed_procurement_count} procurements. Est. profit: {final_total_profit_estimate:.2f}")
         return final_signed_contracts_list
 
     # ------------------------------------------------------------------
@@ -1509,12 +1384,6 @@ class LitaAgentYS(StdSyncAgent):
         if abs(self.min_profit_margin - final_new_min_profit_margin) > 1e-4:
             old_margin = self.min_profit_margin
             self.update_profit_strategy(min_profit_margin=final_new_min_profit_margin)
-            if os.path.exists("env.test"):
-                print(
-                    f"📈 Day {current_day} ({self.id}): min_profit_margin changed from {old_margin:.3f} to {self.min_profit_margin:.3f}. Reasons: {' | '.join(reason_parts)}")
-        elif os.path.exists("env.test"):
-            print(
-                f"🔎 Day {current_day} ({self.id}): min_profit_margin maintained at {self.min_profit_margin:.3f}. Evaluated Reasons: {' | '.join(reason_parts)}")
 
     def update_profit_strategy(
             self, *, min_profit_margin: float | None = None, cheap_price_discount: float | None = None
@@ -1539,10 +1408,6 @@ class LitaAgentYS(StdSyncAgent):
         header = "|   日期    |  原料真库存  |  原料预计库存   | 计划生产  |  剩余产能  |  产品真库存  |  产品预计库存  |  已签署销售量  |  实际产品交付  |"
         separator = "|" + "-" * (len(header) + 24) + "|"
 
-        print("\n📊 每日状态报告")
-        print(separator)
-        print(header)
-        print(separator)
 
         # 当前日期及未来预测
         for day_offset in range(horizon_days):
@@ -1572,13 +1437,6 @@ class LitaAgentYS(StdSyncAgent):
 
             # 格式化并输出
             day_str = f"{forecast_day} (T+{day_offset})" if day_offset == 0 else f"{forecast_day} (T+{day_offset})"
-            print(
-                f"| {day_str:^6} | {raw_current_stock:^10} | {raw_estimated:^12} | {planned_production:^8} | {remaining_capacity:^8} | {product_current_stock:^10} | {product_estimated:^12} | {signed_sales:^12} | {(result.get('delivered_products', 0) if day_offset == 0 else 0):^12} |")
-
-        print(separator)
-        print()
 
 
-if __name__ == "__main__":
-    if os.path.exists("env.test"):
-        print("模块加载成功，可在竞赛框架中使用 LitaAgentY。")
+

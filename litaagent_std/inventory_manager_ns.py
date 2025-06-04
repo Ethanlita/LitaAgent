@@ -89,14 +89,7 @@ class InventoryManager:
         """签订一份采购（上游）或销售（下游）合同。
         Sign a supply (upstream) or demand (downstream) contract."""
         # Sign a supply (upstream) or demand (downstream) contract.
-        if os.path.exists("env.test"):
-            print(
-                f"IM LOG: Adding contract: {contract.contract_id} ({contract.type.name}), Qty: {contract.quantity}, Price: {contract.price}, Time: {contract.delivery_time}"
-            )
         if contract.delivery_time < self.current_day:
-            if os.path.exists("env.test"):
-                print(
-                    f"IM LOG ERROR: Attempted to add contract {contract.contract_id} with past delivery time {contract.delivery_time} on day {self.current_day}.")
             return False
         if contract.type == IMContractType.SUPPLY:
             self._pending_supply.append(contract)
@@ -122,8 +115,6 @@ class InventoryManager:
         for contract in self._pending_supply:
             if contract.contract_id == contract_id:
                 self._pending_supply.remove(contract)
-                if os.path.exists("env.test"):
-                    print(f"IM LOG: Voided SUPPLY contract ID: {contract_id} from _pending_supply.")
                 found_and_removed = True
                 break
 
@@ -132,20 +123,12 @@ class InventoryManager:
             for contract in self._pending_demand:
                 if contract.contract_id == contract_id:
                     self._pending_demand.remove(contract)
-                    if os.path.exists("env.test"):
-                        print(f"IM LOG: Voided DEMAND contract ID: {contract_id} from _pending_demand.")
                     found_and_removed = True
                     break
 
         if found_and_removed:
             # Re-plan production as voiding a contract can change needs
-            if os.path.exists("env.test"):
-                print(f"IM LOG: Contract {contract_id} voided. Re-planning production up to day {self.max_day}.")
             self.plan_production(self.max_day)  # Use self.max_day for full horizon planning
-        else:
-            if os.path.exists("env.test"):
-                print(
-                    f"IM LOG WARNING: Attempted to void contract ID: {contract_id}, but it was not found in pending lists.")
 
         return found_and_removed
 
@@ -802,8 +785,6 @@ class InventoryManager:
         production_qty = production_plan.get(day, 0)
 
         if production_qty <= 0:
-            if os.path.exists("env.test"):
-                print("今天没有计划生产")
             return
 
         # 检查原材料库存是否足够
@@ -849,11 +830,7 @@ class InventoryManager:
             # Add the product batch to inventory
             im.product_batches.append(batch)
 
-            if os.path.exists("env.test"):
-                print(f"执行生产: 生产了 {production_qty} 单位产品")
         else:
-            if os.path.exists("env.test"):
-                print(f"原材料不足，无法执行计划生产量 {production_qty}")
             # 记录原材料不足情况
             # Record the shortage of raw materials
             if day not in im.insufficient_raw:
