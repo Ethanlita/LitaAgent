@@ -63,7 +63,7 @@ from scml.std import (
 from negmas import SAOState, SAOResponse, Outcome, Contract, ResponseType
 
 # 内部工具 & manager
-from .inventory_manager_n import (
+from .inventory_manager_ns import (
     InventoryManager,
     IMContract,
     IMContractType,
@@ -105,7 +105,7 @@ def _distribute(q: int, n: int) -> List[int]:
 # ------------------ 主代理实现 ------------------
 # Main agent implementation
 
-class LitaAgentY(StdSyncAgent):
+class LitaAgentYS(StdSyncAgent):
     """重构后的 LitaAgent N。支持三类采购策略与产能约束销售。"""
 
     # ------------------------------------------------------------------

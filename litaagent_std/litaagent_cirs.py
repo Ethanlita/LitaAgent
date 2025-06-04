@@ -12,7 +12,7 @@ from copy import deepcopy
 from typing import Dict, List, Sequence, Tuple, Optional  # Added Optional
 import numpy as np
 
-from .inventory_manager_cir import InventoryManagerCIR, IMContract, IMContractType, MaterialType
+from .inventory_manager_cirs import InventoryManagerCIRS, IMContract, IMContractType, MaterialType
 
 # ------------------ 基础依赖 ------------------
 from typing import Any, Dict, List, Tuple, Iterable, Optional  # Added Optional
@@ -36,7 +36,7 @@ from scml.std import (
 from negmas import SAOState, SAOResponse, Outcome, Contract, ResponseType
 
 # 内部工具 & manager
-from .inventory_manager_cir import (
+from .inventory_manager_cirs import (
     IMContract,
     IMContractType,
     MaterialType,
@@ -106,7 +106,7 @@ class LitaAgentCIR(StdSyncAgent):
         # ... (其他方法) ...
 
         # —— 运行时变量 ——
-        self.im: Optional[InventoryManagerCIR] = None  # Updated type hint
+        self.im: Optional[InventoryManagerCIRS] = None  # Updated type hint
         self._market_price_avg: float = 0.0
         self._market_material_price_avg: float = 0.0
         self._market_product_price_avg: float = 0.0
@@ -138,7 +138,7 @@ class LitaAgentCIR(StdSyncAgent):
         processing_cost = 0.0
         daily_capacity = self.awi.n_lines
 
-        self.im = InventoryManagerCIR(
+        self.im = InventoryManagerCIRS(
             raw_storage_cost=self.awi.current_storage_cost,  # same cost for raw and product
             product_storage_cost=self.awi.current_storage_cost,
             processing_cost=processing_cost,
@@ -474,7 +474,7 @@ class LitaAgentCIR(StdSyncAgent):
     def score_offers(
             self,
             offer_combination: Dict[str, Outcome],  # 一个报价组合
-            current_im: InventoryManagerCIR,  # 当前的库存管理器状态
+            current_im: InventoryManagerCIRS,  # 当前的库存管理器状态
             awi: OneShotAWI,  # AWI 实例，用于获取当前日期、总天数等
             # unit_shortfall_penalty: float,      # 可以作为参数传入，或在内部根据awi动态计算
             # unit_storage_cost: float            # 这个参数在calculate_inventory_cost_score中实际未使用，成本从im_state获取
@@ -708,7 +708,7 @@ class LitaAgentCIR(StdSyncAgent):
 
     def calculate_inventory_cost_score(
             self,
-            im_state: InventoryManagerCIR,
+            im_state: InventoryManagerCIRS,
             current_day: int,
             last_simulation_day: int,
             # 这个参数现在代表实际的最后一天索引 (e.g., 49 if n_steps=50) / This parameter now represents the actual last day index (e.g., 49 if n_steps=50)
@@ -844,7 +844,7 @@ class LitaAgentCIR(StdSyncAgent):
     def _evaluate_offer_combinations_exhaustive(  # NEW METHOD
             self,
             offers: Dict[str, Outcome],
-            im: InventoryManagerCIR,
+            im: InventoryManagerCIRS,
             awi: OneShotAWI,
     ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
         """
@@ -906,7 +906,7 @@ class LitaAgentCIR(StdSyncAgent):
     def _evaluate_offer_combinations_k_max(
             self,
             offers: Dict[str, Outcome],
-            im: InventoryManagerCIR,
+            im: InventoryManagerCIRS,
             awi: OneShotAWI,
     ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
         """
@@ -963,7 +963,7 @@ class LitaAgentCIR(StdSyncAgent):
     def _evaluate_offer_combinations_beam_search(
             self,
             offers: Dict[str, Outcome],
-            im: InventoryManagerCIR,
+            im: InventoryManagerCIRS,
             awi: OneShotAWI,
     ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
         """
@@ -1099,7 +1099,7 @@ class LitaAgentCIR(StdSyncAgent):
     def _evaluate_offer_combinations_simulated_annealing(
             self,
             offers: Dict[str, Outcome],
-            im: InventoryManagerCIR,
+            im: InventoryManagerCIRS,
             awi: OneShotAWI,
     ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float]:
         """
@@ -1244,7 +1244,7 @@ class LitaAgentCIR(StdSyncAgent):
     def _evaluate_offer_combinations(
             self,
             offers: Dict[str, Outcome],
-            im: InventoryManagerCIR,
+            im: InventoryManagerCIRS,
             awi: OneShotAWI,
     ) -> Tuple[Optional[List[Tuple[str, Outcome]]], float, float]:
         """
