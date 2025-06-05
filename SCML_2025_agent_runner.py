@@ -12,8 +12,6 @@ from scml.std import *
 from scml.runner import WorldRunner
 
 from litaagent_std.litaagent_cir import LitaAgentCIR
-from litaagent_std.litaagent_cirs import LitaAgentCIRS
-from litaagent_std.litaagent_n import LitaAgentN
 from litaagent_std.litaagent_p import LitaAgentP
 from litaagent_std.litaagent_y import LitaAgentY
 
@@ -23,6 +21,7 @@ CONFIGS, REPS, STEPS = 10, 5, 25
 context = ANACStdContext( # what are the rounds here, number of trials, process (needs processes or not), etc. and align with the actual parameters of the live competitoin.
     n_steps=STEPS, n_processes=3, world_params=dict(construct_graphs=True)
 )
+print("----------------------------------Now Start with CIR-------------------------------")
 single_agent_runner0 = WorldRunner(
     context, n_configs=CONFIGS, n_repetitions=REPS, save_worlds=True
 )
@@ -38,7 +37,7 @@ single_agent_runner0.draw_worlds_of(LitaAgentCIR)
 single_agent_runner0.plot_stats(agg=False)
 single_agent_runner0.score_summary()
 plt.show()
-
+print("----------------------------------Now Start with Y-------------------------------")
 single_agent_runner1 = WorldRunner(
     context, n_configs=CONFIGS, n_repetitions=REPS, save_worlds=True
 )
@@ -54,7 +53,7 @@ single_agent_runner1.draw_worlds_of(LitaAgentY)
 single_agent_runner1.plot_stats(agg=False)
 single_agent_runner1.score_summary()
 plt.show()
-
+print("----------------------------------Now Start with P-------------------------------")
 single_agent_runner2 = WorldRunner(
     context, n_configs=CONFIGS, n_repetitions=REPS, save_worlds=True
 )
