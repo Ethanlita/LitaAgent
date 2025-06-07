@@ -1,0 +1,146 @@
+% ----------------------------------------------------------
+%  LitaAgentY — Mathematical Description of the Score Strategy
+% ----------------------------------------------------------
+\section*{Notation}
+\begin{tabular}{@{}ll@{}}
+\(p\)                       & opponent’s current unit price            \\
+\(p^{\text{new}}\)          & price quoted by \textsc{LitaAgentY} after concession \\
+\(p^{\star}\)               & agent’s \emph{internal target} price for this round \\
+\(p_{0}\)                   & “walk-away” price = best NMI bound (min when buy, max when sell) \\
+\(c\)                       & unit production cost \(= \textit{avg\_raw\_cost} + \textit{processing\_cost}\) \\
+\(m\)                       & current profit–margin parameter \texttt{min\_profit\_margin}        \\
+\(\gamma\)                  & \texttt{concession\_curve\_power} (default \(1.5\))                 \\
+\(t_{\mathrm{rel}}\in[0,1]\)& intra-negotiation relative time                                         \\
+\(r_{\mathrm{opp}}\in[0,1]\)& last–round relative concession of the opponent                         \\
+\(\pi\)                     & current short-fall penalty                                             \\
+\(\hat p_{\mathrm{opp}}\)   & opponent’s expected / reservation price                                \\
+\(\sigma(z)=1/(1+e^{-z})\)  & logistic sigmoid
+\end{tabular}
+
+% ----------------------------------------------------------
+\section{Offering \& Bidding Strategy}
+\subsection*{Selling (to consumers)}
+\[
+p_{\text{ask}}
+  = \operatorname{clamp}_{\text{NMI}}
+    \!\Bigl[(1+m_{d})\,c\Bigr], \qquad
+m_{d} = m
+        + \mathbf 1_{\text{tight}(d,q)}\,\Delta m_{\text{cap}}
+        + \Delta m_{\text{hist}} ,
+\]
+\(\Delta m_{\text{cap}}=\)\texttt{capacity\_tight\_margin\_increase}.
+\medskip
+
+\subsection*{Buying (from suppliers)}
+\[
+p_{\text{bid}} = p_{0}=\min(\text{NMI range of supplier}).
+\]
+
+Quantities are partitioned with a random integer distribution
+\(\texttt{\_distribute}(Q,n)\) so that \(\sum_i q_i = Q\) and, if feasible, \(q_i\ge1\).
+
+% ----------------------------------------------------------
+\section{Concession Mechanism}
+\subsection*{Multiplier}
+\[
+\beta(t_{\mathrm{rel}},r_{\mathrm{opp}})
+  = \min\!\bigl(1,\, t_{\mathrm{rel}}^{\gamma}\bigl(1+r_{\mathrm{opp}}\bigr)\bigr).
+\]
+
+\subsection*{Target price blend}
+\[
+p^{\star} = \frac{p_{\text{target}}+\hat p_{\mathrm{opp}}}{2},
+\qquad
+\hat p_{\mathrm{opp}} = \tfrac12\bigl(\text{base}_{\text{hist}} + p_{r}\bigr).
+\]
+
+\subsection*{Price update}
+\[
+p^{\text{new}}
+=
+\begin{cases}
+p_{0} - \beta\!\bigl(p_{0}-p^{\star}\bigr), &\text{(selling)},\\[4pt]
+p_{0} + \beta\!\bigl(p^{\star}-p_{0}\bigr), &\text{(buying)}.
+\end{cases}
+\]
+When buying, \(\beta\gets \beta + \min\!\bigl(1,\pi/10\bigr)\).
+
+% ----------------------------------------------------------
+\section{Acceptance Criteria}
+\subsection*{Sales offers}
+\[
+\text{Accept if }\;\;
+p \;\ge\; c\!\left(1+m+\mathbf 1_{\text{tight}(d,q)}\Delta m_{\text{cap}}\right)
+\]
+and production \& material feasibility holds.
+
+\subsection*{Emergency supply (today)}
+Accept quantity \(q_{\text{acc}}=\min(q,\texttt{today\_need})\) if
+\(p\le1.1\,\pi\) or \((p>\pi \;\wedge\; t_{\mathrm{rel}}>0.8)\).
+
+\subsection*{Planned supply (future)}
+\[
+p_{\max}^{\mathrm{JIT}}(d)
+  = \hat S - \text{proc} - \hat S\,m,
+\quad
+p_{\mathrm{eff}} = p + s\,c_{\mathrm{store}},
+\]
+with \(s=d-d_{\text{today}}-1\).
+Accept if \(p_{\mathrm{eff}}\le p_{\max}^{\mathrm{JIT}}\) and inventory head-room permits.
+
+\subsection*{Optional (cheap) supply}
+Let \(p_{\text{cheap}} = \bar p_{\text{market}}\times\texttt{cheap\_price\_discount}\).
+Accept if \(p\le p_{\text{cheap}}\) and capacity head-room is available.
+
+% ----------------------------------------------------------
+\section{Opponent Modelling}
+\subsection*{Online logistic regression}
+\[
+P_{\mathrm{acc}}(x)=\sigma(w_0+w_1x),
+\qquad
+x=\begin{cases} p,&\text{buying},\\[2pt]-p,&\text{selling}.\end{cases}
+\]
+Gradient update (\(\eta=0.05\)):
+\[
+w_i \leftarrow w_i + \eta\,(y-P_{\mathrm{acc}})\,\frac{\partial}{\partial w_i}(w_0+w_1x).
+\]
+
+\subsection*{Reservation price estimate}
+\[
+p_{r} =
+\begin{cases}
+-\dfrac{w_0}{w_1}, & w_1\neq0 \text{ (buying)},\\[6pt]
+\phantom{-}\dfrac{w_0}{w_1}, & w_1\neq0 \text{ (selling)}.
+\end{cases}
+\]
+
+% ----------------------------------------------------------
+\section{Dynamic Parameters}
+Daily update rules can be stated abstractly as
+\[
+m \gets \operatorname{clip}_{[0.02,\,0.25]}
+      \!\Bigl(f_{\text{inv}}(t) + f_{\text{conversion}}\Bigr),
+\qquad
+\texttt{cheap\_price\_discount}\gets g_{\text{inv}}(t),
+\]
+where \(f_{\text{inv}}\) lowers \(m\) under excess stock and raises it when scarce;
+\(f_{\text{conversion}}\) shifts \(m\pm0.005\) per \(\pm\)conversion event.
+
+% ----------------------------------------------------------
+\section{Pareto-Aware Counters}
+Counter proposals produced by
+\(\texttt{\_pareto\_counter\_offer}\):
+\begin{enumerate}
+  \item Update price with the concession rule above.
+  \item If near the agent’s walk-away price and the opponent’s offer is better,
+        try \(+25\%\) quantity or \(+2\) days delivery to reduce price by 2–3\,\%.
+\end{enumerate}
+
+% ----------------------------------------------------------
+\section*{Summary}
+\begin{itemize}
+  \item \textbf{Offer generation:} cost\,+\,margin when selling, NMI‐min when buying.
+  \item \textbf{Concession:} non-linear factor \(\beta\) driven by time \& opponent’s movement.
+  \item \textbf{Acceptance:} inequality checks against profit, penalty \& feasibility.
+  \item \textbf{Opponent model:} 1-D online logistic regression; reservation price feeds blending.
+\end{itemize}
