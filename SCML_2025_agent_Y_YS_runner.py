@@ -38,17 +38,17 @@ single_agent_runner1.draw_worlds_of(LitaAgentY)
 single_agent_runner1.plot_stats(agg=False)
 single_agent_runner1.score_summary()
 plt.show()
-print("----------------------------------Now Start with YS-------------------------------")
+print("----------------------------------Now Start with YR-------------------------------")
 single_agent_runner2 = WorldRunner(
     context, n_configs=CONFIGS, n_repetitions=REPS, save_worlds=True
 )
 full_market_runner2 = WorldRunner.from_runner(
     single_agent_runner2, control_all_agents=True
 )
-from litaagent_std.litaagent_ys import LitaAgentY
+from litaagent_std.litaagent_yr import LitaAgentYR
 #%% create a world with a single agent and run it
-single_agent_runner2(LitaAgentY)
-single_agent_runner2.draw_worlds_of(LitaAgentY)
+single_agent_runner2(LitaAgentYR)
+single_agent_runner2.draw_worlds_of(LitaAgentYR)
 
 #%% plot the results
 single_agent_runner2.plot_stats(agg=False)

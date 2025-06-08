@@ -1230,11 +1230,14 @@ class LitaAgentYR(StdSyncAgent):
                     res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
                     remain_needed -= accept_qty
                 elif qty > remain_needed and price <= penalty:  # Offer is larger than need but price is good / 报价大于需求但价格良好
-                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER,
-                                           (accept_qty, time, price))  # Accept only what's needed / 只接受所需数量
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                           (accept_qty, time, price))  # Accept only what's needed / 只接受所需数量 counter offer
                     remain_needed -= accept_qty
-                elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
+                elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8 and qty<= remain_needed:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
                     res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
+                    remain_needed -= accept_qty
+                elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8 and qty > remain_needed:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (accept_qty, time, price))
                     remain_needed -= accept_qty
                 else:  # Price acceptable but conditions not met for full accept, or quantity mismatch / 价格可接受但条件不满足完全接受，或数量不匹配
                     counter_offer = self._pareto_counter_offer(pid, accept_qty, time, price, state)
@@ -1276,7 +1279,48 @@ class LitaAgentYR(StdSyncAgent):
 
             # Estimate profitability: max affordable raw price based on estimated product selling price and margin
             # 估算盈利能力：基于预估产品售价和利润率的最大可承受原材料价格
-            est_sell_price = self._market_product_price_avg if self._market_product_price_avg > 0 else price * 2.0  # Fallback if no market avg / 如果没有市场平均价则回退
+            # 在 _process_planned_supply_offers 方法中
+            # ...
+            output_product_idx = self.awi.level
+            # 对于第一层代理，其销售的是原材料，output_product_idx 可能是 0 或根据具体产品定义
+            # 此处仅为示例，实际应用需精确确定 output_product_idx
+            est_sell_price = 0.0
+
+            # 1. 优先使用代理自己观察到的市场产品均价
+            if self._market_product_price_avg > 0:
+                est_sell_price = self._market_product_price_avg
+                reason = "agent_observed_avg"
+
+            # 2. 回退到 AWI 提供的市场交易价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'trading_prices') and self.awi.trading_prices is not None and \
+                    len(self.awi.trading_prices) > output_product_idx:
+                awi_trading_price = self.awi.trading_prices[output_product_idx]
+                if awi_trading_price > 0:
+                    est_sell_price = awi_trading_price
+                    reason = "awi_trading_prices"
+
+            # 3. 回退到 AWI 提供的目录价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'catalog_prices') and self.awi.catalog_prices is not None and \
+                    len(self.awi.catalog_prices) > output_product_idx:
+                awi_catalog_price = self.awi.catalog_prices[output_product_idx]
+                if awi_catalog_price > 0:
+                    est_sell_price = awi_catalog_price
+                    reason = "awi_catalog_prices"
+
+            # 4. 最后回退到基于原材料成本的简单启发式
+            if est_sell_price <= 0:
+                # 'price' 是当前原材料供应报价的单价
+                est_sell_price = price * 2.0
+                reason = "heuristic_raw_x2"
+
+            # if os.path.exists("env.test"):
+            #     print(f"Debug: est_sell_price for product {output_product_idx} = {est_sell_price:.2f} (Source: {reason})")
+
+            min_profit_for_product = est_sell_price * self.min_profit_ratio
+            max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product
+            # ...
             min_profit_for_product = est_sell_price * self.min_profit_ratio
             max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product  # JIT = Just-In-Time (no storage cost) / JIT = 准时制（无存储成本）
             # Estimate storage cost for holding the material until delivery time 't'
