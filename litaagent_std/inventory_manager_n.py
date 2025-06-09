@@ -569,6 +569,68 @@ class InventoryManager:
         # Clean up batches with remaining quantity of 0
         self.product_batches = [b for b in self.product_batches if b.remaining > 0]
 
+    def get_udpp(self, current_day: int, n_steps: int) -> dict[int, int]:
+        """
+        Calculates the unsatisfied daily production plan (UDPP) for all future steps.
+        This method simulates inventory flow day-by-day to determine the actual shortfall.
+
+        为所有未来时间点计算未满足的日生产计划 (UDPP)。
+        此方法通过逐日模拟库存流来确定实际的物料短缺量。
+
+        Args:
+            current_day: The current simulation day. / 当前的模拟日期。
+            n_steps: The total number of steps in the simulation. / 模拟的总天数。
+
+        Returns:
+            A dictionary mapping each future day to its unsatisfied raw material need.
+            一个将未来每一天映射到其未满足的原材料需求的字典。
+        """
+        # 1. Ensure the production plan is up-to-date.
+        # 1. 确保生产计划是基于最新合同的。
+        self.plan_production()
+
+        # 2. Initialization
+        # 2. 初始化
+        udpp = {}
+        inventory_on_hand = self.get_inventory_summary(day=current_day, mtype=MaterialType.RAW)["current_stock"]
+
+        # Extract future deliveries from contracts.
+        # 从合同中提取未来的交货计划。
+        deliveries = {}
+        for contract in self.get_pending_contracts():
+            if contract.type == IMContractType.SUPPLY:
+                day = contract.delivery_time
+                if day >= current_day:
+                    deliveries[day] = deliveries.get(day, 0) + contract.quantity
+
+        # 3. Simulate inventory flow day-by-day.
+        # 3. 逐日模拟库存流。
+        for day in range(current_day, n_steps):
+            # a. Materials are delivered at the beginning of the day.
+            # a. 物料在当天开始时入库。
+            inventory_on_hand += deliveries.get(day, 0)
+
+            # b. Get production demand for the day.
+            # b. 获取当日的生产需求。
+            demand_today = self.production_plan.get(day, 0)
+
+            if demand_today == 0:
+                udpp[day] = 0
+                continue
+
+            # c. Calculate the shortfall for the day (the UDPP).
+            # c. 计算当日的短缺量（即UDPP）。
+            if inventory_on_hand >= demand_today:
+                udpp[day] = 0
+            else:
+                udpp[day] = demand_today - inventory_on_hand
+
+            # d. Update simulated inventory after production.
+            # d. 更新生产后的模拟库存。
+            inventory_on_hand = max(0, inventory_on_hand - demand_today)
+
+        return udpp
+
     def get_production_plan_all(self) -> Dict[int, float]:
         """返回已经排定的生产计划：{day: quantity, ...}"""
         return self.production_plan

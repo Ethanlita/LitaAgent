@@ -163,6 +163,11 @@ class HeuristicSettings:
 
     aspirational_decay_rate: float = 3.0  # 期望目标价的衰减指数 (alpha)
 
+    overprocurement_factor = 0.2
+    optional_procurement_limit_fraction = 1.2
+
+    logic_select = "unified"  # unified or legacy, legacy should be deprecated later
+
 DEFAULT_HEURISTICS = HeuristicSettings()
 
 
@@ -1134,12 +1139,370 @@ class LitaAgentYR(StdSyncAgent):
 
         supply_offers = {p: o for p, o in offers.items() if self._is_supplier(p)}
         supply_states = {p: states[p] for p in supply_offers}
-        responses.update(self._process_supply_offers(supply_offers, supply_states))
+        logic_select = self.h.logic_select
+        if logic_select == "unified":
+            responses.update(self._process_supply_offers_unified(supply_offers, supply_states))
+        elif logic_select == "legacy":
+            responses.update(self._process_supply_offers(supply_offers, supply_states))
+        return responses
+    # ------------------------------------------------------------------
+    # 🌟 5‑1-A. New unified supply processing method (TODO: Review this)
+    # ------------------------------------------------------------------
+
+    def _check_cumulative_udpp(self, udpp: dict[int, int], start_time: int, quantity: int) -> bool:
+        """
+        Checks if a given quantity can be satisfied by the cumulative UDPP from a start time onwards.
+        检查一个给定的数量是否能被从某个起始时间开始的累计UDPP所满足。
+        """
+        cumulative_need = sum(v for k, v in udpp.items() if k >= start_time)
+        return quantity <= cumulative_need
+
+    def _consume_cumulative_udpp(self, udpp: dict[int, int], start_time: int, quantity: int):
+        """
+        Consumes a given quantity from the UDPP dictionary using a waterfall logic.
+        使用瀑布流逻辑从UDPP字典中消耗一个给定的数量。
+        """
+        quantity_to_assign = quantity
+        for day in sorted(udpp.keys()):
+            if day < start_time: continue
+            if quantity_to_assign <= 0: break
+
+            can_take = min(udpp[day], quantity_to_assign)
+            udpp[day] -= can_take
+            quantity_to_assign -= can_take
+
+    def _process_supply_offers_unified(
+            self,
+            offers: Dict[str, "Outcome"],
+            states: Dict[str, "SAOState"],
+    ) -> Dict[str, "SAOResponse"]:
+        """
+        A unified method to process all supply offers, replacing the old three-tiered system.
+        This version strictly adheres to the SAO mechanism's data structures.
+        It uses a stateful, two-pass (Accept then Counter) approach for procurement.
+
+        一个统一处理所有供应报价的方法，用以取代旧的三层分离式系统。
+        此版本严格遵守SAO机制的数据结构。
+        它使用一个状态驱动的、两阶段（先接受后还价）的模式来处理采购。
+        """
+        # --------------------------------------------------------------------------------
+        # Section 1: Initialization / 第一部分：初始化
+        # --------------------------------------------------------------------------------
+        responses: Dict[str, "SAOResponse"] = {}
+        udpp = self.im.get_udpp(self.awi.current_step, self.awi.n_steps)
+
+        accepted_quantities = {"emergency": 0, "planned": {0: 0}, "optional": {0: 0}}
+        countered_quantities = {"emergency": 0, "planned": {0: 0}}
+
+        emergency_demand = udpp.get(self.awi.current_step, 0)
+        emergency_limit = int(emergency_demand * (1 + self.h.overprocurement_factor))
+
+        planned_demand = sum(v for k, v in udpp.items() if k > self.awi.current_step)
+        planned_limit = planned_demand * (1 + self.h.overprocurement_factor)
+
+        optional_limit = planned_demand * self.h.optional_procurement_limit_fraction
+
+        all_offers_info = [
+            (neg_id, outcome, states[neg_id])
+            for neg_id, outcome in offers.items() if outcome is not None
+        ]
+
+        # --------------------------------------------------------------------------------
+        # Section 2: Emergency Procurement / 第二部分：紧急采购
+        # --------------------------------------------------------------------------------
+        today_offers_info = sorted(
+            [info for info in all_offers_info if info[1][TIME] == self.awi.current_step],
+            key=lambda info: info[1].unit_price,
+        )
+
+        # --- Emergency Accept Pass ---
+        # --- 紧急采购 - 接受阶段 ---
+        remaining_for_counter = []
+        if emergency_demand > 0:
+            for neg_id, offer, state in today_offers_info:
+                self._recent_material_prices.append(offer[UNIT_PRICE])  # Update market price tracking / 更新市场价格跟踪
+                if len(self._recent_material_prices) > self._avg_window: self._recent_material_prices.pop(0)
+                strict_remaining_need = emergency_demand - accepted_quantities["emergency"]
+                if strict_remaining_need <= 0:
+                    remaining_for_counter.append((neg_id, offer, state))
+                    continue
+
+                if (offer[UNIT_PRICE] <= self.awi.current_shortfall_penalty * 1.05 and
+                        offer[QUANTITY] <= strict_remaining_need * self.h.overprocurement_factor):
+                    responses[neg_id] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                    accepted_quantities["emergency"] += offer[QUANTITY]
+                    self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+                else:
+                    remaining_for_counter.append((neg_id, offer, state))
+        else:
+            remaining_for_counter = today_offers_info
+
+        # --- Emergency Counter Pass ---
+        # --- 紧急采购 - 还价阶段 ---
+        if emergency_demand > accepted_quantities["emergency"]:
+            partners_to_counter = remaining_for_counter
+            # Fallback logic: if no partners offered for today, consider all partners.
+            # 备用逻辑：如果没有伙伴为今天报价，则考虑所有伙伴。
+            if not partners_to_counter:
+                partners_to_counter = [info for info in all_offers_info if info[0] not in responses]
+
+            # 使用现有的对手建模模型，根据保留价格排序伙伴 (降序 取前50%)
+            # Sort parters by reserved value provided by OM (decreasing)
+            partners_to_counter.sort(key=lambda info: self._estimate_reservation_price(pid=info[0], default=info[1][UNIT_PRICE]), reverse=True)
+
+
+            # 根据上面的rv，选出50%，然后将剩余的紧急需求分配（带超采购），价格执行一次让步
+            # select 50% partners with lowest rv, then distribute emer demand, with price concession, counter offer
+            if accepted_quantities["emergency"] + countered_quantities["emergency"] <= emergency_limit:
+                partners_to_counter_50 = partners_to_counter[:int(len(partners_to_counter) * 0.5)]
+                pidlist = [info[0] for info in partners_to_counter_50]
+                emer_counter_offer_quantity = self._distribute_to_partners(pidlist, emergency_limit - accepted_quantities["emergency"] - countered_quantities["emergency"])
+                for pid, offer, state in partners_to_counter_50:
+
+                    conceded_price = self._calc_conceded_price(pid, target_price=self.awi.current_shortfall_penalty, state=state, current_price=offer[UNIT_PRICE])
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                 (emer_counter_offer_quantity[pid], offer[TIME], conceded_price))
+
+    # --------------------------------------------------------------------------------
+        # Section 3: Planned Procurement / 第三部分：计划性采购
+        # --------------------------------------------------------------------------------
+
+        # --- Planned Accept Pass ---
+        # --- 计划性采购 - 接受阶段 ---
+        sorted_offers = sorted(offers.items(), key=lambda item: item[1][UNIT_PRICE])  # Sort by price / 按价格排序
+        sorted_offers = {pid: offer for pid, offer in sorted_offers if pid not in responses}
+
+        # 从最低价开始 from the lowest price
+        for pid, offer in sorted_offers:
+            qty_original, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+            qty = float(qty_original)  # Use float for calculations / 计算时使用浮点数
+            self._last_partner_offer[pid] = price  # Record opponent's price / 记录对手价格
+            state = states.get(pid)
+            self._recent_material_prices.append(price)  # Update market price tracking / 更新市场价格跟踪
+            if len(self._recent_material_prices) > self._avg_window: self._recent_material_prices.pop(0)
+
+            # Estimate profitability: max affordable raw price based on estimated product selling price and margin
+            # 估算盈利能力：基于预估产品售价和利润率的最大可承受原材料价格
+            # 在 _process_planned_supply_offers 方法中
+            # ...
+            output_product_idx = self.awi.level
+
+            # 对于第一层代理，其销售的是原材料，output_product_idx 可能是 0 或根据具体产品定义
+            est_sell_price = 0.0
+
+            # 1. 优先使用代理自己观察到的市场产品均价
+            if self._market_product_price_avg > 0:
+                est_sell_price = self._market_product_price_avg
+                reason = "agent_observed_avg"
+
+            # 2. 回退到 AWI 提供的市场交易价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'trading_prices') and self.awi.trading_prices is not None and \
+                    len(self.awi.trading_prices) > output_product_idx:
+                awi_trading_price = self.awi.trading_prices[output_product_idx]
+                if awi_trading_price > 0:
+                    est_sell_price = awi_trading_price
+                    reason = "awi_trading_prices"
+
+            # 3. 回退到 AWI 提供的目录价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'catalog_prices') and self.awi.catalog_prices is not None and \
+                    len(self.awi.catalog_prices) > output_product_idx:
+                awi_catalog_price = self.awi.catalog_prices[output_product_idx]
+                if awi_catalog_price > 0:
+                    est_sell_price = awi_catalog_price
+                    reason = "awi_catalog_prices"
+
+            # 4. 最后回退到基于原材料成本的简单启发式
+            if est_sell_price <= 0:
+                # 'price' 是当前原材料供应报价的单价
+                est_sell_price = price * 2.0
+                reason = "heuristic_raw_x2"
+
+            # 不考虑存储成本时的最大接受价格 Max accept price without considering stor cost
+            min_profit_for_product = est_sell_price * self.min_profit_ratio
+            max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product  # JIT = Just-In-Time (no storage cost) / JIT = 准时制（无存储成本）
+
+            # Estimate storage cost for holding the material until delivery time 't'
+            # 估算将材料保存至交货时间 't' 的存储成本
+            days_held_estimate = max(0, t - (
+                        self.awi.current_step + 1))  # Number of days material will be stored / 材料将被存储的天数
+            estimated_storage_cost_per_unit = self.im.raw_storage_cost * days_held_estimate
+            effective_price = price + estimated_storage_cost_per_unit  # Price including storage from partner/ 包括存储的价格
+
+
+            price_is_acceptable = (
+                        effective_price <= max_affordable_raw_price_jit)  # Is it profitable considering storage? / 考虑存储是否盈利？
+
+            # 判断是否超出库存需求 Consider excess inv limit or not
+            can_inv_limit_satisfied = self._check_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+
+            if can_inv_limit_satisfied and price_is_acceptable:
+                responses[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                if not accepted_quantities["planned"][offer[TIME]] : accepted_quantities["planned"][offer[TIME]] = 0
+                accepted_quantities["planned"][offer[TIME]] += offer[QUANTITY]
+                self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+
+        # --- Planned Counter Pass ---
+        # --- 计划性采购 - 还价阶段 ---
+        sorted_offers = sorted(offers.items(), key=lambda item: item[1][UNIT_PRICE])  # Sort by price / 按价格排序
+        sorted_offers = {pid: offer for pid, offer in sorted_offers if pid not in responses}
+        for pid, offer in sorted_offers:
+            state = states[pid]
+            qty_original, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+            max_qty_acceptable_on_the_day = sum(v for k, v in udpp.items() if k >= offer[TIME])
+            cumulative_planned_need = sum(v for k, v in udpp.items() if k > self.awi.current_step)
+
+            # 检查还价是否已经超出了超采购 Check if counter-offer excess over-procurment demand TODO: 这好像不能解决跨日的问题，例如在第一天买了超出需求的东西，实际占用了第二天的需求，但是却不会阻止第二天的counter offer
+            if accepted_quantities['planned'][offer[TIME]] + countered_quantities['planned'][offer[TIME]] >= max_qty_acceptable_on_the_day * (1 + self.h.overprocurement_factor): continue
+
+            # 如果交付日没有足够的UDPP了，就停止counter offer / Stop proposing counter-offer if no unsatisfied daily production plan after delivery day
+            if max_qty_acceptable_on_the_day <= 0: continue
+
+            # 计算价格满足要求？
+            # Estimate profitability: max affordable raw price based on estimated product selling price and margin
+            # 估算盈利能力：基于预估产品售价和利润率的最大可承受原材料价格
+            # 在 _process_planned_supply_offers 方法中
+            # ...
+            output_product_idx = self.awi.level
+            # 对于第一层代理，其销售的是原材料，output_product_idx 可能是 0 或根据具体产品定义
+            # 此处仅为示例，实际应用需精确确定 output_product_idx
+            est_sell_price = 0.0
+
+            # 1. 优先使用代理自己观察到的市场产品均价
+            if self._market_product_price_avg > 0:
+                est_sell_price = self._market_product_price_avg
+                reason = "agent_observed_avg"
+
+            # 2. 回退到 AWI 提供的市场交易价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'trading_prices') and self.awi.trading_prices is not None and \
+                    len(self.awi.trading_prices) > output_product_idx:
+                awi_trading_price = self.awi.trading_prices[output_product_idx]
+                if awi_trading_price > 0:
+                    est_sell_price = awi_trading_price
+                    reason = "awi_trading_prices"
+
+            # 3. 回退到 AWI 提供的目录价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'catalog_prices') and self.awi.catalog_prices is not None and \
+                    len(self.awi.catalog_prices) > output_product_idx:
+                awi_catalog_price = self.awi.catalog_prices[output_product_idx]
+                if awi_catalog_price > 0:
+                    est_sell_price = awi_catalog_price
+                    reason = "awi_catalog_prices"
+
+            # 4. 最后回退到基于原材料成本的简单启发式
+            if est_sell_price <= 0:
+                # 'price' 是当前原材料供应报价的单价
+                est_sell_price = price * 2.0
+                reason = "heuristic_raw_x2"
+
+            # 不考虑存储成本时的最大接受价格 Max accept price without considering stor cost
+            min_profit_for_product = est_sell_price * self.min_profit_ratio
+            max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product  # JIT = Just-In-Time (no storage cost) / JIT = 准时制（无存储成本）
+
+            # Estimate storage cost for holding the material until delivery time 't'
+            # 估算将材料保存至交货时间 't' 的存储成本
+            days_held_estimate = max(0, t - (
+                    self.awi.current_step + 1))  # Number of days material will be stored / 材料将被存储的天数
+            estimated_storage_cost_per_unit = self.im.raw_storage_cost * days_held_estimate
+            effective_price = price + estimated_storage_cost_per_unit  # Price including storage from partner/ 包括存储的价格
+
+            price_is_acceptable = (
+                    effective_price <= max_affordable_raw_price_jit)  # Is it profitable considering storage? / 考虑存储是否盈利？
+
+            # Price OK, qty excess
+            # 逻辑：提前交货日期以尽可能找到满足的需求，如果找不到足够的需求，则减少交货数量
+            # 由于提前交货日期会导致库存成本提升，因此必须同时执行价格调整
+            if offer[QUANTITY] > max_qty_acceptable_on_the_day and price_is_acceptable == True:
+                # 算出最大的接受可能量
+                max_qty_acceptable_from_now_on = cumulative_planned_need
+                # 如果今天往后的所有需求都不足够，直接将日子设置为今天，数量为总需求
+                if offer[QUANTITY] > max_qty_acceptable_from_now_on:
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER, (max_qty_acceptable_from_now_on, self.awi.current_step, price))
+                    accepted_quantities["countered"][self.awi.current_step] += max_qty_acceptable_from_now_on
+                    self._consume_cumulative_udpp(udpp, offer[TIME], max_qty_acceptable_from_now_on)
+                else:
+                    # 只要提前供货就能满足要求，找到能满足要求那天
+                    # 如果还是不够 ，就减一天，直到满足
+                    while sum(v for k,v in udpp.items() if k > offer[TIME] - 1) < offer[QUANTITY]:
+                        offer[TIME] -= 1
+                    # 至少减一天，因为我们while判断条件时如果满足了，就不会减去那一天
+                    offer[TIME] -= 1
+
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer[QUANTITY], offer[TIME], price))
+                    countered_quantities["planned"][offer[TIME]] += offer[QUANTITY]
+
+            # price not OK, qty OK
+            elif not price_is_acceptable and offer[QUANTITY] <= max_qty_acceptable_on_the_day:
+                bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                aspirational_target_price = self._get_aspirational_target_price(
+                    pid=pid,
+                    p_bottom_line=bottom_line_price,
+                    rel_time=state.relative_time if state else 0.0,
+                )
+                target_quoted_price_for_negotiation = aspirational_target_price
+                conceded_price = self._calc_conceded_price(pid, target_price=target_quoted_price_for_negotiation,
+                                                           state=state, current_price=offer[UNIT_PRICE])
+
+                responses[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer[QUANTITY], offer[TIME], conceded_price))
+                countered_quantities["planned"][offer[TIME]] += offer[QUANTITY]
+
+            # price not OK, qty excess
+            elif not price_is_acceptable and offer[QUANTITY] > max_qty_acceptable_on_the_day:
+                # 算出最大的接受可能量
+                max_qty_acceptable_from_now_on = cumulative_planned_need
+                # 如果今天往后的所有需求都不足够，直接将日子设置为今天，数量为总需求
+                if offer[QUANTITY] > max_qty_acceptable_from_now_on:
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                 (max_qty_acceptable_from_now_on, self.awi.current_step, price))
+                    accepted_quantities["countered"][self.awi.current_step] += max_qty_acceptable_from_now_on
+                    self._consume_cumulative_udpp(udpp, offer[TIME], max_qty_acceptable_from_now_on)
+                else:
+                    # 只要提前供货就能满足要求，找到能满足要求那天
+                    # 如果还是不够 ，就减一天，直到满足
+                    while sum(v for k, v in udpp.items() if k > offer[TIME] - 1) < offer[QUANTITY]:
+                        offer[TIME] -= 1
+                    # 至少减一天，因为我们while判断条件时如果满足了，就不会减去那一天
+                    offer[TIME] -= 1
+
+                    bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                    aspirational_target_price = self._get_aspirational_target_price(
+                        pid=pid,
+                        p_bottom_line=bottom_line_price,
+                        rel_time=state.relative_time if state else 0.0,
+                    )
+                    target_quoted_price_for_negotiation = aspirational_target_price
+                    conceded_price = self._calc_conceded_price(pid, target_price=target_quoted_price_for_negotiation,
+                                                               state=state, current_price=offer[UNIT_PRICE])
+
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                 (offer[QUANTITY], offer[TIME], conceded_price))
+                    countered_quantities["planned"][offer[TIME]] += offer[QUANTITY]
+
+        # --------------------------------------------------------------------------------
+        # Section 4: Optional & Finalization / 第四部分：机会性采购与最终处理
+        # --------------------------------------------------------------------------------
+        sorted_offers = sorted(offers.items(), key=lambda item: item[1][UNIT_PRICE])  # Sort by price / 按价格排序
+        sorted_offers = {pid: offer for pid, offer in sorted_offers if pid not in responses}
+        for neg_id, offer in sorted_offers:
+
+            is_cheap = offer[UNIT_PRICE] <= self._market_product_price_avg * self.h.bargain_threshold
+            is_within_limit = offer.quantity + accepted_quantities["optional"] <= optional_limit
+
+            if is_cheap and is_within_limit:
+                responses[neg_id] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                accepted_quantities["optional"] += offer.quantity
+                self._consume_cumulative_udpp(udpp, offer.delivery_time, offer.quantity)
+            else:
+                responses[neg_id] = SAOResponse(ResponseType.WAIT, offer)
+
         return responses
 
     # ------------------------------------------------------------------
-    # 🌟 5‑1. 供应报价拆分三类
-    # 🌟 5‑1. Splitting Supply Offers into Three Categories
+    # 🌟 5‑1-B. 供应报价拆分三类
+    # 🌟 5‑1-B. Splitting Supply Offers into Three Categories (OLD, to be deprecated)
     # ------------------------------------------------------------------
 
     def _process_supply_offers(
