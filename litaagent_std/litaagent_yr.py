@@ -161,6 +161,7 @@ class HeuristicSettings:
     health_high_threshold: float = 1.5
     capacity_tight_threshold_ratio: float = 0.20
 
+    aspirational_decay_rate: float = 3.0  # 期望目标价的衰减指数 (alpha)
 
 DEFAULT_HEURISTICS = HeuristicSettings()
 
@@ -567,6 +568,28 @@ class LitaAgentYR(StdSyncAgent):
         """将价格限制在伙伴的NMI最小/最大值范围内。"""
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         return max(issue.min_value, min(issue.max_value, price))
+
+    def _get_aspirational_target_price(
+            self, pid: str, p_bottom_line: float, rel_time: float
+    ) -> float:
+        """
+        计算动态的期望目标价。
+        该价格在谈判初期接近代理的最优价，随时间推移向其底线价衰减。
+        """
+        p_best = self._best_price(pid)  # 代理的最优NMI价格
+        alpha = self.h.aspirational_decay_rate  # 衰减指数
+
+        # 计算价格范围
+        price_range = abs(p_best - p_bottom_line)
+
+        # 计算衰减
+        decay_factor = (1.0 - rel_time) ** alpha
+
+        # 从底线价向最优价方向移动
+        if self._is_consumer(pid):  # 销售时，最优价比底线价高
+            return p_bottom_line + price_range * decay_factor
+        else:  # 采购时，最优价比底线价低
+            return p_bottom_line - price_range * decay_factor
 
     def _expected_price(self, pid: str, default: float) -> float:
         """Estimates the expected price from a partner based on historical data and opponent model."""
@@ -1232,13 +1255,11 @@ class LitaAgentYR(StdSyncAgent):
                 elif qty > remain_needed and price <= penalty:  # Offer is larger than need but price is good / 报价大于需求但价格良好
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER,
                                            (accept_qty, time, price))  # Accept only what's needed / 只接受所需数量 counter offer
-                    remain_needed -= accept_qty
                 elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8 and qty<= remain_needed:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
                     res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
                     remain_needed -= accept_qty
                 elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8 and qty > remain_needed:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (accept_qty, time, price))
-                    remain_needed -= accept_qty
                 else:  # Price acceptable but conditions not met for full accept, or quantity mismatch / 价格可接受但条件不满足完全接受，或数量不匹配
                     counter_offer = self._pareto_counter_offer(pid, accept_qty, time, price, state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
@@ -1317,10 +1338,6 @@ class LitaAgentYR(StdSyncAgent):
 
             # if os.path.exists("env.test"):
             #     print(f"Debug: est_sell_price for product {output_product_idx} = {est_sell_price:.2f} (Source: {reason})")
-
-            min_profit_for_product = est_sell_price * self.min_profit_ratio
-            max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product
-            # ...
             min_profit_for_product = est_sell_price * self.min_profit_ratio
             max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product  # JIT = Just-In-Time (no storage cost) / JIT = 准时制（无存储成本）
             # Estimate storage cost for holding the material until delivery time 't'
@@ -1384,7 +1401,14 @@ class LitaAgentYR(StdSyncAgent):
                 if not price_is_acceptable: rejection_reason += "PriceUnacceptable(Effective);"
 
                 if not price_is_acceptable:  # If price is the issue, try to negotiate down / 如果是价格问题，尝试谈判降低
-                    target_quoted_price_for_negotiation = max_affordable_raw_price_jit - estimated_storage_cost_per_unit  # Target price before storage / 存储前的目标价格
+                    # target_quoted_price_for_negotiation = max_affordable_raw_price_jit - estimated_storage_cost_per_unit  # Target price before storage / 存储前的目标价格
+                    bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                    aspirational_target_price = self._get_aspirational_target_price(
+                        pid=pid,
+                        p_bottom_line=bottom_line_price,
+                        rel_time=state.relative_time if state else 0.0,
+                    )
+                    target_quoted_price_for_negotiation = aspirational_target_price
                     conceded_actual_price_to_offer = self._calc_conceded_price(pid, target_quoted_price_for_negotiation,
                                                                             state, price)  # Apply concession / 应用让步
                     # Determine quantity for counter: original if some headroom, or min of original/headroom
@@ -1585,7 +1609,12 @@ class LitaAgentYR(StdSyncAgent):
                 if os.path.exists("env.test"): print(
                     f"✅ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Q:{qty} P:{price:.2f} T:{t}): Accepted. MinSellPrice={min_sell_price:.2f}. Reasons: {'|'.join(reason_log_parts)}")
             else:  # Price not profitable, try to counter / 价格无利可图，尝试还价
-                target_price_for_counter = min_sell_price  # Counter with our minimum acceptable price / 以我们的最低可接受价格还价
+                aspirational_target_price = self._get_aspirational_target_price(
+                    pid=pid,
+                    p_bottom_line=min_sell_price,
+                    rel_time=state.relative_time if state else 0.0,
+                )
+                target_price_for_counter = aspirational_target_price
                 conceded_price = self._calc_conceded_price(pid, target_price_for_counter, state,
                                                         price)  # Apply concession logic / 应用让步逻辑
                 counter_offer = self._pareto_counter_offer(pid, qty, t, conceded_price,
