@@ -1453,9 +1453,7 @@ class LitaAgentYR(StdSyncAgent):
                 max_qty_acceptable_from_now_on = cumulative_planned_need
                 # 如果今天往后的所有需求都不足够，直接将日子设置为今天，数量为总需求
                 # 首先解决当日情况
-                print(f"PID {pid} Offer {offer} Current step {self.awi.current_step} Status: Price OK / QTY excess")
                 if offer[TIME] == self.awi.current_step:
-                    print(f"已经执行Offer就是今天让步策略@ time= {offer[TIME]}")
                     qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
                     # 确保没有超出总counter上限
                     cumulative_need_from_t = sum(udpp[d] for d in range(offer[TIME], self.awi.n_steps))
@@ -1474,13 +1472,10 @@ class LitaAgentYR(StdSyncAgent):
                                                  (qty_to_counter_offer, self.awi.current_step, price))
 
                     countered_quantities["planned"][offer[TIME]] += qty_to_counter_offer
-                    print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
                 else:
                     for early_time in range(offer[TIME], self.awi.current_step, -1):
-                        print(f"已经进入让步循环 现在的early_time是 {early_time}")
                         # 到今天了，按照最大的需求counter offer
                         if early_time == self.awi.current_step:
-                            print(f"已经执行日期相同让步策略@Early time= {early_time}")
                             qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
                             # 确保没有超出总counter上限
                             cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
@@ -1499,12 +1494,10 @@ class LitaAgentYR(StdSyncAgent):
                                                          (qty_to_counter_offer, self.awi.current_step, price))
 
                             countered_quantities["planned"][early_time] += qty_to_counter_offer
-                            print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
                             break
                         cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
                         # 如果满足了数量了
                         if cumulative_need_from_t >= offer[QUANTITY]:
-                            print(f"已经执行日数量达标让步策略@Early time= {early_time}")
                             qty_to_counter_offer = offer[QUANTITY]
                             # 确保没有超出总counter上限
                             cumulative_countered_from_t = sum(
@@ -1519,14 +1512,11 @@ class LitaAgentYR(StdSyncAgent):
                                                          (qty_to_counter_offer, early_time, price))
 
                             countered_quantities["planned"][early_time] += qty_to_counter_offer
-                            print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
                             break
                         else:
                             # 这种情况是意料外的
-                            print(f"已经执行日意料外让步策略@Early time= {early_time}")
                             responses[pid] = SAOResponse(ResponseType.WAIT,
                                                          (qty_original, early_time, price))
-                            print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
 
 
 
@@ -1554,9 +1544,7 @@ class LitaAgentYR(StdSyncAgent):
                 max_qty_acceptable_from_now_on = cumulative_planned_need
                 # 如果今天往后的所有需求都不足够，直接将日子设置为今天，数量为总需求
                 # 首先尝试向前推进一天
-                print(f"PID {pid} Offer {offer} Current step {self.awi.current_step} Status: Price OK / QTY excess")
                 if offer[TIME] == self.awi.current_step:
-                    print(f"已经执行Offer就是今天让步策略@ time= {offer[TIME]}")
                     qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
                     # 确保没有超出总counter上限
                     cumulative_need_from_t = sum(udpp[d] for d in range(offer[TIME], self.awi.n_steps))
@@ -1575,13 +1563,10 @@ class LitaAgentYR(StdSyncAgent):
                                                  (qty_to_counter_offer, self.awi.current_step, price))
 
                     countered_quantities["planned"][offer[TIME]] += qty_to_counter_offer
-                    print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
                 else:
                     for early_time in range(offer[TIME], self.awi.current_step, -1):
-                        print(f"已经进入让步循环 现在的early_time是 {early_time}")
                         # 到今天了，按照最大的需求counter offer
                         if early_time <= self.awi.current_step:
-                            print(f"已经执行日期相同让步策略@Early time= {early_time}")
                             qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
                             # 确保没有超出总counter上限
                             cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
@@ -1600,12 +1585,10 @@ class LitaAgentYR(StdSyncAgent):
                                                          (qty_to_counter_offer, self.awi.current_step, price))
 
                             countered_quantities["planned"][early_time] += qty_to_counter_offer
-                            print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
                             break
                         cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
                         # 如果满足了数量了
                         if cumulative_need_from_t >= offer[QUANTITY]:
-                            print(f"已经执行日数量达标让步策略@Early time= {early_time}")
                             qty_to_counter_offer = offer[QUANTITY]
                             # 确保没有超出总counter上限
                             cumulative_countered_from_t = sum(
@@ -1620,14 +1603,11 @@ class LitaAgentYR(StdSyncAgent):
                                                          (qty_to_counter_offer, early_time, price))
 
                             countered_quantities["planned"][early_time] += qty_to_counter_offer
-                            print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
                             break
                         else:
                             # 这种情况是意料外的
-                            print(f"已经执行日意料外让步策略@Early time= {early_time}")
                             responses[pid] = SAOResponse(ResponseType.WAIT,
                                                          (qty_original, early_time, price))
-                            print(f"当日让步已经设置了responses[pid] = {responses[pid]}")
 
                 # 数量改好，执行还价逻辑
                 bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
