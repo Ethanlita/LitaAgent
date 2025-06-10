@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """
-LitaAgentY — SCML 2025  Standard 赛道谈判代理（重构版）
+LitaAgentYR — SCML 2025  Standard 赛道谈判代理（重构版）
 ===================================================
-LitaAgentY — SCML 2025 Standard Track Negotiation Agent (Refactored)
+LitaAgentYR — SCML 2025 Standard Track Negotiation Agent (Refactored)
 =================================================================
 
 本文件 **完全重写** 了旧版 *litaagent_n.py* 中混乱的出价逻辑，
@@ -21,13 +21,13 @@ Core Changes
    corresponding to the three submodules: `_process_emergency_supply_offers()`, `_process_planned_supply_offers()`, and
    `_process_optional_supply_offers()`.
 2. **销售产能约束**：新增 `_process_sales_offers()`，严格保证在交货期内
-   不会签约超出总产能的产品合同，且确保售价满足 `min_profit_margin`。
+   不会签约超出总产能的产品合同，且确保售价满足 `min_profit_ratio`。
    **Sales Capacity Constraint**: Added `_process_sales_offers()` to strictly ensure that
-   product contracts exceeding total production capacity are not signed within the delivery period, and that selling prices meet `min_profit_margin`.
-3. **利润策略可调**：`min_profit_margin` 与 `cheap_price_discount` 两个参数
+   product contracts exceeding total production capacity are not signed within the delivery period, and that selling prices meet `min_profit_ratio`.
+3. **利润策略可调**：`min_profit_ratio` 与 `bargain_threshold` 两个参数
    可在运行时动态调整；并预留接口 `update_profit_strategy()` 供 RL 或
    外部策略模块调用。
-   **Adjustable Profit Strategy**: The `min_profit_margin` and `cheap_price_discount` parameters
+   **Adjustable Profit Strategy**: The `min_profit_ratio` and `bargain_threshold` parameters
    can be dynamically adjusted at runtime; an interface `update_profit_strategy()` is reserved for RL or
    external strategy modules.
 4. **IM 交互修复**：在 `on_negotiation_success()` 中正确解析对手 ID，
@@ -67,9 +67,9 @@ Usage Instructions
 --------
 - 关键参数：
   Key Parameters:
-    * `min_profit_margin`   —— 最低利润率要求（如 0.10 ⇒ 10%）。
+    * `min_profit_ratio`   —— 最低利润率要求（如 0.10 ⇒ 10%）。
                               Minimum profit margin requirement (e.g., 0.10 ⇒ 10%).
-    * `cheap_price_discount`—— 机会性囤货阈值，低于市场均价 *该比例* 视为超低价。
+    * `bargain_threshold`—— 机会性囤货阈值，低于市场均价 *该比例* 视为超低价。
                               Opportunistic stockpiling threshold, prices below market average * this ratio are considered ultra-low.
 - 可在外部通过 `agent.update_profit_strategy()` 动态修改。
   Can be dynamically modified externally via `agent.update_profit_strategy()`.
@@ -89,6 +89,7 @@ import math
 from collections import Counter, defaultdict  # Added defaultdict / 添加了 defaultdict
 from uuid import uuid4
 
+import numpy as np
 from numpy.random import choice as np_choice  # type: ignore
 
 from scml.std import (
@@ -110,6 +111,84 @@ from .inventory_manager_ns import (
 )
 
 
+# ------------------ 启发式参数配置 ------------------
+# Heuristic parameter configuration
+# ------------------
+
+@dataclass
+class HeuristicSettings:
+    """Container for all tunable heuristic values."""
+
+    partner_split_1: float = 0.5
+    partner_split_2: float = 0.8
+
+    min_profit_ratio: float = 0.10
+    bargain_threshold: float = 0.70
+    distribution_ratio_today: float = 1.00
+    concession_curve_power: float = 1.25
+    capacity_tight_margin_increase: float = 0.07
+    cash_flow_limit_ratio: float = 0.75
+
+    late_stage_ratio: float = 0.7
+    very_late_stage_ratio: float = 0.85
+    late_concession_floor: float = 0.60
+    very_late_concession_floor: float = 0.80
+    penalty_scaling_factor: float = 10.0
+
+    pareto_qty_increase_ratio: float = 1.25
+    pareto_qty_price_cut: float = 0.02
+    pareto_delay_days: int = 2
+    pareto_delay_price_cut: float = 0.03
+
+    logreg_learning_rate: float = 0.05
+    reliability_success_threshold: float = 0.8
+    reliability_bonus: float = 0.02
+
+    min_profit_ratio_low: float = 0.02
+    min_profit_ratio_high: float = 0.25
+
+    stock_future_horizon: int = 10
+    stock_late_game_ratio: float = 0.8
+    stock_mid_game_ratio: float = 0.5
+    stock_discount_late: float = 0.40
+    stock_discount_mid: float = 0.60
+    stock_discount_early: float = 0.70
+    stock_discount_high_inv: float = 0.50
+    stock_discount_mid_inv: float = 0.60
+    stock_discount_low_inv: float = 0.80
+    stock_discount_no_demand: float = 0.30
+    stock_discount_lower_bound: float = 0.20
+    stock_discount_upper_bound: float = 0.85
+    health_low_threshold: float = 0.4
+    health_high_threshold: float = 1.5
+    capacity_tight_threshold_ratio: float = 0.20
+
+    aspirational_decay_rate: float = 3.0  # 期望目标价的衰减指数 (alpha)
+
+    emergency_overprocurement_factor: float = 0.5  # Renamed for clarity if needed, but current name is fine
+    planned_overprocurement_factor: float = 0.2  # Renamed for clarity if needed
+    optional_procurement_factor: float = 1.2
+
+    logic_select: str = "unified"  # unified or legacy, legacy should be deprecated later
+
+    # New settings for dynamic overprocurement factor adjustment
+    # 新增：动态超采购因子调整的参数
+    op_factor_update_window: int = 5  # Days for rolling average / 滚动平均的天数
+    op_factor_low_sr_threshold: float = 0.3  # Low success rate threshold / 低成功率阈值
+    op_factor_high_sr_threshold: float = 0.7  # High success rate threshold / 高成功率阈值
+
+    emergency_op_factor_min: float = 0.0
+    emergency_op_factor_max: float = 0.5  # Max 50% overprocurement for emergency
+    emergency_op_factor_adj_step: float = 0.05
+
+    planned_op_factor_min: float = 0.0
+    planned_op_factor_max: float = 0.4  # Max 40% overprocurement for planned
+    planned_op_factor_adj_step: float = 0.05
+
+
+DEFAULT_HEURISTICS = HeuristicSettings()
+
+
 # ------------------ 辅助函数 ------------------
 # Helper functions
 # ------------------
@@ -119,10 +198,12 @@ def _split_partners(partners: List[str]) -> Tuple[List[str], List[str], List[str
     """Splits the partner list into three segments: 50% / 30% / 20%."""
     # Split partners into 50%, 30% and 20% groups
     n = len(partners)
+    first = int(n * DEFAULT_HEURISTICS.partner_split_1)
+    second = int(n * DEFAULT_HEURISTICS.partner_split_2)
     return (
-        partners[: int(n * 0.5)],
-        partners[int(n * 0.5): int(n * 0.8)],
-        partners[int(n * 0.8):],
+        partners[:first],
+        partners[first:second],
+        partners[second:],
     )
 
 
@@ -148,7 +229,7 @@ def _distribute(q: int, n: int) -> List[int]:
 # Main agent implementation
 # ------------------
 
-class LitaAgentY(StdSyncAgent):
+class LitaAgentYR(StdSyncAgent):
     """重构后的 LitaAgent N。支持三类采购策略与产能约束销售。"""
     """Refactored LitaAgent N. Supports three types of procurement strategies and capacity-constrained sales."""
 
@@ -160,26 +241,27 @@ class LitaAgentY(StdSyncAgent):
     def __init__(
             self,
             *args,
-            min_profit_margin: float = 0.10,
-            cheap_price_discount: float = 0.70,
-            ptoday: float = 1.00,
-            concession_curve_power: float = 1.5,
-            capacity_tight_margin_increase: float = 0.07,
-            procurement_cash_flow_limit_percent: float = 0.75,  # Added from Step 6 / 从步骤6添加
+            heuristics: HeuristicSettings | None = None,
             **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self.h = heuristics or DEFAULT_HEURISTICS  # self.h is an instance, so mutable
 
         # —— 参数 ——
         # Parameters
         self.total_insufficient = None
         self.today_insufficient = None
-        self.min_profit_margin = min_profit_margin
-        self.initial_min_profit_margin = min_profit_margin  # Added from Step 7 / 从步骤7添加
-        self.cheap_price_discount = cheap_price_discount
-        self.procurement_cash_flow_limit_percent = procurement_cash_flow_limit_percent  # Added from Step 6 / 从步骤6添加
-        self.concession_curve_power = concession_curve_power  # Added from Step 9.b / 从步骤9.b添加
-        self.capacity_tight_margin_increase = capacity_tight_margin_increase  # Added from Step 9.d / 从步骤9.d添加
+        self.min_profit_ratio = self.h.min_profit_ratio
+        self.initial_min_profit_ratio = self.h.min_profit_ratio  # Store initial for reference
+        self.bargain_threshold = self.h.bargain_threshold
+        self.cash_flow_limit_ratio = self.h.cash_flow_limit_ratio
+        self.concession_curve_power = self.h.concession_curve_power
+        self.capacity_tight_margin_increase = self.h.capacity_tight_margin_increase
+
+        # Store initial overprocurement factors for potential reversion or reference
+        # 存储初始超采购因子，用于潜在的恢复或参考
+        self.initial_emergency_op_factor = self.h.emergency_overprocurement_factor
+        self.initial_planned_op_factor = self.h.planned_overprocurement_factor
 
         # —— 运行时变量 ——
         # Runtime Variables
@@ -190,7 +272,7 @@ class LitaAgentY(StdSyncAgent):
         self._recent_material_prices: List[float] = []
         self._recent_product_prices: List[float] = []
         self._avg_window: int = 30
-        self._ptoday: float = ptoday
+        self._distribution_ratio_today: float = self.h.distribution_ratio_today
         self.model = None
         self.concession_model = None
         self._last_offer_price: Dict[str, float] = {}
@@ -205,6 +287,14 @@ class LitaAgentY(StdSyncAgent):
         # 用于动态利润率调整的计数器 (从步骤7添加)
         self._sales_successes_since_margin_update: int = 0
         self._sales_failures_since_margin_update: int = 0
+
+        # New: For dynamic overprocurement factor adjustment
+        # 新增：用于动态超采购因子调整
+        self._rolling_supply_negotiations_concluded: List[int] = []
+        self._rolling_supply_negotiations_succeeded: List[int] = []
+        # self.h.op_factor_update_window is used directly from heuristics
+        self._supply_negotiations_concluded_today: int = 0
+        self._supply_negotiations_succeeded_today: int = 0
 
     # ------------------------------------------------------------------
     # 🌟 2. World / 日常回调
@@ -233,8 +323,11 @@ class LitaAgentY(StdSyncAgent):
         self.sales_completed.setdefault(current_day, 0)
         self.purchase_completed.setdefault(current_day, 0)
 
-        # MODIFIED: 先加入外生协议，再计算需求
-        # MODIFIED: Add exogenous contracts first, then calculate demand
+        # Reset daily counters for overprocurement factor adjustment
+        # 重置用于超采购因子调整的每日计数器
+        self._supply_negotiations_concluded_today = 0
+        self._supply_negotiations_succeeded_today = 0
+
         # 首先将外生协议写入im
         # First, write exogenous contracts into the inventory manager
         if self.awi.is_first_level:
@@ -242,7 +335,7 @@ class LitaAgentY(StdSyncAgent):
             exogenous_contract_price = self.awi.current_exogenous_input_price
             if exogenous_contract_quantity > 0:  # Added from Step 11 / 从步骤11添加
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_supply"  # More specific name / 更具体的名称
+                exogenous_contract_partner = "simulator_exogenous_supply"
                 exogenous_contract = IMContract(
                     contract_id=exogenous_contract_id,
                     partner_id=exogenous_contract_partner,
@@ -258,9 +351,9 @@ class LitaAgentY(StdSyncAgent):
         elif self.awi.is_last_level:
             exogenous_contract_quantity = self.awi.current_exogenous_output_quantity
             exogenous_contract_price = self.awi.current_exogenous_output_price
-            if exogenous_contract_quantity > 0:  # Added from Step 11 / 从步骤11添加
+            if exogenous_contract_quantity > 0:
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_demand"  # More specific name / 更具体的名称
+                exogenous_contract_partner = "simulator_exogenous_demand"
                 exogenous_contract = IMContract(
                     contract_id=exogenous_contract_id,
                     partner_id=exogenous_contract_partner,
@@ -282,6 +375,7 @@ class LitaAgentY(StdSyncAgent):
         # 更新动态参数 (从步骤4和7添加)
         self._update_dynamic_stockpiling_parameters()
         self._update_dynamic_profit_margin_parameters()
+        self._update_dynamic_overprocurement_factors()  # New call / 新增调用
 
     def step(self) -> None:
         """每天结束时调用：执行 IM 的日终操作并刷新市场均价。"""
@@ -300,15 +394,17 @@ class LitaAgentY(StdSyncAgent):
         if self._recent_product_prices:
             self._market_product_price_avg = sum(self._recent_product_prices) / len(self._recent_product_prices)
 
-        # 输出每日状态报告
-        # Output daily status report
-        # self._print_daily_status_report(result) # Removed for brevity in non-test runs
+        # Update rolling window stats for overprocurement factor adjustment
+        # 更新用于超采购因子调整的滚动窗口统计数据
+        self._rolling_supply_negotiations_concluded.append(self._supply_negotiations_concluded_today)
+        self._rolling_supply_negotiations_succeeded.append(self._supply_negotiations_succeeded_today)
+        if len(self._rolling_supply_negotiations_concluded) > self.h.op_factor_update_window:
+            self._rolling_supply_negotiations_concluded.pop(0)
+            self._rolling_supply_negotiations_succeeded.pop(0)
 
-    # Method from Step 4 (Turn 15), logging improved in Step 11 (Turn 37)
-    # 方法来自步骤4 (轮次15), 日志在步骤11 (轮次37) 改进
     def _update_dynamic_stockpiling_parameters(self) -> None:
-        """Dynamically adjusts cheap_price_discount based on game state."""
-        """根据博弈状态动态调整 cheap_price_discount。"""
+        """Dynamically adjusts bargain_threshold based on game state."""
+        """根据博弈状态动态调整 bargain_threshold。"""
         if not self.im:
             return
 
@@ -320,53 +416,53 @@ class LitaAgentY(StdSyncAgent):
 
         current_raw_inventory = self.im.get_inventory_summary(current_day, MaterialType.RAW)['current_stock']
 
-        future_total_demand_horizon = min(total_days, current_day + 10)
+        future_total_demand_horizon = min(total_days, current_day + self.h.stock_future_horizon)
         future_total_demand = 0
         if self.im:
             for d_iter in range(current_day + 1, future_total_demand_horizon + 1):
                 if d_iter >= total_days: break
                 future_total_demand += self.im.get_total_insufficient(d_iter)  # This is net need / 这是净需求
 
-        # market_avg_raw_price = self._market_material_price_avg # Not directly used in logic below
+        market_avg_raw_price = self._market_material_price_avg
 
-        if current_day > total_days * 0.8:  # Late game / 游戏后期
-            new_cheap_discount = 0.40
-            # reason = "Late game"
-        elif current_day > total_days * 0.5:  # Mid game / 游戏中期
-            new_cheap_discount = 0.60
-            # reason = "Mid game"
+        if current_day > total_days * self.h.stock_late_game_ratio:  # Late game / 游戏后期
+            new_cheap_discount = self.h.stock_discount_late
+            reason = "Late game"
+        elif current_day > total_days * self.h.stock_mid_game_ratio:  # Mid game / 游戏中期
+            new_cheap_discount = self.h.stock_discount_mid
+            reason = "Mid game"
         else:  # Early game / 游戏早期
-            new_cheap_discount = 0.70
-            # reason = "Early game"
+            new_cheap_discount = self.h.stock_discount_early
+            reason = "Early game"
 
         if future_total_demand > 0:  # If there is future demand / 如果未来有需求
             if current_raw_inventory > future_total_demand * 1.5:
-                new_cheap_discount = min(new_cheap_discount, 0.50)
-                # reason += ", High inventory (>150% demand)"
+                new_cheap_discount = min(new_cheap_discount, self.h.stock_discount_high_inv)
+                reason += ", High inventory (>150% demand)"
             elif current_raw_inventory > future_total_demand * 1.0:
-                new_cheap_discount = min(new_cheap_discount, 0.60)
-                # reason += ", Sufficient inventory (>100% demand)"
-        # elif current_day > 5:  # No future demand and not very early game / 没有未来需求且不是非常早期
-            # pass  # Keep game stage based discount / 保留基于游戏阶段的折扣
+                new_cheap_discount = min(new_cheap_discount, self.h.stock_discount_mid_inv)
+                reason += ", Sufficient inventory (>100% demand)"
+        elif current_day > 5:  # No future demand and not very early game / 没有未来需求且不是非常早期
+            pass  # Keep game stage based discount / 保留基于游戏阶段的折扣
 
         if future_total_demand > 0 and current_raw_inventory < future_total_demand * 0.5:
             new_cheap_discount = max(new_cheap_discount,
-                                     0.80)  # Be more aggressive if low stock and future demand / 如果库存低且未来有需求，则更积极
-            # reason += ", Low inventory (<50% demand) & future demand exists"
+                                     self.h.stock_discount_low_inv)  # Be more aggressive if low stock and future demand / 如果库存低且未来有需求，则更积极
+            reason += ", Low inventory (<50% demand) & future demand exists"
 
         if future_total_demand == 0 and current_day > 5:  # No future demand and not very early game / 没有未来需求且不是非常早期
             new_cheap_discount = min(new_cheap_discount,
-                                     0.30)  # Be very conservative if no future demand / 如果没有未来需求，则非常保守
-            # reason = "No future demand (override)"
+                                     self.h.stock_discount_no_demand)  # Be very conservative if no future demand / 如果没有未来需求，则非常保守
+            reason = "No future demand (override)"
 
-        final_new_cheap_discount = max(0.20, min(0.85, new_cheap_discount))  # Clamp the discount / 限制折扣范围
+        final_new_cheap_discount = max(self.h.stock_discount_lower_bound,
+                                       min(self.h.stock_discount_upper_bound,
+                                           new_cheap_discount))  # Clamp the discount / 限制折扣范围
 
-        if abs(self.cheap_price_discount - final_new_cheap_discount) > 1e-3:  # If changed significantly / 如果变化显著
-            # old_discount = self.cheap_price_discount
-            self.update_profit_strategy(cheap_price_discount=final_new_cheap_discount)
+        if abs(self.bargain_threshold - final_new_cheap_discount) > 1e-3:  # If changed significantly / 如果变化显著
+            old_discount = self.bargain_threshold
+            self.update_profit_strategy(bargain_threshold=final_new_cheap_discount)
 
-    # Method from Step 9.b (Turn 30)
-    # 方法来自步骤9.b (轮次30)
     def get_avg_raw_cost_fallback(self, current_day_for_im_summary: int,
                                   best_price_pid_for_fallback: str | None = None) -> float:
         """Gets average raw material cost, with fallbacks."""
@@ -387,7 +483,7 @@ class LitaAgentY(StdSyncAgent):
 
         if avg_raw_cost <= 0 and best_price_pid_for_fallback:  # Further fallback using NMI best price / 使用NMI最优价格进一步回退
             avg_raw_cost = self._best_price(
-                best_price_pid_for_fallback) * 0.4  # Heuristic: 40% of NMI best price / 启发式：NMI最优价格的40%
+                best_price_pid_for_fallback) * self.h.stock_discount_late  # Heuristic fraction of NMI best price / 启发式比例
         elif avg_raw_cost <= 0:  # Absolute fallback / 绝对回退
             avg_raw_cost = 10.0  # Arbitrary non-zero value / 任意非零值
         return avg_raw_cost
@@ -424,9 +520,9 @@ class LitaAgentY(StdSyncAgent):
         if estimated_consumption_next_horizon == 0:
             return "medium"
 
-        if current_raw_stock < estimated_consumption_next_horizon * 0.4:
+        if current_raw_stock < estimated_consumption_next_horizon * self.h.health_low_threshold:
             return "low"
-        elif current_raw_stock > estimated_consumption_next_horizon * 1.5:
+        elif current_raw_stock > estimated_consumption_next_horizon * self.h.health_high_threshold:
             return "high"
         else:
             return "medium"
@@ -445,7 +541,7 @@ class LitaAgentY(StdSyncAgent):
                 signed_sales_for_day += contract_detail.quantity
         remaining_capacity = self.im.daily_production_capacity - signed_sales_for_day - quantity_being_considered
         is_tight = remaining_capacity < (
-                    self.im.daily_production_capacity * 0.20)  # Tight if less than 20% capacity remains / 如果剩余产能少于20%，则视为紧张
+                self.im.daily_production_capacity * self.h.capacity_tight_threshold_ratio)  # Tight if remaining capacity below threshold / 如果剩余产能低于阈值则视为紧张
         return is_tight
 
     # ------------------------------------------------------------------
@@ -482,6 +578,28 @@ class LitaAgentY(StdSyncAgent):
         """将价格限制在伙伴的NMI最小/最大值范围内。"""
         issue = self.get_nmi(pid).issues[UNIT_PRICE]
         return max(issue.min_value, min(issue.max_value, price))
+
+    def _get_aspirational_target_price(
+            self, pid: str, p_bottom_line: float, rel_time: float
+    ) -> float:
+        """
+        计算动态的期望目标价。
+        该价格在谈判初期接近代理的最优价，随时间推移向其底线价衰减。
+        """
+        p_best = self._best_price(pid)  # 代理的最优NMI价格
+        alpha = self.h.aspirational_decay_rate  # 衰减指数
+
+        # 计算价格范围
+        price_range = abs(p_best - p_bottom_line)
+
+        # 计算衰减
+        decay_factor = (1.0 - rel_time) ** alpha
+
+        # 从底线价向最优价方向移动
+        if self._is_consumer(pid):  # 销售时，最优价比底线价高
+            return p_bottom_line + price_range * decay_factor
+        else:  # 采购时，最优价比底线价低
+            return p_bottom_line - price_range * decay_factor
 
     def _expected_price(self, pid: str, default: float) -> float:
         """Estimates the expected price from a partner based on historical data and opponent model."""
@@ -524,21 +642,10 @@ class LitaAgentY(StdSyncAgent):
 
     # Modified in Step 9.b (Turn 30)
     # 在步骤9.b (轮次30) 修改
-    def _concession_multiplier(self, rel_time: float, opp_rate: float = 0.0) -> float:
-        """Calculates a concession multiplier based on relative time and opponent's concession rate."""
-        """根据相对时间和对手的让步率计算让步乘数。"""
-        if self.concession_model:  # If a custom concession model exists, use it / 如果存在自定义让步模型，则使用它
-            return self.concession_model(rel_time, opp_rate)
-        # Apply a non-linear curve to relative time, and factor in opponent's rate
-        # 对相对时间应用非线性曲线，并考虑对手的让步率
-        non_linear_rel_time = rel_time ** self.concession_curve_power
-        base = non_linear_rel_time * (
-                    1 + opp_rate)  # Higher opponent rate can increase our concession / 对手让步率越高，我们的让步可能越大
-        return max(0.0, min(1.0, base))  # Clamp between 0 and 1 / 限制在0和1之间
 
     # Modified in Step 9.b (Turn 30)
     # 在步骤9.b (轮次30) 修改
-    def _apply_concession(
+    def _calc_conceded_price(
             self,
             pid: str,
             target_price: float,  # Agent's ideal target price for this round / 代理本轮的理想目标价格
@@ -551,40 +658,50 @@ class LitaAgentY(StdSyncAgent):
         opp_rate = self._calc_opponent_concession(pid, current_price)  # Opponent's concession rate / 对手的让步率
         rel_time = state.relative_time if state else 0.0  # Relative time in negotiation / 谈判中的相对时间
 
-        base_mult = self._concession_multiplier(rel_time, opp_rate)  # Base concession multiplier / 基础让步乘数
+        # Compute concession multiplier directly
+        # 直接计算让步乘数
+        if self.concession_model:
+            base_mult = self.concession_model(rel_time, opp_rate)
+        else:
+            non_linear_rel_time = rel_time ** self.concession_curve_power
+            base_mult = max(0.0, min(1.0, non_linear_rel_time * (1 + opp_rate)))
         adjusted_mult = base_mult  # Start with base, adjust further based on context / 从基础开始，根据上下文进一步调整
 
         # Blend agent's target with estimated opponent expectation
         # 将代理的目标与估算的对手期望混合
         current_final_target_price = (target_price + self._expected_price(pid, target_price)) / 2
-        # log_reason_parts = [f"BaseTarget: {target_price:.2f}, ExpectedTarget: {current_final_target_price:.2f}"] # Removed
+        log_reason_parts = [f"BaseTarget: {target_price:.2f}, ExpectedTarget: {current_final_target_price:.2f}"]
 
         if self._is_consumer(pid):  # Selling to consumer / 销售给消费者
-            is_late_stage = rel_time > 0.7
-            is_very_late_stage = rel_time > 0.85
+            is_late_stage = rel_time > self.h.late_stage_ratio
+            is_very_late_stage = rel_time > self.h.very_late_stage_ratio
 
             if is_very_late_stage:  # Very late in negotiation, be more aggressive in conceding / 谈判非常后期，更积极地让步
-                adjusted_mult = max(base_mult, 0.80)  # Ensure at least 80% concession if very late / 如果非常后期，确保至少80%的让步
-                # log_reason_parts.append(f"SalesVeryLateStage(>{0.85 * 100}%)->MultFloor={adjusted_mult:.2f}") # Removed
+                adjusted_mult = max(base_mult, self.h.very_late_concession_floor)
+                log_reason_parts.append(
+                    f"SalesVeryLateStage(>{self.h.very_late_stage_ratio * 100}%)->MultFloor={adjusted_mult:.2f}")
 
                 if self.im:  # Calculate absolute minimum profitable price / 计算绝对最低盈利价格
                     abs_min_price = (self.get_avg_raw_cost_fallback(self.awi.current_step,
                                                                     pid) + self.im.processing_cost) * (
-                                                1 + self.min_profit_margin)
+                                            1 + self.min_profit_ratio)
                     # Move target price closer to absolute minimum if already low / 如果价格已经很低，则将目标价格移近绝对最小值
                     current_final_target_price = max(abs_min_price,
                                                      current_final_target_price * 0.5 + abs_min_price * 0.5)
-                    # log_reason_parts.append(f"AbsMinPrice: {abs_min_price:.2f}, NewFinalTarget: {current_final_target_price:.2f}") # Removed
+                    log_reason_parts.append(
+                        f"AbsMinPrice: {abs_min_price:.2f}, NewFinalTarget: {current_final_target_price:.2f}")
 
             elif is_late_stage:  # Late in negotiation / 谈判后期
-                adjusted_mult = max(base_mult, 0.60)  # Ensure at least 60% concession / 确保至少60%的让步
-                # log_reason_parts.append(f"SalesLateStage(>{0.7 * 100}%)->MultFloor={adjusted_mult:.2f}") # Removed
+                adjusted_mult = max(base_mult, self.h.late_concession_floor)
+                log_reason_parts.append(
+                    f"SalesLateStage(>{self.h.late_stage_ratio * 100}%)->MultFloor={adjusted_mult:.2f}")
         else:  # Buying from supplier / 从供应商处采购
             # Increase concession if shortfall penalty is high
             # 如果短缺罚金高，则增加让步
-            penalty_factor = min(1.0, self.awi.current_shortfall_penalty / 10.0)  # Scale penalty effect / 缩放罚金效应
+            penalty_factor = min(1.0,
+                                 self.awi.current_shortfall_penalty / self.h.penalty_scaling_factor)  # Scale penalty effect / 缩放罚金效应
             adjusted_mult = base_mult + penalty_factor  # Add penalty factor to concession / 将罚金因子加到让步中
-            # if penalty_factor > 0: log_reason_parts.append(f"ProcurePenaltyFactor:{penalty_factor:.2f}") # Removed
+            if penalty_factor > 0: log_reason_parts.append(f"ProcurePenaltyFactor:{penalty_factor:.2f}")
 
         adjusted_mult = max(0.0, min(1.0, adjusted_mult))  # Clamp final multiplier / 限制最终乘数
 
@@ -596,6 +713,11 @@ class LitaAgentY(StdSyncAgent):
             conceded_price = min(current_final_target_price, conceded_price)  # Don't concede beyond target / 不要让步超过目标
 
         final_conceded_price = self._clamp_price(pid, conceded_price)  # Ensure price is within NMI bounds / 确保价格在NMI范围内
+
+        if os.path.exists("env.test") and abs(
+                final_conceded_price - current_price) > 1e-3:  # Log if price changed significantly / 如果价格变化显著则记录日志
+            log_reason_parts.append(
+                f"RelTime:{rel_time:.2f} OppRate:{opp_rate:.2f} BaseMult:{base_mult:.2f} AdjMult:{adjusted_mult:.2f}")
         return final_conceded_price
 
     # ------------------------------------------------------------------
@@ -616,7 +738,7 @@ class LitaAgentY(StdSyncAgent):
             pred = 1.0 if z > 0 else 0.0
         y = 1.0 if accepted else 0.0  # True label / 真实标签
         err = y - pred  # Prediction error / 预测误差
-        lr = 0.05  # Learning rate / 学习率
+        lr = self.h.logreg_learning_rate  # Learning rate / 学习率
         # Gradient descent update / 梯度下降更新
         model["w0"] += lr * err
         model["w1"] += lr * err * x
@@ -645,7 +767,7 @@ class LitaAgentY(StdSyncAgent):
         best_own_price = self._best_price(pid)  # Agent's best NMI price / 代理的NMI最优价格
         # Agent's target price after concession
         # 代理让步后的目标价格
-        agent_target_conceded_price = self._apply_concession(pid, best_own_price, state, price)
+        agent_target_conceded_price = self._calc_conceded_price(pid, best_own_price, state, price)
         # Blend opponent's estimate and agent's target
         # 混合对手的估算和代理的目标
         current_calculated_price = (opp_price_est + agent_target_conceded_price) / 2.0
@@ -655,58 +777,62 @@ class LitaAgentY(StdSyncAgent):
         proposed_outcome_time = max(t, self.awi.current_step)  # Ensure time is not in the past / 确保时间不在过去
         proposed_outcome_price = current_calculated_price
 
-        # reason_log = [f"BaseCalcPrice: {current_calculated_price:.2f} for Q:{qty} T:{t}"] # Removed
+        reason_log = [f"BaseCalcPrice: {current_calculated_price:.2f} for Q:{qty} T:{t}"]
 
         if self._is_consumer(pid) and self.im:  # Selling products / 销售产品
             # Absolute minimum profitable price for current qty/time
             # 当前数量/时间的绝对最低盈利价格
             abs_min_price_for_current_qty_time = (self.get_avg_raw_cost_fallback(self.awi.current_step,
                                                                                  pid) + self.im.processing_cost) * (
-                                                             1 + self.min_profit_margin)
+                                                         1 + self.min_profit_ratio)
             # Check if current calculated price is very close to our walkaway price
             # 检查当前计算价格是否非常接近我们的底价
             is_near_walkaway = abs(current_calculated_price - abs_min_price_for_current_qty_time) < (
-                        abs_min_price_for_current_qty_time * 0.03)  # Within 3% / 3%以内
+                    abs_min_price_for_current_qty_time * self.h.pareto_qty_price_cut)  # Within threshold
             opponent_price_is_lower = price < current_calculated_price  # Opponent's offer is better than our calculated price / 对手的报价优于我们的计算价格
 
             if is_near_walkaway and opponent_price_is_lower:  # If at our limit and opponent is offering better, explore Pareto / 如果已到我们的极限且对手出价更好，则探索帕累托
-                # reason_log.append(f"Near walkaway ({abs_min_price_for_current_qty_time:.2f}), opp_price ({price:.2f}) lower. Exploring Pareto.") # Removed
+                reason_log.append(
+                    f"Near walkaway ({abs_min_price_for_current_qty_time:.2f}), opp_price ({price:.2f}) lower. Exploring Pareto.")
                 qty_issue = self.get_nmi(pid).issues[QUANTITY]
                 max_possible_qty_issue = qty_issue.max_value if isinstance(qty_issue.max_value,
                                                                            int) else proposed_outcome_qty * 2  # NMI max quantity or double / NMI最大数量或两倍
 
                 # Try increasing quantity for a price reduction
                 # 尝试增加数量以换取价格降低
-                increased_qty = int(proposed_outcome_qty * 1.25)  # Increase by 25% / 增加25%
+                increased_qty = int(proposed_outcome_qty * self.h.pareto_qty_increase_ratio)  # Increase by ratio
                 increased_qty = min(increased_qty, max_possible_qty_issue)  # Clamp to NMI max / 限制在NMI最大值
                 additional_qty = increased_qty - proposed_outcome_qty
 
                 if additional_qty > 0 and not self._is_production_capacity_tight(proposed_outcome_time,
                                                                                  additional_qty):  # If can produce more / 如果可以生产更多
-                    price_reduction_for_qty_increase = 0.02  # e.g., 2% price cut / 例如，降价2%
+                    price_reduction_for_qty_increase = self.h.pareto_qty_price_cut  # Price cut when increasing qty
                     new_price_for_larger_qty = current_calculated_price * (1 - price_reduction_for_qty_increase)
                     if new_price_for_larger_qty >= abs_min_price_for_current_qty_time:  # Still profitable / 仍然盈利
                         proposed_outcome_price = new_price_for_larger_qty
                         proposed_outcome_qty = increased_qty
-                        # reason_log.append(f"ParetoTry: Qty+ ({proposed_outcome_qty}) for Price- ({proposed_outcome_price:.2f})") # Removed
-                # elif additional_qty > 0:  # Cannot increase quantity due to capacity / 由于产能无法增加数量
-                    # reason_log.append(f"ParetoQtyIncSkip: Capacity tight for additional {additional_qty} on day {proposed_outcome_time}") # Removed
+                        reason_log.append(
+                            f"ParetoTry: Qty+ ({proposed_outcome_qty}) for Price- ({proposed_outcome_price:.2f})")
+                elif additional_qty > 0:  # Cannot increase quantity due to capacity / 由于产能无法增加数量
+                    reason_log.append(
+                        f"ParetoQtyIncSkip: Capacity tight for additional {additional_qty} on day {proposed_outcome_time}")
 
                 # If quantity increase didn't work, try delaying delivery for a price reduction
                 # 如果增加数量无效，尝试延迟交货以换取价格降低
                 if not (
                         proposed_outcome_qty > qty and proposed_outcome_price < current_calculated_price):  # If no Pareto improvement via quantity / 如果通过数量没有帕累托改进
-                    delayed_time = proposed_outcome_time + 2  # Delay by 2 days / 延迟2天
+                    delayed_time = proposed_outcome_time + self.h.pareto_delay_days  # Delay by configured days
                     time_issue = self.get_nmi(pid).issues[TIME]
                     max_time_issue = time_issue.max_value if isinstance(time_issue.max_value,
                                                                         int) else self.awi.n_steps - 1  # NMI max time / NMI最大时间
                     if delayed_time < min(self.awi.n_steps, max_time_issue + 1):  # If delay is valid / 如果延迟有效
-                        price_reduction_for_delay = 0.03  # e.g., 3% price cut / 例如，降价3%
+                        price_reduction_for_delay = self.h.pareto_delay_price_cut  # Price cut when delaying
                         new_price_for_delayed_delivery = current_calculated_price * (1 - price_reduction_for_delay)
                         if new_price_for_delayed_delivery >= abs_min_price_for_current_qty_time:  # Still profitable / 仍然盈利
                             proposed_outcome_price = new_price_for_delayed_delivery
                             proposed_outcome_time = delayed_time
-                            # reason_log.append(f"ParetoTry: Time+ ({proposed_outcome_time}) for Price- ({proposed_outcome_price:.2f})") # Removed
+                            reason_log.append(
+                                f"ParetoTry: Time+ ({proposed_outcome_time}) for Price- ({proposed_outcome_price:.2f})")
 
         elif self._is_supplier(
                 pid) and self.awi.current_shortfall_penalty > 1.0:  # Buying and shortfall penalty is significant / 采购且短缺罚金显著
@@ -716,8 +842,8 @@ class LitaAgentY(StdSyncAgent):
             new_qty = int(proposed_outcome_qty * 1.1)  # Increase by 10% / 增加10%
             proposed_outcome_qty = min(new_qty, qty_issue.max_value if isinstance(qty_issue.max_value,
                                                                                   int) else new_qty)  # Clamp to NMI max / 限制在NMI最大值
-            # if proposed_outcome_qty > qty:  # If quantity increased / 如果数量增加
-                # reason_log.append(f"ProcurePenaltyQtyInc: {proposed_outcome_qty}") # Removed
+            if proposed_outcome_qty > qty:  # If quantity increased / 如果数量增加
+                reason_log.append(f"ProcurePenaltyQtyInc: {proposed_outcome_qty}")
 
         # Final clamping of quantity and time to NMI bounds
         # 最终将数量和时间限制在NMI范围内
@@ -846,13 +972,20 @@ class LitaAgentY(StdSyncAgent):
 
         # MODIFIED: Removed sorting by success rate to promote wider, less biased initial distribution.
         # 修改：移除了按成功率排序，以促进更广泛、偏差更小的初始分配。
+        # partners.sort(
+        #     key=lambda p: self.partner_stats.get(p, {}).get("success", 0)
+        #     / max(1, self.partner_stats.get(p, {}).get("contracts", 0)),
+        #     reverse=True,
+        # )
 
-        # _ptoday (default 1.0) determines the fraction of partners to consider.
-        # _ptoday (默认为1.0) 决定了要考虑的伙伴比例。
-        k = max(1, int(len(partners) * self._ptoday))  # Number of partners to distribute among / 要分配的伙伴数量
+        # _distribution_ratio_today (default 1.0) determines the fraction of partners to consider.
+        # _distribution_ratio_today (默认为1.0) 决定了要考虑的伙伴比例。
+        k = max(1, int(len(
+            partners) * self._distribution_ratio_today))  # Number of partners to distribute among / 要分配的伙伴数量
         k = min(k, len(partners))  # Ensure k is not more than available partners / 确保k不超过可用伙伴数量
 
-        chosen_partners_for_distribution = partners[:k]  # If _ptoday=1.0, this is all partners / 如果_ptoday=1.0，则为所有伙伴
+        chosen_partners_for_distribution = partners[
+                                           :k]  # If _distribution_ratio_today=1.0, this is all partners / 如果_distribution_ratio_today=1.0，则为所有伙伴
         if not chosen_partners_for_distribution:  # Should not happen if partners is not empty and k>=1 / 如果partners非空且k>=1，则不应发生
             return {p: 0 for p in partners}
 
@@ -909,23 +1042,24 @@ class LitaAgentY(StdSyncAgent):
             if final_qty <= 0: continue  # Invalid quantity after clamping / 限制后数量无效
 
             price_for_proposal: float
-            # reason_log_parts: List[str] = []  # Removed
+            reason_log_parts: List[str] = []  # For logging decision process / 用于记录决策过程
 
             if self._is_consumer(pid):  # Selling to consumer / 销售给消费者
                 avg_raw_cost = self.get_avg_raw_cost_fallback(today, pid)  # Estimated raw material cost / 估算的原材料成本
-                # reason_log_parts.append(f"AvgRawCostEst: {avg_raw_cost:.2f}") # Removed
+                reason_log_parts.append(f"AvgRawCostEst: {avg_raw_cost:.2f}")
                 unit_cost_estimate = avg_raw_cost + (
                     self.im.processing_cost if self.im else 0)  # Total unit cost / 总单位成本
-                # reason_log_parts.append(f"UnitCostEst (raw+proc): {unit_cost_estimate:.2f}") # Removed
-                target_margin = self.min_profit_margin  # Base target profit margin / 基础目标利润率
+                reason_log_parts.append(f"UnitCostEst (raw+proc): {unit_cost_estimate:.2f}")
+                target_margin = self.min_profit_ratio  # Base target profit margin / 基础目标利润率
 
                 # Increase margin if capacity is tight for the proposed delivery day and quantity
                 # 如果提议的交货日期和数量导致产能紧张，则提高利润率
                 if self._is_production_capacity_tight(delivery_time, final_qty):
                     target_margin += self.capacity_tight_margin_increase
-                    # reason_log_parts.append(f"CapacityTight! Margin adj by +{self.capacity_tight_margin_increase:.3f} -> {target_margin:.3f}") # Removed
-                # else: # Removed
-                    # reason_log_parts.append(f"BaseTargetMargin: {target_margin:.3f}") # Removed
+                    reason_log_parts.append(
+                        f"CapacityTight! Margin adj by +{self.capacity_tight_margin_increase:.3f} -> {target_margin:.3f}")
+                else:
+                    reason_log_parts.append(f"BaseTargetMargin: {target_margin:.3f}")
 
                 # Adjust margin based on historical performance with this partner
                 # 根据与此伙伴的历史表现调整利润率
@@ -937,23 +1071,26 @@ class LitaAgentY(StdSyncAgent):
                     if historical_profit_margin > target_margin + 0.05:  # If historically achieved much higher margin / 如果历史上实现了更高的利润率
                         adjustment_factor = 0.5  # Blend towards historical / 向历史利润率靠拢
                         target_margin = target_margin + (historical_profit_margin - target_margin) * adjustment_factor
-                        # reason_log_parts.append(f"HistMargin ({historical_profit_margin:.3f}) -> AdjustedTargetMargin: {target_margin:.3f}") # Removed
+                        reason_log_parts.append(
+                            f"HistMargin ({historical_profit_margin:.3f}) -> AdjustedTargetMargin: {target_margin:.3f}")
                     success_rate = partner_data["success"] / partner_data["contracts"]
-                    if success_rate > 0.8:  # Reliable partner bonus / 可靠伙伴奖励
-                        bonus_for_reliability = 0.02
+                    if success_rate > self.h.reliability_success_threshold:  # Reliable partner bonus / 可靠伙伴奖励
+                        bonus_for_reliability = self.h.reliability_bonus
                         target_margin += bonus_for_reliability
-                        # reason_log_parts.append(f"ReliablePartner (SR {success_rate:.2f}) -> Bonus {bonus_for_reliability:.3f} -> NewTargetMargin: {target_margin:.3f}") # Removed
+                        reason_log_parts.append(
+                            f"ReliablePartner (SR {success_rate:.2f}) -> Bonus {bonus_for_reliability:.3f} -> NewTargetMargin: {target_margin:.3f}")
 
                 initial_price = unit_cost_estimate * (1 + target_margin)  # Calculate initial proposal price / 计算初始提议价格
                 # Ensure price is at least minimally profitable
                 # 确保价格至少有最低利润
-                absolute_min_profitable_price = unit_cost_estimate * (1 + self.min_profit_margin)
+                absolute_min_profitable_price = unit_cost_estimate * (1 + self.min_profit_ratio)
                 price_for_proposal = max(initial_price, absolute_min_profitable_price)
                 price_for_proposal = self._clamp_price(pid, price_for_proposal)  # Clamp to NMI / 限制在NMI范围内
                 # Final check to ensure it's still above absolute minimum after clamping
                 # 最终检查以确保在限制后仍高于绝对最小值
                 price_for_proposal = max(price_for_proposal, absolute_min_profitable_price)
-                # reason_log_parts.append(f"CalcPrice: {initial_price:.2f} -> Clamped/MinEnsured: {price_for_proposal:.2f} (AbsMinProfitable: {absolute_min_profitable_price:.2f})") # Removed
+                reason_log_parts.append(
+                    f"CalcPrice: {initial_price:.2f} -> Clamped/MinEnsured: {price_for_proposal:.2f} (AbsMinProfitable: {absolute_min_profitable_price:.2f})")
             else:  # Buying from supplier: propose our best NMI price / 从供应商处采购：提议我们的NMI最优价格
                 price_for_proposal = self._best_price(pid)  # NMI min price for buying / 采购的NMI最低价格
             proposals[pid] = (final_qty, delivery_time, price_for_proposal)
@@ -988,12 +1125,531 @@ class LitaAgentY(StdSyncAgent):
 
         supply_offers = {p: o for p, o in offers.items() if self._is_supplier(p)}
         supply_states = {p: states[p] for p in supply_offers}
-        responses.update(self._process_supply_offers(supply_offers, supply_states))
+        logic_select = self.h.logic_select
+        if logic_select == "unified":
+            responses.update(self._process_supply_offers_unified(supply_offers, supply_states))
+        elif logic_select == "legacy":
+            responses.update(self._process_supply_offers(supply_offers, supply_states))
         return responses
 
     # ------------------------------------------------------------------
-    # 🌟 5‑1. 供应报价拆分三类
-    # 🌟 5‑1. Splitting Supply Offers into Three Categories
+    # 🌟 5‑1-A. New unified supply processing method
+    # ------------------------------------------------------------------
+
+    def _check_cumulative_udpp(self, udpp: dict[int, int], start_time: int, quantity: int) -> bool:
+        """
+        Checks if a given quantity can be satisfied by the cumulative UDPP from a start time onwards.
+        检查一个给定的数量是否能被从某个起始时间开始的累计UDPP所满足。
+        """
+        cumulative_need = sum(v for k, v in udpp.items() if k >= start_time)
+        return quantity <= cumulative_need
+
+    def _consume_cumulative_udpp(self, udpp: dict[int, int], start_time: int, quantity: int):
+        """
+        Consumes a given quantity from the UDPP dictionary using a waterfall logic.
+        使用瀑布流逻辑从UDPP字典中消耗一个给定的数量。
+        """
+        quantity_to_assign = quantity
+        for day in sorted(udpp.keys()):
+            if day < start_time: continue
+            if quantity_to_assign <= 0: break
+
+            can_take = min(udpp[day], quantity_to_assign)
+            udpp[day] -= can_take
+            quantity_to_assign -= can_take
+
+    def _process_supply_offers_unified(
+            self,
+            offers: Dict[str, "Outcome"],
+            states: Dict[str, "SAOState"],
+    ) -> Dict[str, "SAOResponse"]:
+        """
+        A unified method to process all supply offers, replacing the old three-tiered system.
+        This version strictly adheres to the SAO mechanism's data structures.
+        It uses a stateful, two-pass (Accept then Counter) approach for procurement.
+
+        一个统一处理所有供应报价的方法，用以取代旧的三层分离式系统。
+        此版本严格遵守SAO机制的数据结构。
+        它使用一个状态驱动的、两阶段（先接受后还价）的模式来处理采购。
+        """
+        # --------------------------------------------------------------------------------
+        # Section 1: Initialization / 第一部分：初始化
+        # --------------------------------------------------------------------------------
+        responses: Dict[str, "SAOResponse"] = {}
+        udpp = self.im.get_udpp(self.awi.current_step, self.awi.n_steps)
+
+        accepted_quantities = defaultdict()  # {"emergency": 0, "planned": {0: 0}, "optional": {0: 0}}
+        accepted_quantities["emergency"] = 0
+        accepted_quantities["planned"] = defaultdict(int)
+        accepted_quantities["optional"] = defaultdict(int)
+        countered_quantities = defaultdict()  # {"emergency": 0, "planned": {0: 0}}
+        countered_quantities["emergency"] = 0
+        countered_quantities["planned"] = defaultdict(int)
+
+        inventory_health = self._get_raw_inventory_health_status(self.awi.current_step)
+        procurement_aggressiveness_factor = 1.0
+        procurement_inv_price_adjust = 1.0
+        if inventory_health == "low":
+            procurement_aggressiveness_factor = 1.15  # Be more aggressive if inventory is low / 如果库存低则更积极
+            procurement_inv_price_adjust = 0.95  # 接受更低价格
+        elif inventory_health == "high":
+            procurement_aggressiveness_factor = 0.90  # Be more conservative if inventory is high / 如果库存高则更保守
+            procurement_inv_price_adjust = 1.05  # 接受更高价格
+
+        emergency_demand = udpp.get(self.awi.current_step, 0)
+        emergency_limit = int(
+            emergency_demand * (1 + self.h.emergency_overprocurement_factor) * procurement_aggressiveness_factor)
+
+        planned_demand = sum(v for k, v in udpp.items() if k > self.awi.current_step)
+        planned_limit = planned_demand * (1 + self.h.planned_overprocurement_factor) * procurement_aggressiveness_factor
+
+        optional_limit = planned_demand * self.h.optional_procurement_factor * procurement_aggressiveness_factor
+
+        all_offers_info = [
+            (neg_id, outcome, states[neg_id])
+            for neg_id, outcome in offers.items() if outcome is not None
+        ]
+        for pid, offer in offers.items():
+            self._recent_material_prices.append(offer[UNIT_PRICE])  # Update market price tracking / 更新市场价格跟踪
+            if len(self._recent_material_prices) > self._avg_window: self._recent_material_prices.pop(0)
+
+        # --------------------------------------------------------------------------------
+        # Section 2: Emergency Procurement / 第二部分：紧急采购
+        # --------------------------------------------------------------------------------
+        today_offers_info = sorted(
+            [info for info in all_offers_info if info[1][TIME] == self.awi.current_step],
+            key=lambda info: info[1][UNIT_PRICE],
+        )
+
+        # --- Emergency Accept Pass ---
+        # --- 紧急采购 - 接受阶段 ---
+        remaining_for_counter = []
+        if emergency_demand > 0:
+            for neg_id, offer, state in today_offers_info:
+                strict_remaining_need = emergency_demand - accepted_quantities["emergency"]
+                if strict_remaining_need <= 0:
+                    remaining_for_counter.append((neg_id, offer, state))
+                    continue
+                # price OK， quantity OK
+                if (offer[UNIT_PRICE] <= self.awi.current_shortfall_penalty * procurement_inv_price_adjust and
+                        offer[QUANTITY] <= strict_remaining_need):
+                    responses[neg_id] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                    accepted_quantities["emergency"] += offer[QUANTITY]
+                    self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+                # price OK， quantity little excess in late phase
+                elif offer[UNIT_PRICE] <= self.awi.current_shortfall_penalty * 1.1 * procurement_inv_price_adjust and \
+                        offer[QUANTITY] <= strict_remaining_need * 1.1 and self.get_nmi(
+                    neg_id).state.relative_time > 0.8:
+                    responses[neg_id] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                    accepted_quantities["emergency"] += offer[QUANTITY]
+                    self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+                else:
+                    remaining_for_counter.append((neg_id, offer, state))
+        else:
+            remaining_for_counter = today_offers_info
+
+        # --- Emergency Counter Pass ---
+        # --- 紧急采购 - 还价阶段 ---
+        if emergency_demand > accepted_quantities["emergency"]:
+            partners_to_counter = remaining_for_counter
+            # Fallback logic: if no partners offered for today, consider all partners.
+            # 备用逻辑：如果没有伙伴为今天报价，则考虑所有伙伴。
+            if not partners_to_counter:
+                partners_to_counter = [info for info in all_offers_info if info[0] not in responses]
+
+            # 使用现有的对手建模模型，根据保留价格排序伙伴 (升序 取前50%)
+            # Sort parters by reserved value provided by OM (increasing)
+            partners_to_counter.sort(
+                key=lambda info: self._estimate_reservation_price(pid=info[0], default=info[1][UNIT_PRICE]))
+
+            # 根据上面的rv，选出50%，然后将剩余的紧急需求分配（带超采购），价格执行一次让步
+            # select 50% partners with lowest rv, then distribute emer demand, with price concession, counter offer
+            if accepted_quantities["emergency"] + countered_quantities["emergency"] <= emergency_limit:
+                partners_to_counter_50 = partners_to_counter[:math.ceil(len(partners_to_counter) * 0.5)]
+                pidlist = [info[0] for info in partners_to_counter_50]
+                remaining_demand_for_conter = emergency_limit - accepted_quantities["emergency"] - countered_quantities[
+                    "emergency"]
+                emer_counter_offer_quantity = self._distribute_to_partners(pidlist,
+                                                                           int(remaining_demand_for_conter * self.h.emergency_overprocurement_factor))
+                for pid, offer, state in partners_to_counter_50:
+                    conceded_price = self._calc_conceded_price(pid,
+                                                               target_price=self.awi.current_shortfall_penalty * procurement_inv_price_adjust,
+                                                               state=state, current_price=offer[UNIT_PRICE])
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                 (emer_counter_offer_quantity[pid], offer[TIME], conceded_price))
+                    countered_quantities["emergency"] += emer_counter_offer_quantity[pid]
+
+        # --------------------------------------------------------------------------------
+        # Section 3: Planned Procurement / 第三部分：计划性采购
+        # --------------------------------------------------------------------------------
+
+        # --- Planned Accept Pass ---
+        # --- 计划性采购 - 接受阶段 ---
+        # Sort offers by price (cheapest first), then by quantity (largest first)
+        # 按价格（最低优先）排序报价，然后按数量（最大优先）排序
+        sorted_offers = sorted(offers.items(), key=lambda item: (item[1][UNIT_PRICE], -item[1][QUANTITY]))
+        sorted_offers = {pid: offer for pid, offer in sorted_offers if pid not in responses}
+
+        # 从最低价开始 from the lowest price
+        for pid, offer in sorted_offers.items():
+            if offer[TIME] < self.awi.current_step:
+                continue
+            qty_original, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+            self._last_partner_offer[pid] = price  # Record opponent's price / 记录对手价格
+
+            # Estimate profitability: max affordable raw price based on estimated product selling price and margin
+            # 估算盈利能力：基于预估产品售价和利润率的最大可承受原材料价格
+            # 在 _process_planned_supply_offers 方法中
+            # ...
+            output_product_idx = self.awi.level
+
+            # 对于第一层代理，其销售的是原材料，output_product_idx 可能是 0 或根据具体产品定义
+            est_sell_price = 0.0
+
+            # 1. 优先使用代理自己观察到的市场产品均价
+            if self._market_product_price_avg > 0:
+                est_sell_price = self._market_product_price_avg
+                reason = "agent_observed_avg"
+
+            # 2. 回退到 AWI 提供的市场交易价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'trading_prices') and self.awi.trading_prices is not None and \
+                    len(self.awi.trading_prices) > output_product_idx:
+                awi_trading_price = self.awi.trading_prices[output_product_idx]
+                if awi_trading_price > 0:
+                    est_sell_price = awi_trading_price
+                    reason = "awi_trading_prices"
+
+            # 3. 回退到 AWI 提供的目录价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'catalog_prices') and self.awi.catalog_prices is not None and \
+                    len(self.awi.catalog_prices) > output_product_idx:
+                awi_catalog_price = self.awi.catalog_prices[output_product_idx]
+                if awi_catalog_price > 0:
+                    est_sell_price = awi_catalog_price
+                    reason = "awi_catalog_prices"
+
+            # 4. 最后回退到基于原材料成本的简单启发式
+            if est_sell_price <= 0:
+                # 'price' 是当前原材料供应报价的单价
+                est_sell_price = price * 2.0
+                reason = "heuristic_raw_x2"
+
+            # 不考虑存储成本时的最大接受价格 Max accept price without considering stor cost
+            min_profit_for_product = est_sell_price * self.min_profit_ratio
+            max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product  # JIT = Just-In-Time (no storage cost) / JIT = 准时制（无存储成本）
+
+            # Estimate storage cost for holding the material until delivery time 't'
+            # 估算将材料保存至交货时间 't' 的存储成本
+            days_held_estimate = max(0, t - (
+                    self.awi.current_step + 1))  # Number of days material will be stored / 材料将被存储的天数
+            estimated_storage_cost_per_unit = self.im.raw_storage_cost * days_held_estimate
+            effective_price = price + estimated_storage_cost_per_unit  # Price including storage from partner/ 包括存储的价格
+
+            price_is_acceptable = (
+                    effective_price <= max_affordable_raw_price_jit * procurement_inv_price_adjust)  # Is it profitable considering storage? / 考虑存储是否盈利？
+
+            # 判断是否超出库存需求 Consider excess inv limit or not
+            can_inv_limit_satisfied = self._check_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+
+            if can_inv_limit_satisfied and price_is_acceptable:
+                responses[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+
+                accepted_quantities["planned"][offer[TIME]] += offer[QUANTITY]
+                self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+
+        # --- Planned Counter Pass ---
+        # --- 计划性采购 - 还价阶段 ---
+
+        # Sort offers by price (cheapest first), then by quantity (largest first)
+        # 按价格（最低优先）排序报价，然后按数量（最大优先）排序
+        sorted_offers = sorted(offers.items(), key=lambda item: (item[1][UNIT_PRICE], -item[1][QUANTITY]))
+        sorted_offers = {pid: offer for pid, offer in sorted_offers if pid not in responses}
+        for pid, offer in sorted_offers.items():
+            if offer[TIME] < self.awi.current_step:
+                continue
+
+            state = states[pid]
+            qty_original, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
+            max_qty_acceptable_on_the_day = sum(v for k, v in udpp.items() if k >= offer[TIME])
+            cumulative_planned_need = sum(v for k, v in udpp.items() if k > self.awi.current_step)
+
+            # 检查还价是否已经超出了超采购 Check if counter-offer excess over-procurment demand
+            # 因为每个谈判轮次都会刷新数据（调用counter_all时），而只有我们完成这一谈判轮次后parener才会做出是否accept的决定，所以我们不需要显式地删除countered_quantities
+
+            # if accepted_quantities['planned'][offer[TIME]] + countered_quantities['planned'][offer[TIME]] >= max_qty_acceptable_on_the_day * (1 + self.h.planned_overprocurement_factor): continue
+            cumulative_need_from_t = sum(udpp[d] for d in range(offer[TIME], self.awi.n_steps))
+            cumulative_countered_from_t = 0
+            if offer[TIME] == self.awi.current_step:
+                cumulative_countered_from_t += countered_quantities["emergency"]
+            cumulative_countered_from_t += sum(
+                countered_qty for time, countered_qty in countered_quantities["planned"].items() if time >= offer[TIME])
+
+            if cumulative_countered_from_t > cumulative_need_from_t * (
+                    1 + self.h.planned_overprocurement_factor) * procurement_aggressiveness_factor: continue
+
+            # 如果交付日没有足够的UDPP了，就停止counter offer / Stop proposing counter-offer if no unsatisfied daily production plan after delivery day
+            if max_qty_acceptable_on_the_day <= 0: continue
+
+            # 计算价格满足要求？
+            # Estimate profitability: max affordable raw price based on estimated product selling price and margin
+            # 估算盈利能力：基于预估产品售价和利润率的最大可承受原材料价格
+            # 在 _process_planned_supply_offers 方法中
+            # ...
+            output_product_idx = self.awi.level
+            # 对于第一层代理，其销售的是原材料，output_product_idx 可能是 0 或根据具体产品定义
+            # 此处仅为示例，实际应用需精确确定 output_product_idx
+            est_sell_price = 0.0
+
+            # 1. 优先使用代理自己观察到的市场产品均价
+            if self._market_product_price_avg > 0:
+                est_sell_price = self._market_product_price_avg
+                reason = "agent_observed_avg"
+
+            # 2. 回退到 AWI 提供的市场交易价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'trading_prices') and self.awi.trading_prices is not None and \
+                    len(self.awi.trading_prices) > output_product_idx:
+                awi_trading_price = self.awi.trading_prices[output_product_idx]
+                if awi_trading_price > 0:
+                    est_sell_price = awi_trading_price
+                    reason = "awi_trading_prices"
+
+            # 3. 回退到 AWI 提供的目录价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'catalog_prices') and self.awi.catalog_prices is not None and \
+                    len(self.awi.catalog_prices) > output_product_idx:
+                awi_catalog_price = self.awi.catalog_prices[output_product_idx]
+                if awi_catalog_price > 0:
+                    est_sell_price = awi_catalog_price
+                    reason = "awi_catalog_prices"
+
+            # 4. 最后回退到基于原材料成本的简单启发式
+            if est_sell_price <= 0:
+                # 'price' 是当前原材料供应报价的单价
+                est_sell_price = price * 2.0
+                reason = "heuristic_raw_x2"
+
+            # 不考虑存储成本时的最大接受价格 Max accept price without considering stor cost
+            min_profit_for_product = est_sell_price * self.min_profit_ratio
+            max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product  # JIT = Just-In-Time (no storage cost) / JIT = 准时制（无存储成本）
+
+            # Estimate storage cost for holding the material until delivery time 't'
+            # 估算将材料保存至交货时间 't' 的存储成本
+            days_held_estimate = max(0, t - (
+                    self.awi.current_step + 1))  # Number of days material will be stored / 材料将被存储的天数
+            estimated_storage_cost_per_unit = self.im.raw_storage_cost * days_held_estimate
+            effective_price = price + estimated_storage_cost_per_unit  # Price including storage from partner/ 包括存储的价格
+
+            price_is_acceptable = (
+                    effective_price <= max_affordable_raw_price_jit * procurement_inv_price_adjust)  # Is it profitable considering storage? / 考虑存储是否盈利？
+
+            # Price OK, qty excess
+            # 逻辑：提前交货日期以尽可能找到满足的需求，如果找不到足够的需求，则减少交货数量
+            # 由于提前交货日期会导致库存成本提升，因此必须同时执行价格调整
+            if offer[QUANTITY] > max_qty_acceptable_on_the_day and price_is_acceptable == True:
+                # 算出最大的接受可能量
+                max_qty_acceptable_from_now_on = cumulative_planned_need
+                # 如果今天往后的所有需求都不足够，直接将日子设置为今天，数量为总需求
+                # 首先解决当日情况
+                if offer[TIME] == self.awi.current_step:
+                    qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
+                    # 确保没有超出总counter上限
+                    cumulative_need_from_t = sum(udpp[d] for d in range(offer[TIME], self.awi.n_steps))
+                    cumulative_countered_from_t = 0
+                    if offer[TIME] == self.awi.current_step:
+                        cumulative_countered_from_t += countered_quantities["emergency"]
+                    cumulative_countered_from_t += sum(
+                        countered_qty for time, countered_qty in countered_quantities["planned"].items() if
+                        time >= offer[TIME])
+
+                    if cumulative_countered_from_t + qty_to_counter_offer > cumulative_need_from_t * (
+                            1 + self.h.planned_overprocurement_factor):
+                        qty_to_counter_offer = cumulative_need_from_t - cumulative_countered_from_t
+
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                 (qty_to_counter_offer, self.awi.current_step, price))
+
+                    countered_quantities["planned"][offer[TIME]] += qty_to_counter_offer
+                else:
+                    for early_time in range(offer[TIME], self.awi.current_step, -1):
+                        # 到今天了，按照最大的需求counter offer
+                        if early_time == self.awi.current_step:
+                            qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
+                            # 确保没有超出总counter上限
+                            cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
+                            cumulative_countered_from_t = 0
+                            if early_time == self.awi.current_step:
+                                cumulative_countered_from_t += countered_quantities["emergency"]
+                            cumulative_countered_from_t += sum(
+                                countered_qty for time, countered_qty in countered_quantities["planned"].items() if
+                                time >= early_time)
+
+                            if cumulative_countered_from_t + qty_to_counter_offer > cumulative_need_from_t * (
+                                    1 + self.h.planned_overprocurement_factor):
+                                qty_to_counter_offer = cumulative_need_from_t - cumulative_countered_from_t
+
+                            responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                         (qty_to_counter_offer, self.awi.current_step, price))
+
+                            countered_quantities["planned"][early_time] += qty_to_counter_offer
+                            break
+                        cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
+                        # 如果满足了数量了
+                        if cumulative_need_from_t >= offer[QUANTITY]:
+                            qty_to_counter_offer = offer[QUANTITY]
+                            # 确保没有超出总counter上限
+                            cumulative_countered_from_t = sum(
+                                countered_qty for time, countered_qty in countered_quantities["planned"].items() if
+                                time >= early_time)
+
+                            if cumulative_countered_from_t + qty_to_counter_offer > cumulative_need_from_t * (
+                                    1 + self.h.planned_overprocurement_factor):
+                                qty_to_counter_offer = cumulative_need_from_t - cumulative_countered_from_t
+
+                            responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                         (qty_to_counter_offer, early_time, price))
+
+                            countered_quantities["planned"][early_time] += qty_to_counter_offer
+                            break
+                        else:
+                            # 这种情况是意料外的
+                            responses[pid] = SAOResponse(ResponseType.WAIT,
+                                                         (qty_original, early_time, price))
+
+
+
+
+
+            # price not OK, qty OK
+            elif not price_is_acceptable and offer[QUANTITY] <= max_qty_acceptable_on_the_day:
+                bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                aspirational_target_price = self._get_aspirational_target_price(
+                    pid=pid,
+                    p_bottom_line=bottom_line_price,
+                    rel_time=state.relative_time if state else 0.0,
+                )
+                target_quoted_price_for_negotiation = aspirational_target_price * procurement_inv_price_adjust
+                conceded_price = self._calc_conceded_price(pid, target_price=target_quoted_price_for_negotiation,
+                                                           state=state, current_price=offer[UNIT_PRICE])
+
+                responses[pid] = SAOResponse(ResponseType.REJECT_OFFER, (offer[QUANTITY], offer[TIME], conceded_price))
+
+                countered_quantities["planned"][offer[TIME]] += offer[QUANTITY]
+
+            # price not OK, qty excess
+            elif not price_is_acceptable and offer[QUANTITY] > max_qty_acceptable_on_the_day:
+                # 算出最大的接受可能量
+                max_qty_acceptable_from_now_on = cumulative_planned_need
+                # 如果今天往后的所有需求都不足够，直接将日子设置为今天，数量为总需求
+                # 首先尝试向前推进一天
+                if offer[TIME] == self.awi.current_step:
+                    qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
+                    # 确保没有超出总counter上限
+                    cumulative_need_from_t = sum(udpp[d] for d in range(offer[TIME], self.awi.n_steps))
+                    cumulative_countered_from_t = 0
+                    if offer[TIME] == self.awi.current_step:
+                        cumulative_countered_from_t += countered_quantities["emergency"]
+                    cumulative_countered_from_t += sum(
+                        countered_qty for time, countered_qty in countered_quantities["planned"].items() if
+                        time >= offer[TIME])
+
+                    if cumulative_countered_from_t + qty_to_counter_offer > cumulative_need_from_t * (
+                            1 + self.h.planned_overprocurement_factor):
+                        qty_to_counter_offer = cumulative_need_from_t - cumulative_countered_from_t
+
+                    responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                 (qty_to_counter_offer, self.awi.current_step, price))
+
+                    countered_quantities["planned"][offer[TIME]] += qty_to_counter_offer
+                else:
+                    for early_time in range(offer[TIME], self.awi.current_step, -1):
+                        # 到今天了，按照最大的需求counter offer
+                        if early_time <= self.awi.current_step:
+                            qty_to_counter_offer = min(offer[QUANTITY], max_qty_acceptable_from_now_on)
+                            # 确保没有超出总counter上限
+                            cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
+                            cumulative_countered_from_t = 0
+                            if early_time == self.awi.current_step:
+                                cumulative_countered_from_t += countered_quantities["emergency"]
+                            cumulative_countered_from_t += sum(
+                                countered_qty for time, countered_qty in countered_quantities["planned"].items() if
+                                time >= early_time)
+
+                            if cumulative_countered_from_t + qty_to_counter_offer > cumulative_need_from_t * (
+                                    1 + self.h.planned_overprocurement_factor):
+                                qty_to_counter_offer = cumulative_need_from_t - cumulative_countered_from_t
+
+                            responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                         (qty_to_counter_offer, self.awi.current_step, price))
+
+                            countered_quantities["planned"][early_time] += qty_to_counter_offer
+                            break
+                        cumulative_need_from_t = sum(udpp[d] for d in range(early_time, self.awi.n_steps))
+                        # 如果满足了数量了
+                        if cumulative_need_from_t >= offer[QUANTITY]:
+                            qty_to_counter_offer = offer[QUANTITY]
+                            # 确保没有超出总counter上限
+                            cumulative_countered_from_t = sum(
+                                countered_qty for time, countered_qty in countered_quantities["planned"].items() if
+                                time >= early_time)
+
+                            if cumulative_countered_from_t + qty_to_counter_offer > cumulative_need_from_t * (
+                                    1 + self.h.planned_overprocurement_factor):
+                                qty_to_counter_offer = cumulative_need_from_t - cumulative_countered_from_t
+
+                            responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                                         (qty_to_counter_offer, early_time, price))
+
+                            countered_quantities["planned"][early_time] += qty_to_counter_offer
+                            break
+                        else:
+                            # 这种情况是意料外的
+                            responses[pid] = SAOResponse(ResponseType.WAIT,
+                                                         (qty_original, early_time, price))
+
+                # 数量改好，执行还价逻辑
+                bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                aspirational_target_price = self._get_aspirational_target_price(
+                    pid=pid,
+                    p_bottom_line=bottom_line_price,
+                    rel_time=state.relative_time,
+                )
+                target_quoted_price_for_negotiation = aspirational_target_price * procurement_inv_price_adjust
+                conceded_price = self._calc_conceded_price(pid, target_price=target_quoted_price_for_negotiation,
+                                                           state=state, current_price=offer[UNIT_PRICE])
+                response_for_pid = responses[pid]
+                outcome_for_pid = response_for_pid.outcome
+                response_for_pid.outcome = (outcome_for_pid[QUANTITY], outcome_for_pid[TIME], conceded_price)
+                responses[pid] = response_for_pid
+
+        # --------------------------------------------------------------------------------
+        # Section 4: Optional & Finalization / 第四部分：机会性采购与最终处理
+        # --------------------------------------------------------------------------------
+        # Sort offers by price (cheapest first), then by quantity (largest first)
+        # 按价格（最低优先）排序报价，然后按数量（最大优先）排序
+        sorted_offers = sorted(offers.items(), key=lambda item: (item[1][UNIT_PRICE], -item[1][QUANTITY]))
+        sorted_offers = {pid: offer for pid, offer in sorted_offers if pid not in responses}
+        for neg_id, offer in sorted_offers.items():
+            if offer[TIME] < self.awi.current_step:
+                continue
+            is_cheap = offer[UNIT_PRICE] <= self._market_product_price_avg * self.h.bargain_threshold
+
+            is_within_limit = offer[QUANTITY] + accepted_quantities["optional"][offer[TIME]] <= optional_limit
+
+            if is_cheap and is_within_limit:
+                responses[neg_id] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+
+                accepted_quantities["optional"][offer[TIME]] += offer[QUANTITY]
+                self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
+            else:
+                responses[neg_id] = SAOResponse(ResponseType.WAIT, offer)
+
+        return responses
+
+    # ------------------------------------------------------------------
+    # 🌟 5‑1-B. 供应报价拆分三类
+    # 🌟 5‑1-B. Splitting Supply Offers into Three Categories (OLD, to be deprecated)
     # ------------------------------------------------------------------
 
     def _process_supply_offers(
@@ -1107,19 +1763,21 @@ class LitaAgentY(StdSyncAgent):
                     res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
                     remain_needed -= accept_qty
                 elif qty > remain_needed and price <= penalty:  # Offer is larger than need but price is good / 报价大于需求但价格良好
-                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER,
-                                           (accept_qty, time, price))  # Accept only what's needed / 只接受所需数量
-                    remain_needed -= accept_qty
-                elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER,
+                                           (accept_qty, time,
+                                            price))  # Accept only what's needed / 只接受所需数量 counter offer
+                elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8 and qty <= remain_needed:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
                     res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, (accept_qty, time, price))
                     remain_needed -= accept_qty
+                elif price > penalty and price <= penalty * 1.1 and state and state.relative_time > 0.8 and qty > remain_needed:  # Price slightly above penalty, but very late / 价格略高于罚金，但非常后期
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, (accept_qty, time, price))
                 else:  # Price acceptable but conditions not met for full accept, or quantity mismatch / 价格可接受但条件不满足完全接受，或数量不匹配
                     counter_offer = self._pareto_counter_offer(pid, accept_qty, time, price, state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
             else:  # Price is too high, try to negotiate down / 价格过高，尝试谈判降低
                 target_price_for_counter = min(price, penalty * 0.95)  # Target slightly below penalty / 目标略低于罚金
-                conceded_price = self._apply_concession(pid, target_price_for_counter, state,
-                                                        price)  # Apply concession logic / 应用让步逻辑
+                conceded_price = self._calc_conceded_price(pid, target_price_for_counter, state,
+                                                           price)  # Apply concession logic / 应用让步逻辑
                 counter_offer = self._pareto_counter_offer(pid, min(qty, remain_needed), time, conceded_price, state)
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
         return res
@@ -1153,17 +1811,52 @@ class LitaAgentY(StdSyncAgent):
 
             # Estimate profitability: max affordable raw price based on estimated product selling price and margin
             # 估算盈利能力：基于预估产品售价和利润率的最大可承受原材料价格
-            est_sell_price = self._market_product_price_avg if self._market_product_price_avg > 0 else price * 2.0  # Fallback if no market avg / 如果没有市场平均价则回退
-            min_profit_for_product = est_sell_price * self.min_profit_margin
+            # 在 _process_planned_supply_offers 方法中
+            # ...
+            output_product_idx = self.awi.level
+            # 对于第一层代理，其销售的是原材料，output_product_idx 可能是 0 或根据具体产品定义
+            # 此处仅为示例，实际应用需精确确定 output_product_idx
+            est_sell_price = 0.0
+
+            # 1. 优先使用代理自己观察到的市场产品均价
+            if self._market_product_price_avg > 0:
+                est_sell_price = self._market_product_price_avg
+                reason = "agent_observed_avg"
+
+            # 2. 回退到 AWI 提供的市场交易价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'trading_prices') and self.awi.trading_prices is not None and \
+                    len(self.awi.trading_prices) > output_product_idx:
+                awi_trading_price = self.awi.trading_prices[output_product_idx]
+                if awi_trading_price > 0:
+                    est_sell_price = awi_trading_price
+                    reason = "awi_trading_prices"
+
+            # 3. 回退到 AWI 提供的目录价格
+            if est_sell_price <= 0 and output_product_idx != -1 and \
+                    hasattr(self.awi, 'catalog_prices') and self.awi.catalog_prices is not None and \
+                    len(self.awi.catalog_prices) > output_product_idx:
+                awi_catalog_price = self.awi.catalog_prices[output_product_idx]
+                if awi_catalog_price > 0:
+                    est_sell_price = awi_catalog_price
+                    reason = "awi_catalog_prices"
+
+            # 4. 最后回退到基于原材料成本的简单启发式
+            if est_sell_price <= 0:
+                # 'price' 是当前原材料供应报价的单价
+                est_sell_price = price * 2.0
+                reason = "heuristic_raw_x2"
+
+            min_profit_for_product = est_sell_price * self.min_profit_ratio
             max_affordable_raw_price_jit = est_sell_price - self.im.processing_cost - min_profit_for_product  # JIT = Just-In-Time (no storage cost) / JIT = 准时制（无存储成本）
             # Estimate storage cost for holding the material until delivery time 't'
             # 估算将材料保存至交货时间 't' 的存储成本
             days_held_estimate = max(0, t - (
-                        self.awi.current_step + 1))  # Number of days material will be stored / 材料将被存储的天数
+                    self.awi.current_step + 1))  # Number of days material will be stored / 材料将被存储的天数
             estimated_storage_cost_per_unit = self.im.raw_storage_cost * days_held_estimate
             effective_price = price + estimated_storage_cost_per_unit  # Price including storage / 包括存储的有效价格
             price_is_acceptable = (
-                        effective_price <= max_affordable_raw_price_jit)  # Is it profitable considering storage? / 考虑存储是否盈利？
+                    effective_price <= max_affordable_raw_price_jit)  # Is it profitable considering storage? / 考虑存储是否盈利？
 
             # Calculate procurement limit and remaining headroom for the delivery date 't'
             # 计算交货日期 't' 的采购限额和剩余空间
@@ -1197,8 +1890,8 @@ class LitaAgentY(StdSyncAgent):
             accept_qty = min(qty, remaining_headroom_for_t)  # Quantity to accept from this offer / 从此报价中接受的数量
             accept_qty_int = int(round(accept_qty))
 
-            # log_prefix = f"🏭 Day {self.awi.current_step} ({self.id}) PlannedSupply Offer from {pid} (Q:{qty_original} P:{price:.2f} T:{t}): InvHealth={inventory_health}, AggroFactor={procurement_aggressiveness_factor:.2f} " # Removed
-            # log_details = f"EffPrice={effective_price:.2f} (StoreCost={estimated_storage_cost_per_unit:.2f}), JITLimit={max_affordable_raw_price_jit:.2f}. Headroom={remaining_headroom_for_t:.1f}, AcceptableQty={accept_qty_int}." # Removed
+            log_prefix = f"🏭 Day {self.awi.current_step} ({self.id}) PlannedSupply Offer from {pid} (Q:{qty_original} P:{price:.2f} T:{t}): InvHealth={inventory_health}, AggroFactor={procurement_aggressiveness_factor:.2f} "
+            log_details = f"EffPrice={effective_price:.2f} (StoreCost={estimated_storage_cost_per_unit:.2f}), JITLimit={max_affordable_raw_price_jit:.2f}. Headroom={remaining_headroom_for_t:.1f}, AcceptableQty={accept_qty_int}."
 
             if accept_qty_int > 0 and price_is_acceptable:  # If can accept some quantity and price is good / 如果可以接受一些数量且价格良好
                 outcome_tuple = (accept_qty_int, t, price)
@@ -1211,14 +1904,21 @@ class LitaAgentY(StdSyncAgent):
                 accepted_quantities_for_planned_this_call[
                     t] += accept_qty_int  # Update accepted for this call / 更新此调用中已接受的数量
             else:  # Cannot accept or price is not good / 无法接受或价格不好
-                # rejection_reason = "" # Removed
-                # if accept_qty_int <= 0: rejection_reason += "NoHeadroomOrZeroAcceptQty;" # Removed
-                # if not price_is_acceptable: rejection_reason += "PriceUnacceptable(Effective);" # Removed
+                rejection_reason = ""
+                if accept_qty_int <= 0: rejection_reason += "NoHeadroomOrZeroAcceptQty;"
+                if not price_is_acceptable: rejection_reason += "PriceUnacceptable(Effective);"
 
                 if not price_is_acceptable:  # If price is the issue, try to negotiate down / 如果是价格问题，尝试谈判降低
-                    target_quoted_price_for_negotiation = max_affordable_raw_price_jit - estimated_storage_cost_per_unit  # Target price before storage / 存储前的目标价格
-                    conceded_actual_price_to_offer = self._apply_concession(pid, target_quoted_price_for_negotiation,
-                                                                            state, price)  # Apply concession / 应用让步
+                    # target_quoted_price_for_negotiation = max_affordable_raw_price_jit - estimated_storage_cost_per_unit  # Target price before storage / 存储前的目标价格
+                    bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                    aspirational_target_price = self._get_aspirational_target_price(
+                        pid=pid,
+                        p_bottom_line=bottom_line_price,
+                        rel_time=state.relative_time if state else 0.0,
+                    )
+                    target_quoted_price_for_negotiation = aspirational_target_price
+                    conceded_actual_price_to_offer = self._calc_conceded_price(pid, target_quoted_price_for_negotiation,
+                                                                               state, price)  # Apply concession / 应用让步
                     # Determine quantity for counter: original if some headroom, or min of original/headroom
                     # 确定还价数量：如果有空间则为原始数量，否则为原始数量/空间的最小值
                     qty_for_counter = qty_original if accept_qty_int > 0 else min(qty_original,
@@ -1264,7 +1964,7 @@ class LitaAgentY(StdSyncAgent):
             # Determine if price is "cheap" based on market average and discount factor
             # 根据市场平均价和折扣因子确定价格是否“便宜”
             cheap_threshold = (
-                                  self._market_material_price_avg if self._market_material_price_avg > 0 else price * 1.5) * self.cheap_price_discount  # Fallback if no market avg / 如果没有市场平均价则回退
+                                  self._market_material_price_avg if self._market_material_price_avg > 0 else price * 1.5) * self.bargain_threshold  # Fallback if no market avg / 如果没有市场平均价则回退
             price_is_cheap = (price <= cheap_threshold)
 
             # Calculate procurement limit and headroom, adjusted by inventory health
@@ -1299,21 +1999,21 @@ class LitaAgentY(StdSyncAgent):
             accept_qty = min(qty, remaining_headroom_for_t)
             accept_qty_int = int(round(accept_qty))
 
-            # log_prefix = f"🏭 Day {self.awi.current_step} ({self.id}) OptionalSupply Offer from {pid} (Q:{qty_original} P:{price:.2f} T:{t}): InvHealth={inventory_health}, AllowanceFactor={optional_procurement_allowance_factor:.2f} " # Removed
-            # log_details = f"PriceIsCheap={price_is_cheap} (Threshold={cheap_threshold:.2f}). Headroom={remaining_headroom_for_t:.1f}, AcceptableQty={accept_qty_int}." # Removed
+            log_prefix = f"🏭 Day {self.awi.current_step} ({self.id}) OptionalSupply Offer from {pid} (Q:{qty_original} P:{price:.2f} T:{t}): InvHealth={inventory_health}, AllowanceFactor={optional_procurement_allowance_factor:.2f} "
+            log_details = f"PriceIsCheap={price_is_cheap} (Threshold={cheap_threshold:.2f}). Headroom={remaining_headroom_for_t:.1f}, AcceptableQty={accept_qty_int}."
 
             if accept_qty_int > 0 and price_is_cheap:  # If can accept some and price is cheap / 如果可以接受一些且价格便宜
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)  # Accept original offer / 接受原始报价
                 accepted_quantities_for_optional_this_call[
                     t] += accept_qty_int  # Update accepted for this call / 更新此调用中已接受的数量
             else:  # Cannot accept or price not cheap enough / 无法接受或价格不够便宜
-                # rejection_reason = "" # Removed
-                # if accept_qty_int <= 0: rejection_reason += "NoHeadroomOrZeroAcceptQty;" # Removed
-                # if not price_is_cheap: rejection_reason += "PriceNotCheap;" # Removed
+                rejection_reason = ""
+                if accept_qty_int <= 0: rejection_reason += "NoHeadroomOrZeroAcceptQty;"
+                if not price_is_cheap: rejection_reason += "PriceNotCheap;"
 
                 if not price_is_cheap:  # If price is not cheap, try to negotiate to cheap threshold / 如果价格不便宜，尝试谈判至便宜阈值
-                    conceded_price = self._apply_concession(pid, cheap_threshold, state,
-                                                            price)  # Apply concession / 应用让步
+                    conceded_price = self._calc_conceded_price(pid, cheap_threshold, state,
+                                                               price)  # Apply concession / 应用让步
                     counter_offer_tuple = self._pareto_counter_offer(pid, qty_original, t, conceded_price, state)
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_tuple)
                 else:  # No headroom, reject outright / 没有空间，直接拒绝
@@ -1354,14 +2054,15 @@ class LitaAgentY(StdSyncAgent):
 
             # Estimated raw materials available at the start of day 't' (for production on day 't')
             # 第 't' 天开始时可用的预估原材料（用于第 't' 天的生产）
-            materials_available_at_start_of_day_t = self.im.get_inventory_summary(t, MaterialType.RAW).get(
-                'estimated_available', 0)
+            # materials_available_at_start_of_day_t = self.im.get_inventory_summary(t, MaterialType.RAW).get(
+            #     'estimated_available', 0)
 
             # Maximum quantity we can produce for THIS offer on day 't'
             # considering both capacity and materials available specifically for production on day 't'.
             # 我们可以在第 't' 天为这个特定报价生产的最大数量，
             # 同时考虑专门用于第 't' 天生产的产能和可用材料。
-            max_producible_for_offer_on_day_t = min(available_capacity_on_day_t, materials_available_at_start_of_day_t)
+            # max_producible_for_offer_on_day_t = min(available_capacity_on_day_t, materials_available_at_start_of_day_t)
+            max_producible_for_offer_on_day_t = available_capacity_on_day_t
 
             if qty > max_producible_for_offer_on_day_t:  # If offered quantity exceeds what we can produce / 如果报价数量超过我们的生产能力
                 available_qty_for_offer = int(max_producible_for_offer_on_day_t)
@@ -1384,23 +2085,28 @@ class LitaAgentY(StdSyncAgent):
             avg_raw_cost = self.get_avg_raw_cost_fallback(self.awi.current_step,
                                                           pid)  # Estimated raw material cost / 估算的原材料成本
             unit_cost = avg_raw_cost + self.im.processing_cost  # Total unit cost / 总单位成本
-            current_min_margin_for_calc = self.min_profit_margin  # Base profit margin / 基础利润率
-            # reason_log_parts = [f"BaseMinMargin: {current_min_margin_for_calc:.3f}"] # Removed
+            current_min_margin_for_calc = self.min_profit_ratio  # Base profit margin / 基础利润率
+            reason_log_parts = [f"BaseMinMargin: {current_min_margin_for_calc:.3f}"]
 
             # Increase margin if capacity is tight for the delivery day and this quantity
             # 如果交货日期的产能因这个数量而紧张，则提高利润率
             if self._is_production_capacity_tight(t, qty):  # Pass qty of current offer / 传递当前报价的数量
                 current_min_margin_for_calc += self.capacity_tight_margin_increase
-                # reason_log_parts.append(f"CapacityTight! AdjustedMinMargin: {current_min_margin_for_calc:.3f}") # Removed
+                reason_log_parts.append(f"CapacityTight! AdjustedMinMargin: {current_min_margin_for_calc:.3f}")
 
             min_sell_price = unit_cost * (1 + current_min_margin_for_calc)  # Minimum acceptable selling price / 最低可接受售价
 
             if price >= min_sell_price:  # If offer price is profitable / 如果报价价格有利可图
                 res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)  # Accept the offer / 接受报价
             else:  # Price not profitable, try to counter / 价格无利可图，尝试还价
-                target_price_for_counter = min_sell_price  # Counter with our minimum acceptable price / 以我们的最低可接受价格还价
-                conceded_price = self._apply_concession(pid, target_price_for_counter, state,
-                                                        price)  # Apply concession logic / 应用让步逻辑
+                aspirational_target_price = self._get_aspirational_target_price(
+                    pid=pid,
+                    p_bottom_line=min_sell_price,
+                    rel_time=state.relative_time if state else 0.0,
+                )
+                target_price_for_counter = aspirational_target_price
+                conceded_price = self._calc_conceded_price(pid, target_price_for_counter, state,
+                                                           price)  # Apply concession logic / 应用让步逻辑
                 counter_offer = self._pareto_counter_offer(pid, qty, t, conceded_price,
                                                            state)  # Generate Pareto-aware counter / 生成帕累托意识还价
                 res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
@@ -1419,8 +2125,6 @@ class LitaAgentY(StdSyncAgent):
                 return p
         return "unknown_partner"  # Should ideally not happen / 理想情况下不应发生
 
-    # Modified in Step 7 (Turn 20)
-    # 在步骤7 (轮次20) 修改
     def on_negotiation_failure(
             self,
             partners: List[str],
@@ -1429,15 +2133,17 @@ class LitaAgentY(StdSyncAgent):
             state: SAOState,
     ) -> None:
         """Called when a negotiation fails."""
-        """在谈判失败时调用。"""
-        for pid in partners:
-            if pid == self.id:  # Skip self / 跳过自己
+        for pid_idx, pid in enumerate(partners):  # partners is a list of opponent IDs
+            if pid == self.id:
                 continue
-            if self._is_consumer(pid):  # It's a sales negotiation / 这是销售谈判
-                self._sales_failures_since_margin_update += 1  # Increment failure counter for dynamic margin adjustment / 增加失败计数器以进行动态利润率调整
 
-            # Update partner statistics for failed negotiation
-            # 更新伙伴的失败谈判统计数据
+            is_partner_supplier = self._is_supplier(pid)
+
+            if self._is_consumer(pid):
+                self._sales_failures_since_margin_update += 1
+            elif is_partner_supplier:  # It's a supply negotiation that failed
+                self._supply_negotiations_concluded_today += 1
+
             stats = self.partner_stats.setdefault(
                 pid,
                 {"avg_price": 0.0, "price_M2": 0.0, "contracts": 0, "success": 0},
@@ -1445,11 +2151,8 @@ class LitaAgentY(StdSyncAgent):
             stats["contracts"] += 1  # Increment total negotiations / 增加总谈判次数
             last_price = self._last_partner_offer.get(pid)  # Get opponent's last offered price / 获取对手的最新报价价格
             if last_price is not None:
-                self._update_acceptance_model(pid, last_price,
-                                              False)  # Update opponent model with rejection / 用拒绝更新对手模型
+                self._update_acceptance_model(pid, last_price, False)
 
-    # Modified in Step 7 (Turn 20)
-    # 在步骤7 (轮次20) 修改
     def on_negotiation_success(self, contract: Contract, mechanism: StdAWI) -> None:
         """Called when a negotiation succeeds and a contract is formed."""
         """在谈判成功并形成合同时调用。"""
@@ -1458,9 +2161,12 @@ class LitaAgentY(StdSyncAgent):
         if partner == "unknown_partner":  # Safety check / 安全检查
             return
 
-        is_supply = partner in self.awi.my_suppliers  # Check if it's a supply contract / 检查是否为供应合同
-        if not is_supply:  # If it's a sales contract / 如果是销售合同
-            self._sales_successes_since_margin_update += 1  # Increment success counter for dynamic margin / 增加成功计数器以进行动态利润率调整
+        is_supply = partner in self.awi.my_suppliers
+        if not is_supply:
+            self._sales_successes_since_margin_update += 1
+        else:  # It's a supply contract that succeeded
+            self._supply_negotiations_succeeded_today += 1
+            self._supply_negotiations_concluded_today += 1
 
         im_type = IMContractType.SUPPLY if is_supply else IMContractType.DEMAND
         mat_type = MaterialType.RAW if is_supply else MaterialType.PRODUCT
@@ -1506,230 +2212,20 @@ class LitaAgentY(StdSyncAgent):
         elif not is_supply and agreement["time"] == self.awi.current_step:  # If sale delivered today / 如果销售今日交付
             self.sales_completed[self.awi.current_step] += agreement["quantity"]
 
-    # Added from Step 8 (Turn 24), logging improved in Step 11 (Turn 37)
-    # 从步骤8 (轮次24) 添加, 日志在步骤11 (轮次37) 改进
-    def on_contracts_finalized(self, signed: List[Contract], cancelled: List[Contract],
-                               rejected: List[Contract]) -> None:
-        """Called when contracts are finalized (signed, cancelled, or rejected at signing stage)."""
-        """在合同最终确定（在签署阶段签署、取消或拒绝）时调用。"""
-        super().on_contracts_finalized(signed, cancelled, rejected)  # Call parent method / 调用父方法
-        # current_day = self.awi.current_step  # Removed, not used without print
-
-        if not self.im:  # IM not available / IM不可用
-            return
-
-        # If any contracts were cancelled at the signing stage, void them in the IM
-        # 如果在签署阶段有任何合同被取消，则在IM中将其作废
-        for contract in cancelled:
-            self.im.void_negotiated_contract(contract.id)  # Tell IM to void /告知IM作废
-
-    # ------------------------------------------------------------------
-    # 🌟 POST-NEGOTIATION SIGNING PHASE
-    # 🌟 谈判后签署阶段
-    # ------------------------------------------------------------------
-    # Method from Step 2 (Turn 17), modified Step 6 (Turn 19), logging improved Step 11 (Turn 37)
-    # 方法来自步骤2 (轮次17), 在步骤6 (轮次19) 修改, 日志在步骤11 (轮次37) 改进
-    def sign_all_contracts(self, contracts: List[Contract]) -> List[Contract]:
-        """Decides which negotiated contracts to sign based on profitability, capacity, and cash flow."""
-        """根据盈利能力、产能和现金流决定签署哪些已谈判的合同。"""
-        if self.im is None:  # IM not available, sign all as a fallback / IM不可用，作为回退签署所有合同
-            return contracts
-
-        pending_sales_contracts_data: List[Dict[str, Any]] = []  # To store parsed sales contract data / 存储解析后的销售合同数据
-        pending_procurement_contracts_data: List[
-            Dict[str, Any]] = []  # To store parsed procurement contract data / 存储解析后的采购合同数据
-
-        # Parse all contracts and categorize them
-        # 解析所有合同并对其进行分类
-        for contract_obj in contracts:
-            partner_id = self.get_partner_id(contract_obj)
-            agreement = contract_obj.agreement
-            if not agreement:  # Skip if no agreement details / 如果没有协议详情则跳过
-                continue
-            quantity = agreement.get(QUANTITY, 0)
-            if quantity <= 0:  # Skip if quantity is invalid / 如果数量无效则跳过
-                continue
-            unit_price = agreement.get(UNIT_PRICE, 0.0)
-            delivery_time = agreement.get(TIME,
-                                          self.awi.current_step)  # Default to today if time missing / 如果缺少时间则默认为今天
-            if self._is_consumer(partner_id):  # Sales contract / 销售合同
-                revenue = quantity * unit_price
-                processing_cost_total = quantity * self.im.processing_cost
-                # Estimate raw material cost for this sale
-                # 估算此次销售的原材料成本
-                raw_material_cost_per_unit = self.get_avg_raw_cost_fallback(self.awi.current_step, partner_id)
-                raw_material_cost_estimate = quantity * raw_material_cost_per_unit
-                storage_cost_estimate = 0.0  # Simplified: assume JIT for sales for now / 简化：目前假设销售为准时制
-                profit = revenue - raw_material_cost_estimate - processing_cost_total - storage_cost_estimate
-                pending_sales_contracts_data.append({
-                    "contract_obj": contract_obj, "partner_id": partner_id, "quantity": quantity,
-                    "price": unit_price, "time": delivery_time, "type": "sale",
-                    "raw_material_cost_estimate": raw_material_cost_estimate,
-                    "processing_cost_total": processing_cost_total, "storage_cost_estimate": storage_cost_estimate,
-                    "profit": profit, "linked_procurements": [],
-                    # To store linked procurements for this sale / 存储与此销售相关的采购
-                    "sufficient_materials": False, "within_capacity": False  # Flags for checks / 用于检查的标志
-                })
-            else:  # Procurement contract / 采购合同
-                expenditure = quantity * unit_price
-                # Estimate storage cost if material is held before use
-                # 估算材料使用前持有的存储成本
-                days_raw_stored_before_use = 1  # Simplified assumption / 简化假设
-                storage_cost_estimate = quantity * self.im.raw_storage_cost * days_raw_stored_before_use
-                cost = expenditure + storage_cost_estimate
-                pending_procurement_contracts_data.append({
-                    "contract_obj": contract_obj, "partner_id": partner_id, "quantity": quantity,
-                    "price": unit_price, "time": delivery_time, "type": "procurement",
-                    "storage_cost_estimate": storage_cost_estimate, "cost": cost, "profit": -cost,
-                    # Profit is negative cost / 利润为负成本
-                    "linked_to_sale": False, "original_quantity": quantity
-                    # Track original quantity for partial use / 跟踪原始数量以供部分使用
-                })
-
-        # Sort sales by profit (descending) and procurements by cost (price then time, ascending)
-        # 按利润（降序）对销售排序，按成本（价格然后时间，升序）对采购排序
-        pending_sales_contracts_data.sort(key=lambda x: x["profit"], reverse=True)
-        available_procurement_contracts_data = [pc.copy() for pc in
-                                                pending_procurement_contracts_data]  # Create copies for modification / 创建副本以供修改
-        available_procurement_contracts_data.sort(
-            key=lambda x: (x["price"], x["time"]))  # Cheapest, earliest first / 最便宜、最早的优先
-
-        candidate_sales_data_list: List[Dict[str, Any]] = []  # Sales contracts that pass initial checks / 通过初步检查的销售合同
-        daily_production_commitment: Dict[int, int] = Counter()  # Track production committed per day / 跟踪每日承诺的生产量
-
-        # Phase 1: Greedily select profitable sales, check capacity and link procurements
-        # 阶段1：贪婪地选择盈利的销售，检查产能并关联采购
-        for s_data in pending_sales_contracts_data:
-            # Check minimum acceptable profit
-            # 检查最低可接受利润
-            min_acceptable_profit = self.min_profit_margin * (s_data["price"] * s_data["quantity"])
-            if s_data["profit"] <= min_acceptable_profit:
-                continue  # Skip if not profitable enough / 如果利润不足则跳过
-
-            s_qty = s_data["quantity"]
-            s_time = s_data["time"]
-
-            # Check production capacity for the delivery day
-            # 检查交货日期的生产能力
-            if daily_production_commitment[s_time] + s_qty > self.im.daily_production_capacity:
-                continue  # Skip if exceeds capacity / 如果超过产能则跳过
-
-            # Check material availability (from stock or linkable procurements)
-            # 检查材料可用性（来自库存或可关联的采购）
-            materials_needed = s_qty
-            secured_from_im_stock = 0
-            temp_linked_procurements_for_this_sale = []  # Store procurements linked to this sale / 存储与此销售相关的采购
-            inv_summary_raw = self.im.get_inventory_summary(s_time,
-                                                            MaterialType.RAW)  # Raw materials available by sale delivery time / 销售交货时可用的原材料
-            available_im_stock = inv_summary_raw.get('estimated_available', 0)
-            if available_im_stock > 0:  # Use existing stock first / 首先使用现有库存
-                take_from_stock = min(materials_needed, available_im_stock)
-                secured_from_im_stock = take_from_stock
-            materials_still_needed = materials_needed - secured_from_im_stock  # Remaining materials needed / 仍需材料
-            secured_from_batch_procurements = 0
-            if materials_still_needed > 0:  # If still need materials, try to link from pending procurements / 如果仍需材料，尝试从待定采购中关联
-                for p_data_item in available_procurement_contracts_data:  # Iterate through available procurements / 遍历可用采购
-                    if p_data_item["time"] <= s_time and p_data_item[
-                        "quantity"] > 0:  # If procurement arrives by sale time and has quantity left / 如果采购在销售时间前到达且仍有数量
-                        if materials_still_needed <= secured_from_batch_procurements: break  # All needed materials secured / 所有所需材料已 확보
-                        take_qty = min(materials_still_needed - secured_from_batch_procurements,
-                                       p_data_item["quantity"])  # Take needed or available / 取所需或可用数量
-                        temp_linked_procurements_for_this_sale.append({
-                            "contract_obj": p_data_item["contract_obj"],
-                            "quantity_taken": take_qty,
-                            "price": p_data_item["price"]
-                        })
-                        secured_from_batch_procurements += take_qty
-            # If all materials can be secured (stock + linked procurements)
-            # 如果所有材料都可以 확보（库存 + 关联采购）
-            if (secured_from_im_stock + secured_from_batch_procurements) >= materials_needed:
-                s_data["sufficient_materials"] = True
-                s_data["within_capacity"] = True
-                s_data[
-                    "linked_procurements"] = temp_linked_procurements_for_this_sale  # Save linked procurements / 保存关联的采购
-                candidate_sales_data_list.append(s_data)  # Add to candidates / 添加到候选列表
-                daily_production_commitment[s_time] += s_qty  # Commit capacity / 承诺产能
-                # Reduce quantity from linked procurements in the master list
-                # 从主列表中的关联采购中减少数量
-                for linked_p_info_commit in temp_linked_procurements_for_this_sale:
-                    for p_master_item in available_procurement_contracts_data:
-                        if p_master_item["contract_obj"].id == linked_p_info_commit["contract_obj"].id:
-                            p_master_item["quantity"] -= linked_p_info_commit[
-                                "quantity_taken"]  # Reduce available quantity / 减少可用数量
-                            p_master_item["linked_to_sale"] = True  # Mark as linked / 标记为已关联
-                            break
-
-        # Sort candidates by profit (ascending) for cash flow check (remove least profitable first)
-        # 按利润（升序）对候选进行排序以进行现金流检查（首先移除利润最低的）
-        current_selected_sales_data = sorted(candidate_sales_data_list, key=lambda x: x["profit"])
-
-        # Phase 2: Check cash flow constraint, remove least profitable sales if necessary
-        # 阶段2：检查现金流约束，如有必要则移除利润最低的销售
-        while True:
-            if not current_selected_sales_data:  # No sales left to check / 没有剩余销售可检查
-                break
-            total_expected_revenue = sum(s_d["quantity"] * s_d["price"] for s_d in current_selected_sales_data)
-            # Collect unique procurement contracts linked to current sales selection
-            # 收集与当前销售选择相关联的唯一采购合同
-            unique_procurements_for_current_sales = {}
-            for s_d in current_selected_sales_data:
-                for linked_p_info in s_d["linked_procurements"]:
-                    proc_contract = linked_p_info["contract_obj"]
-                    if proc_contract.id not in unique_procurements_for_current_sales:
-                        unique_procurements_for_current_sales[proc_contract.id] = proc_contract
-            # Calculate total cost of these unique procurements
-            # 计算这些唯一采购的总成本
-            total_cost_of_linked_procurement = sum(
-                p_c.agreement[QUANTITY] * p_c.agreement[UNIT_PRICE]
-                for p_c in unique_procurements_for_current_sales.values()
-            )
-            # Allowed procurement cost based on revenue and cash flow limit percentage
-            # 基于收入和现金流限制百分比的允许采购成本
-            allowed_procurement_cost = total_expected_revenue * self.procurement_cash_flow_limit_percent
-            if total_cost_of_linked_procurement <= allowed_procurement_cost:  # Cash flow OK / 现金流正常
-                break  # Stop removing sales / 停止移除销售
-            # Cash flow limit exceeded, remove the least profitable sale and recheck
-            # 现金流限制超出，移除利润最低的销售并重新检查
-            # descoped_sale_data = current_selected_sales_data.pop(0)  # Remove least profitable / 移除利润最低的 # Removed print
-            current_selected_sales_data.pop(0)
-            if not current_selected_sales_data:  # All sales removed / 所有销售均已移除
-                break
-
-        # Final list of contracts to sign
-        # 最终要签署的合同列表
-        final_signed_contracts_list: List[Contract] = []
-        final_sales_contract_ids = set()  # Track signed sales to avoid duplicates / 跟踪已签署的销售以避免重复
-        final_procurement_contract_ids = set()  # Track signed procurements / 跟踪已签署的采购
-        for s_d in current_selected_sales_data:  # Add selected sales / 添加选定的销售
-            final_signed_contracts_list.append(s_d["contract_obj"])
-            final_sales_contract_ids.add(s_d["contract_obj"].id)
-            # Add their linked procurements if not already added
-            # 添加其关联的采购（如果尚未添加）
-            for linked_p_info in s_d["linked_procurements"]:
-                if linked_p_info["contract_obj"].id not in final_procurement_contract_ids:
-                    final_signed_contracts_list.append(linked_p_info["contract_obj"])
-                    final_procurement_contract_ids.add(linked_p_info["contract_obj"].id)
-        # final_total_profit_estimate = sum(s_d["profit"] for s_d in current_selected_sales_data)  # Removed print
-        # final_signed_sales_count = len(final_sales_contract_ids) # Removed print
-        # final_signed_procurement_count = len(final_procurement_contract_ids) # Removed print
-        return final_signed_contracts_list
-
     # ------------------------------------------------------------------
     # 🌟 7. 动态策略调节接口
     # 🌟 7. Dynamic strategy adjustment API
     # ------------------------------------------------------------------
-    # Method from Step 7 (Turn 20), logging improved Step 11 (Turn 37)
-    # 方法来自步骤7 (轮次20), 日志在步骤11 (轮次37) 改进
     def _update_dynamic_profit_margin_parameters(self) -> None:
-        """Dynamically adjusts `min_profit_margin` based on inventory, demand, game stage, and sales conversion."""
-        """根据库存、需求、游戏阶段和销售转化率动态调整 `min_profit_margin`。"""
+        """Dynamically adjusts `min_profit_ratio` based on inventory, demand, game stage, and sales conversion."""
+        """根据库存、需求、游戏阶段和销售转化率动态调整 `min_profit_ratio`。"""
         if not self.im: return  # IM not available / IM不可用
         current_day = self.awi.current_step
         total_days = self.awi.n_steps
         if total_days == 0: return  # Avoid division by zero / 避免除零
 
-        new_min_profit_margin = self.initial_min_profit_margin  # Start with initial base margin / 从初始基础利润率开始
-        # reason_parts = [f"Base: {new_min_profit_margin:.3f}"]  # Removed
+        new_min_profit_ratio = self.initial_min_profit_ratio  # Start with initial base margin / 从初始基础利润率开始
+        reason_parts = [f"Base: {new_min_profit_ratio:.3f}"]  # For logging reasons for change / 用于记录更改原因
 
         # Get current product inventory and estimate future product demand
         # 获取当前产品库存并估算未来产品需求
@@ -1742,152 +2238,165 @@ class LitaAgentY(StdSyncAgent):
             for contract_detail in self.im.get_pending_contracts(is_supply=False,
                                                                  day=check_day):  # Sum pending sales / 汇总待定销售
                 future_total_product_demand += contract_detail.quantity
-        # reason_parts.append(f"InvProd: {current_product_inventory}, FutProdDemand(5d): {future_total_product_demand}") # Removed
+        reason_parts.append(f"InvProd: {current_product_inventory}, FutProdDemand(5d): {future_total_product_demand}")
 
         # Rule A: Adjust margin based on inventory vs demand
         # 规则A：根据库存与需求调整利润率
-        # rule_a_applied = False # Removed
+        rule_a_applied = False
         if current_product_inventory == 0 and future_total_product_demand == 0:  # No stock, no demand / 没有库存，没有需求
-            # reason_parts.append("RuleA: No stock & no immediate demand, using base.") # Removed
-            # rule_a_applied = True # Removed
-            pass # Keep base
+            reason_parts.append("RuleA: No stock & no immediate demand, using base.")
+            rule_a_applied = True
         elif future_total_product_demand > 0 and current_product_inventory > future_total_product_demand * 2.0:  # Very high inventory / 库存非常高
-            new_min_profit_margin = 0.05  # Lower margin to sell more / 降低利润率以销售更多
-            # reason_parts.append(f"RuleA: High Inv vs Demand (>2x) -> set to {new_min_profit_margin:.3f}") # Removed
-            # rule_a_applied = True # Removed
+            new_min_profit_ratio = 0.05  # Lower margin to sell more / 降低利润率以销售更多
+            reason_parts.append(f"RuleA: High Inv vs Demand (>2x) -> set to {new_min_profit_ratio:.3f}")
+            rule_a_applied = True
         elif future_total_product_demand > 0 and current_product_inventory > future_total_product_demand * 1.0:  # Moderately high inventory / 库存中等偏高
-            new_min_profit_margin = 0.07
-            # reason_parts.append(f"RuleA: Med Inv vs Demand (>1x) -> set to {new_min_profit_margin:.3f}") # Removed
-            # rule_a_applied = True # Removed
+            new_min_profit_ratio = 0.07
+            reason_parts.append(f"RuleA: Med Inv vs Demand (>1x) -> set to {new_min_profit_ratio:.3f}")
+            rule_a_applied = True
         elif future_total_product_demand == 0 and current_product_inventory > self.im.daily_production_capacity * 1.0:  # No demand, but more than 1 day's production in stock / 没有需求，但库存超过1天的产量
-            new_min_profit_margin = 0.06
-            # reason_parts.append(f"RuleA: No Demand & Inv > 1 day prod -> set to {new_min_profit_margin:.3f}") # Removed
-            # rule_a_applied = True # Removed
-        # if not rule_a_applied:  # Default if no specific condition met / 如果没有满足特定条件则为默认 # Removed
-            # reason_parts.append("RuleA: Defaulted (no specific high/low inv condition met).") # Removed
+            new_min_profit_ratio = 0.06
+            reason_parts.append(f"RuleA: No Demand & Inv > 1 day prod -> set to {new_min_profit_ratio:.3f}")
+            rule_a_applied = True
+        if not rule_a_applied:  # Default if no specific condition met / 如果没有满足特定条件则为默认
+            reason_parts.append("RuleA: Defaulted (no specific high/low inv condition met).")
 
-        initial_margin_after_rule_a = new_min_profit_margin  # Margin after Rule A / 规则A后的利润率
+        initial_margin_after_rule_a = new_min_profit_ratio  # Margin after Rule A / 规则A后的利润率
 
         # Rule B: Further adjust if inventory is low relative to demand or capacity
         # 规则B：如果库存相对于需求或产能较低，则进一步调整
-        # rule_b_applied = False # Removed
+        rule_b_applied = False
         if future_total_product_demand > 0 and current_product_inventory < future_total_product_demand * 0.5:  # Low inventory vs demand / 库存相对于需求较低
-            new_min_profit_margin = max(initial_margin_after_rule_a,
-                                        0.15)  # Increase margin if stock is scarce / 如果库存稀缺则提高利润率
-            # if abs(new_min_profit_margin - initial_margin_after_rule_a) > 1e-5 : reason_parts.append(f"RuleB: Low Inv vs Demand (<0.5x) -> max with 0.15 -> {new_min_profit_margin:.3f}") # Removed
-            # rule_b_applied = True # Removed
+            new_min_profit_ratio = max(initial_margin_after_rule_a,
+                                       0.15)  # Increase margin if stock is scarce / 如果库存稀缺则提高利润率
+            if abs(new_min_profit_ratio - initial_margin_after_rule_a) > 1e-5: reason_parts.append(
+                f"RuleB: Low Inv vs Demand (<0.5x) -> max with 0.15 -> {new_min_profit_ratio:.3f}")
+            rule_b_applied = True
         elif current_product_inventory < self.im.daily_production_capacity * 0.5:  # Low inventory vs production capacity / 库存相对于生产能力较低
-            new_min_profit_margin = max(initial_margin_after_rule_a, 0.12)
-            # if abs(new_min_profit_margin - initial_margin_after_rule_a) > 1e-5 : reason_parts.append(f"RuleB: Low Inv vs Capacity (<0.5 day prod) -> max with 0.12 -> {new_min_profit_margin:.3f}") # Removed
-            # rule_b_applied = True # Removed
-        # if not rule_b_applied and abs(initial_margin_after_rule_a - new_min_profit_margin) < 1e-5 : # If Rule B didn't change anything / 如果规则B没有改变任何东西 # Removed
-            # pass  # No specific log needed if no change / 如果没有变化则不需要特定日志 # Removed
+            new_min_profit_ratio = max(initial_margin_after_rule_a, 0.12)
+            if abs(new_min_profit_ratio - initial_margin_after_rule_a) > 1e-5: reason_parts.append(
+                f"RuleB: Low Inv vs Capacity (<0.5 day prod) -> max with 0.12 -> {new_min_profit_ratio:.3f}")
+            rule_b_applied = True
+        if not rule_b_applied and abs(
+                initial_margin_after_rule_a - new_min_profit_ratio) < 1e-5:  # If Rule B didn't change anything / 如果规则B没有改变任何东西
+            pass  # No specific log needed if no change / 如果没有变化则不需要特定日志
 
-        initial_margin_after_rule_b = new_min_profit_margin  # Margin after Rule B / 规则B后的利润率
+        initial_margin_after_rule_b = new_min_profit_ratio  # Margin after Rule B / 规则B后的利润率
 
         # Rule C: Adjust margin based on game stage (late game, be more aggressive to sell)
         # 规则C：根据游戏阶段调整利润率（游戏后期，更积极地销售）
-        # rule_c_applied = False # Removed
+        rule_c_applied = False
         if current_day > total_days * 0.85:  # Last 15% of game / 游戏的最后15%
-            new_min_profit_margin = min(initial_margin_after_rule_b, 0.03)  # Very low margin / 非常低的利润率
-            # if abs(new_min_profit_margin - initial_margin_after_rule_b) > 1e-5 : reason_parts.append(f"RuleC: End Game (Last 15%) -> min with 0.03 -> {new_min_profit_margin:.3f}") # Removed
-            # rule_c_applied = True # Removed
+            new_min_profit_ratio = min(initial_margin_after_rule_b, 0.03)  # Very low margin / 非常低的利润率
+            if abs(new_min_profit_ratio - initial_margin_after_rule_b) > 1e-5: reason_parts.append(
+                f"RuleC: End Game (Last 15%) -> min with 0.03 -> {new_min_profit_ratio:.3f}")
+            rule_c_applied = True
         elif current_day > total_days * 0.6:  # Late mid-game (>60%) / 游戏中后期 (>60%)
-            new_min_profit_margin = min(initial_margin_after_rule_b, 0.08)
-            # if abs(new_min_profit_margin - initial_margin_after_rule_b) > 1e-5 : reason_parts.append(f"RuleC: Late Mid-Game (>60%) -> min with 0.08 -> {new_min_profit_margin:.3f}") # Removed
-            # rule_c_applied = True # Removed
-        # if not rule_c_applied and abs(initial_margin_after_rule_b - new_min_profit_margin) < 1e-5: # If Rule C didn't change anything / 如果规则C没有改变任何东西 # Removed
-            # pass  # No specific log needed if no change / 如果没有变化则不需要特定日志 # Removed
+            new_min_profit_ratio = min(initial_margin_after_rule_b, 0.08)
+            if abs(new_min_profit_ratio - initial_margin_after_rule_b) > 1e-5: reason_parts.append(
+                f"RuleC: Late Mid-Game (>60%) -> min with 0.08 -> {new_min_profit_ratio:.3f}")
+            rule_c_applied = True
+        if not rule_c_applied and abs(
+                initial_margin_after_rule_b - new_min_profit_ratio) < 1e-5:  # If Rule C didn't change anything / 如果规则C没有改变任何东西
+            pass  # No specific log needed if no change / 如果没有变化则不需要特定日志
 
         # Rule D: Adaptive adjustment based on recent sales conversion rate
         # 规则D：根据最近的销售转化率进行自适应调整
         # Adjust margin slightly up for successes, down for failures (every 5 successes/each failure)
         # 成功则略微提高利润率，失败则降低（每5次成功/每次失败）
         margin_adjustment_from_conversion = (
-                                                        self._sales_successes_since_margin_update // 5) * 0.005 - self._sales_failures_since_margin_update * 0.005
+                                                    self._sales_successes_since_margin_update // 5) * 0.005 - self._sales_failures_since_margin_update * 0.005
         if margin_adjustment_from_conversion != 0:
-            # current_margin_before_adaptive = new_min_profit_margin # Removed
-            new_min_profit_margin += margin_adjustment_from_conversion
-            # reason_parts.append(f"RuleD: Adaptive adj: {margin_adjustment_from_conversion:.4f} (S:{self._sales_successes_since_margin_update},F:{self._sales_failures_since_margin_update}) Cur->New: {current_margin_before_adaptive:.3f}->{new_min_profit_margin:.3f}") # Removed
+            current_margin_before_adaptive = new_min_profit_ratio
+            new_min_profit_ratio += margin_adjustment_from_conversion
+            reason_parts.append(
+                f"RuleD: Adaptive adj: {margin_adjustment_from_conversion:.4f} (S:{self._sales_successes_since_margin_update},F:{self._sales_failures_since_margin_update}) Cur->New: {current_margin_before_adaptive:.3f}->{new_min_profit_ratio:.3f}")
         self._sales_successes_since_margin_update = 0  # Reset counters / 重置计数器
         self._sales_failures_since_margin_update = 0
 
         # Final clamping of the profit margin
         # 最终限制利润率范围
-        final_new_min_profit_margin = max(0.02,
-                                          min(0.25, new_min_profit_margin))  # Clamp between 2% and 25% / 限制在2%和25%之间
-        # if abs(final_new_min_profit_margin - new_min_profit_margin) > 1e-5 : # Log if clamped / 如果被限制则记录日志 # Removed
-            # reason_parts.append(f"Clamped from {new_min_profit_margin:.3f} to {final_new_min_profit_margin:.3f}") # Removed
+        final_new_min_profit_ratio = max(0.02,
+                                         min(0.25, new_min_profit_ratio))  # Clamp between 2% and 25% / 限制在2%和25%之间
+        if abs(final_new_min_profit_ratio - new_min_profit_ratio) > 1e-5:  # Log if clamped / 如果被限制则记录日志
+            reason_parts.append(f"Clamped from {new_min_profit_ratio:.3f} to {final_new_min_profit_ratio:.3f}")
 
         # Apply the new margin if it has changed significantly
         # 如果利润率变化显著则应用新的利润率
-        if abs(self.min_profit_margin - final_new_min_profit_margin) > 1e-4:  # Threshold for change / 变化阈值
-            # old_margin = self.min_profit_margin # Removed
-            self.update_profit_strategy(min_profit_margin=final_new_min_profit_margin)
-        # elif os.path.exists("env.test"):  # Log even if not changed, for transparency / 即使未更改也记录日志，以提高透明度 # Removed
-            # print(f"🔎 Day {current_day} ({self.id}): min_profit_margin maintained at {self.min_profit_margin:.3f}. Evaluated Reasons: {' | '.join(reason_parts)}") # Removed
+        if abs(self.min_profit_ratio - final_new_min_profit_ratio) > 1e-4:  # Threshold for change / 变化阈值
+            old_margin = self.min_profit_ratio
+            self.update_profit_strategy(min_profit_ratio=final_new_min_profit_ratio)
 
     def update_profit_strategy(
-            self, *, min_profit_margin: float | None = None, cheap_price_discount: float | None = None
+            self, *, min_profit_ratio: float | None = None, bargain_threshold: float | None = None
     ) -> None:
         """Allows external update of profit strategy parameters."""
         """允许外部更新利润策略参数。"""
-        if min_profit_margin is not None:
-            self.min_profit_margin = min_profit_margin
-        if cheap_price_discount is not None:
-            self.cheap_price_discount = cheap_price_discount
+        if min_profit_ratio is not None:
+            self.min_profit_ratio = min_profit_ratio
+        if bargain_threshold is not None:
+            self.bargain_threshold = bargain_threshold
+
+    def _update_dynamic_overprocurement_factors(self) -> None:
+        """Dynamically adjusts overprocurement factors based on recent supply negotiation success."""
+        """根据近期的供应谈判成功率动态调整超采购因子。"""
+        if not self._rolling_supply_negotiations_concluded:  # Not enough data yet / 数据不足
+            return
+
+        total_concluded_in_window = sum(self._rolling_supply_negotiations_concluded)
+        total_succeeded_in_window = sum(self._rolling_supply_negotiations_succeeded)
+
+        if total_concluded_in_window == 0:  # No supply negotiations in the window / 窗口期内无供应谈判
+            # Optionally, revert to default or make no change
+            # self.h.emergency_overprocurement_factor = self.initial_emergency_op_factor
+            # self.h.planned_overprocurement_factor = self.initial_planned_op_factor
+            # if os.path.exists("env.test"):
+            return
+
+        supply_success_rate = total_succeeded_in_window / total_concluded_in_window
+        reason_parts = [
+            f"SupplySR({self.h.op_factor_update_window}d): {supply_success_rate:.2f} (S:{total_succeeded_in_window}/C:{total_concluded_in_window})"]
+
+        # Adjust Emergency Overprocurement Factor
+        # 调整紧急超采购因子
+        old_emergency_op = self.h.emergency_overprocurement_factor
+        new_emergency_op = old_emergency_op
+        if supply_success_rate < self.h.op_factor_low_sr_threshold:
+            new_emergency_op += self.h.emergency_op_factor_adj_step
+            reason_parts.append(f"EmergOP: LowSR -> +{self.h.emergency_op_factor_adj_step:.2f}")
+        elif supply_success_rate > self.h.op_factor_high_sr_threshold:
+            new_emergency_op -= self.h.emergency_op_factor_adj_step
+            reason_parts.append(f"EmergOP: HighSR -> -{self.h.emergency_op_factor_adj_step:.2f}")
+
+        self.h.emergency_overprocurement_factor = max(self.h.emergency_op_factor_min,
+                                                      min(self.h.emergency_op_factor_max, new_emergency_op))
+        if abs(self.h.emergency_overprocurement_factor - old_emergency_op) > 1e-4:
+            reason_parts.append(
+                f"EmergOP Final: {self.h.emergency_overprocurement_factor:.3f} (was {old_emergency_op:.3f})")
+
+        # Adjust Planned Overprocurement Factor
+        # 调整计划性超采购因子
+        old_planned_op = self.h.planned_overprocurement_factor
+        new_planned_op = old_planned_op
+        if supply_success_rate < self.h.op_factor_low_sr_threshold:
+            new_planned_op += self.h.planned_op_factor_adj_step
+            reason_parts.append(f"PlanOP: LowSR -> +{self.h.planned_op_factor_adj_step:.2f}")
+        elif supply_success_rate > self.h.op_factor_high_sr_threshold:
+            new_planned_op -= self.h.planned_op_factor_adj_step
+            reason_parts.append(f"PlanOP: HighSR -> -{self.h.planned_op_factor_adj_step:.2f}")
+
+        self.h.planned_overprocurement_factor = max(self.h.planned_op_factor_min,
+                                                    min(self.h.planned_op_factor_max, new_planned_op))
+        if abs(self.h.planned_overprocurement_factor - old_planned_op) > 1e-4:
+            reason_parts.append(f"PlanOP Final: {self.h.planned_overprocurement_factor:.3f} (was {old_planned_op:.3f})")
 
     def decide_with_model(self, obs: Any) -> Any:  # Placeholder for RL model integration / RL模型集成占位符
         """Placeholder for decision making using an RL model."""
         """使用RL模型进行决策的占位符。"""
         return None
 
-    def _print_daily_status_report(self, result) -> None:
-        """输出每日库存、生产和销售状态报告，包括未来预测"""
-        """Outputs a daily status report of inventory, production, and sales, including future forecasts."""
-        # This method is primarily for debugging and can be removed or commented out in production.
-        # 此方法主要用于调试，可以在生产环境中移除或注释掉。
-        pass # Removed all print statements from this method
-
-    # NEW Helper method for inventory health
-    # 新增库存健康状况辅助方法
-    def _get_raw_inventory_health_status(self, current_day: int) -> str:
-        """
-        Estimates raw inventory health.
-        Returns "low", "medium", or "high".
-        估算原材料库存健康状况。
-        返回 "low", "medium", 或 "high"。
-        """
-        if not self.im:
-            return "medium"  # Default if IM not available / 如果IM不可用则为默认值
-
-        current_raw_stock = self.im.get_inventory_summary(current_day, MaterialType.RAW)['current_stock']
-
-        future_horizon = 5
-        estimated_consumption_next_horizon = 0
-        for i in range(1, future_horizon + 1):
-            check_day = current_day + i
-            if check_day >= self.awi.n_steps:
-                break
-            daily_need = self.im.get_total_insufficient(check_day)
-            if daily_need <= 0:
-                daily_need_proxy = self.im.daily_production_capacity * 0.5
-                estimated_consumption_next_horizon += daily_need_proxy
-            else:
-                estimated_consumption_next_horizon += daily_need
-
-        if estimated_consumption_next_horizon == 0 and current_raw_stock > self.im.daily_production_capacity:
-            return "high"
-        if estimated_consumption_next_horizon == 0:
-            return "medium"
-
-        if current_raw_stock < estimated_consumption_next_horizon * 0.4:
-            return "low"
-        elif current_raw_stock > estimated_consumption_next_horizon * 1.5:
-            return "high"
-        else:
-            return "medium"
-
 
 if __name__ == "__main__":
-    pass # Removed print statement
+    if os.path.exists("env.test"):
+        print("模块加载成功，可在竞赛框架中使用 LitaAgentYR。")
+        # Module loaded successfully, LitaAgentYR can be used in the competition framework.

@@ -89,6 +89,7 @@ class InventoryManager:
         """签订一份采购（上游）或销售（下游）合同。
         Sign a supply (upstream) or demand (downstream) contract."""
         # Sign a supply (upstream) or demand (downstream) contract.
+
         if contract.delivery_time < self.current_day:
             return False
         if contract.type == IMContractType.SUPPLY:
@@ -129,7 +130,6 @@ class InventoryManager:
         if found_and_removed:
             # Re-plan production as voiding a contract can change needs
             self.plan_production(self.max_day)  # Use self.max_day for full horizon planning
-
         return found_and_removed
 
     def receive_materials(self) -> List[str]:
@@ -187,7 +187,7 @@ class InventoryManager:
         # [可用于交割的产品]当日真实库存 - 当日至指定日期前一天的交割 + 当日至指定日期的生产计划 Estimated available inventory, = real - future(contracted) until day + production_plan until day
         elif mtype == MaterialType.PRODUCT:
             future_out_inv = sum(c.quantity for c in pending if self.current_day <= c.delivery_time < day)
-            future_prod_plan = sum(self.get_production_plan(prod_day) for prod_day in range(self.current_day, day+1))
+            future_prod_plan = sum(self.get_production_plan(prod_day) for prod_day in range(self.current_day, day + 1))
             total_est = total_qty - future_out_inv + future_prod_plan
         # 预期成本：真实（含存储）+ 未来（仅入库价，不含后续存储） Estimated cost = real (including storage) + future (only inbound price, excluding subsequent storage)
         future_cost = sum(c.price * c.quantity for c in pending if c.delivery_time >= day)
@@ -393,14 +393,14 @@ class InventoryManager:
         )
 
         # 计算每天的需求量（产品交割） Daily demand for product delivery
-        daily_demand = {day: 0 for day in range(self.current_day, up_to_day+1)}
+        daily_demand = {day: 0 for day in range(self.current_day, up_to_day + 1)}
         for contract in demand_contracts:
             day = contract.delivery_time
             if day in daily_demand:
                 daily_demand[day] += int(contract.quantity)
 
         # 计算每天的供应量（原材料到货） Daily supply of raw materials
-        daily_supply = {day: 0 for day in range(self.current_day, up_to_day+1)}
+        daily_supply = {day: 0 for day in range(self.current_day, up_to_day + 1)}
         for contract in supply_contracts:
             day = contract.delivery_time
             if day in daily_supply:
@@ -416,16 +416,13 @@ class InventoryManager:
             future_prod_deliver=daily_demand,
         )
 
-
         # 需要计算的值
         self.production_plan = result["prod_plan"]
-        for day in range(self.current_day, up_to_day+1):
+        for day in range(self.current_day, up_to_day + 1):
             if day not in self.insufficient_raw:
                 self.insufficient_raw[day] = {"daily": 0.0, "total": 0.0}
             self.insufficient_raw[day]["daily"] = result["emergency_raw_demand"].get(day, 0)
             self.insufficient_raw[day]["total"] = result["planned_raw_demand"].get(day, 0)
-
-
 
         return self.production_plan
 
@@ -552,6 +549,68 @@ class InventoryManager:
         # Clean up batches with remaining quantity of 0
         self.product_batches = [b for b in self.product_batches if b.remaining > 0]
 
+    def get_udpp(self, current_day: int, n_steps: int) -> dict[int, int]:
+        """
+        Calculates the unsatisfied daily production plan (UDPP) for all future steps.
+        This method simulates inventory flow day-by-day to determine the actual shortfall.
+
+        为所有未来时间点计算未满足的日生产计划 (UDPP)。
+        此方法通过逐日模拟库存流来确定实际的物料短缺量。
+
+        Args:
+            current_day: The current simulation day. / 当前的模拟日期。
+            n_steps: The total number of steps in the simulation. / 模拟的总天数。
+
+        Returns:
+            A dictionary mapping each future day to its unsatisfied raw material need.
+            一个将未来每一天映射到其未满足的原材料需求的字典。
+        """
+        # 1. Ensure the production plan is up-to-date.
+        # 1. 确保生产计划是基于最新合同的。
+        self.plan_production(self.max_day)
+
+        # 2. Initialization
+        # 2. 初始化
+        udpp = {}
+        inventory_on_hand = self.get_inventory_summary(day=current_day, mtype=MaterialType.RAW)["current_stock"]
+
+        # Extract future deliveries from contracts.
+        # 从合同中提取未来的交货计划。
+        deliveries = {}
+        for contract in self.get_pending_contracts():
+            if contract.type == IMContractType.SUPPLY:
+                day = contract.delivery_time
+                if day >= current_day:
+                    deliveries[day] = deliveries.get(day, 0) + contract.quantity
+
+        # 3. Simulate inventory flow day-by-day.
+        # 3. 逐日模拟库存流。
+        for day in range(current_day, n_steps):
+            # a. Materials are delivered at the beginning of the day.
+            # a. 物料在当天开始时入库。
+            inventory_on_hand += deliveries.get(day, 0)
+
+            # b. Get production demand for the day.
+            # b. 获取当日的生产需求。
+            demand_today = self.production_plan.get(day, 0)
+
+            if demand_today == 0:
+                udpp[day] = 0
+                continue
+
+            # c. Calculate the shortfall for the day (the UDPP).
+            # c. 计算当日的短缺量（即UDPP）。
+            if inventory_on_hand >= demand_today:
+                udpp[day] = 0
+            else:
+                udpp[day] = demand_today - inventory_on_hand
+
+            # d. Update simulated inventory after production.
+            # d. 更新生产后的模拟库存。
+            inventory_on_hand = max(0, inventory_on_hand - demand_today)
+
+        return udpp
+
     def get_production_plan_all(self) -> Dict[int, float]:
         """返回已经排定的生产计划：{day: quantity, ...}"""
         return self.production_plan
@@ -598,7 +657,7 @@ class InventoryManager:
 
         max_prod = self.get_max_possible_production(day)
         planned = sum(
-            self.production_plan.get(d, 0) for d in range(self.current_day, day+1)
+            self.production_plan.get(d, 0) for d in range(self.current_day, day + 1)
         )
         remaining = max_prod - planned
         return max(0.0, remaining)
@@ -829,7 +888,6 @@ class InventoryManager:
             # 添加产品批次
             # Add the product batch to inventory
             im.product_batches.append(batch)
-
         else:
             # 记录原材料不足情况
             # Record the shortage of raw materials
