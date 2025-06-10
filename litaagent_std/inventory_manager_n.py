@@ -587,7 +587,7 @@ class InventoryManager:
         """
         # 1. Ensure the production plan is up-to-date.
         # 1. 确保生产计划是基于最新合同的。
-        self.plan_production()
+        self.plan_production(self.max_day)
 
         # 2. Initialization
         # 2. 初始化
