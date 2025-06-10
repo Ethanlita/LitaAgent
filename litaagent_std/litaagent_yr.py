@@ -1276,6 +1276,8 @@ class LitaAgentYR(StdSyncAgent):
                     conceded_price = self._calc_conceded_price(pid, target_price=self.awi.current_shortfall_penalty, state=state, current_price=offer[UNIT_PRICE])
                     responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
                                                  (emer_counter_offer_quantity[pid], offer[TIME], conceded_price))
+                    countered_quantities["emergency"] += emer_counter_offer_quantity[pid]
+
 
     # --------------------------------------------------------------------------------
         # Section 3: Planned Procurement / 第三部分：计划性采购
@@ -1359,6 +1361,7 @@ class LitaAgentYR(StdSyncAgent):
 
         # --- Planned Counter Pass ---
         # --- 计划性采购 - 还价阶段 ---
+
         # Sort offers by price (cheapest first), then by quantity (largest first)
         # 按价格（最低优先）排序报价，然后按数量（最大优先）排序
         sorted_offers = sorted(offers.items(), key=lambda item: (item[1][UNIT_PRICE], -item[1][QUANTITY]))
@@ -2085,14 +2088,15 @@ class LitaAgentYR(StdSyncAgent):
 
             # Estimated raw materials available at the start of day 't' (for production on day 't')
             # 第 't' 天开始时可用的预估原材料（用于第 't' 天的生产）
-            materials_available_at_start_of_day_t = self.im.get_inventory_summary(t, MaterialType.RAW).get(
-                'estimated_available', 0)
+            # materials_available_at_start_of_day_t = self.im.get_inventory_summary(t, MaterialType.RAW).get(
+            #     'estimated_available', 0)
 
             # Maximum quantity we can produce for THIS offer on day 't'
             # considering both capacity and materials available specifically for production on day 't'.
             # 我们可以在第 't' 天为这个特定报价生产的最大数量，
             # 同时考虑专门用于第 't' 天生产的产能和可用材料。
-            max_producible_for_offer_on_day_t = min(available_capacity_on_day_t, materials_available_at_start_of_day_t)
+            # max_producible_for_offer_on_day_t = min(available_capacity_on_day_t, materials_available_at_start_of_day_t)
+            max_producible_for_offer_on_day_t = available_capacity_on_day_t
 
             if qty > max_producible_for_offer_on_day_t:  # If offered quantity exceeds what we can produce / 如果报价数量超过我们的生产能力
                 available_qty_for_offer = int(max_producible_for_offer_on_day_t)
