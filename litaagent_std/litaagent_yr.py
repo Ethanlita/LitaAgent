@@ -89,6 +89,7 @@ import math
 from collections import Counter, defaultdict  # Added defaultdict / 添加了 defaultdict
 from uuid import uuid4
 
+import numpy as np
 from numpy.random import choice as np_choice  # type: ignore
 
 from scml.std import (
@@ -123,7 +124,7 @@ class HeuristicSettings:
     min_profit_ratio: float = 0.10
     bargain_threshold: float = 0.70
     distribution_ratio_today: float = 1.00
-    concession_curve_power: float = 1.5
+    concession_curve_power: float = 1.25
     capacity_tight_margin_increase: float = 0.07
     cash_flow_limit_ratio: float = 0.75
 
@@ -163,11 +164,25 @@ class HeuristicSettings:
 
     aspirational_decay_rate: float = 3.0  # 期望目标价的衰减指数 (alpha)
 
-    emergency_overprocurement_factor = 0.2
-    planned_overprocurement_factor = 0.15
-    optional_procurement_factor = 1.2
+    emergency_overprocurement_factor: float = 0.5  # Renamed for clarity if needed, but current name is fine
+    planned_overprocurement_factor: float = 0.2   # Renamed for clarity if needed
+    optional_procurement_factor: float = 1.2
 
-    logic_select = "unified"  # unified or legacy, legacy should be deprecated later
+    logic_select: str = "unified"  # unified or legacy, legacy should be deprecated later
+
+    # New settings for dynamic overprocurement factor adjustment
+    # 新增：动态超采购因子调整的参数
+    op_factor_update_window: int = 5  # Days for rolling average / 滚动平均的天数
+    op_factor_low_sr_threshold: float = 0.3  # Low success rate threshold / 低成功率阈值
+    op_factor_high_sr_threshold: float = 0.7 # High success rate threshold / 高成功率阈值
+
+    emergency_op_factor_min: float = 0.0
+    emergency_op_factor_max: float = 0.5 # Max 50% overprocurement for emergency
+    emergency_op_factor_adj_step: float = 0.05
+
+    planned_op_factor_min: float = 0.0
+    planned_op_factor_max: float = 0.4 # Max 40% overprocurement for planned
+    planned_op_factor_adj_step: float = 0.05
 
 DEFAULT_HEURISTICS = HeuristicSettings()
 
@@ -228,27 +243,35 @@ class LitaAgentYR(StdSyncAgent):
             **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.h = heuristics or DEFAULT_HEURISTICS
+        self.h = heuristics or DEFAULT_HEURISTICS # self.h is an instance, so mutable
 
         # —— 参数 ——
         # Parameters
         self.total_insufficient = None
         self.today_insufficient = None
         self.min_profit_ratio = self.h.min_profit_ratio
-        self.initial_min_profit_ratio = self.h.min_profit_ratio
+        self.initial_min_profit_ratio = self.h.min_profit_ratio # Store initial for reference
         self.bargain_threshold = self.h.bargain_threshold
         self.cash_flow_limit_ratio = self.h.cash_flow_limit_ratio
         self.concession_curve_power = self.h.concession_curve_power
         self.capacity_tight_margin_increase = self.h.capacity_tight_margin_increase
 
-        if os.path.exists("env.test"):  # Added from Step 11 / 从步骤11添加
+        # Store initial overprocurement factors for potential reversion or reference
+        # 存储初始超采购因子，用于潜在的恢复或参考
+        self.initial_emergency_op_factor = self.h.emergency_overprocurement_factor
+        self.initial_planned_op_factor = self.h.planned_overprocurement_factor
+
+        if os.path.exists("env.test"):
             print(f"🤖 LitaAgentYR {self.id} initialized with: \n" \
                   f"  min_profit_ratio={self.min_profit_ratio:.3f}, \n" \
                   f"  initial_min_profit_ratio={self.initial_min_profit_ratio:.3f}, \n" \
                   f"  bargain_threshold={self.bargain_threshold:.2f}, \n" \
                   f"  cash_flow_limit_ratio={self.cash_flow_limit_ratio:.2f}, \n" \
                   f"  concession_curve_power={self.concession_curve_power:.2f}, \n" \
-                  f"  capacity_tight_margin_increase={self.capacity_tight_margin_increase:.3f}")
+                  f"  capacity_tight_margin_increase={self.capacity_tight_margin_increase:.3f}, \n" \
+                  f"  emergency_op_factor={self.h.emergency_overprocurement_factor:.2f} (initial: {self.initial_emergency_op_factor:.2f}), \n" \
+                  f"  planned_op_factor={self.h.planned_overprocurement_factor:.2f} (initial: {self.initial_planned_op_factor:.2f})")
+
 
         # —— 运行时变量 ——
         # Runtime Variables
@@ -274,6 +297,15 @@ class LitaAgentYR(StdSyncAgent):
         # 用于动态利润率调整的计数器 (从步骤7添加)
         self._sales_successes_since_margin_update: int = 0
         self._sales_failures_since_margin_update: int = 0
+
+        # New: For dynamic overprocurement factor adjustment
+        # 新增：用于动态超采购因子调整
+        self._rolling_supply_negotiations_concluded: List[int] = []
+        self._rolling_supply_negotiations_succeeded: List[int] = []
+        # self.h.op_factor_update_window is used directly from heuristics
+        self._supply_negotiations_concluded_today: int = 0
+        self._supply_negotiations_succeeded_today: int = 0
+
 
     # ------------------------------------------------------------------
     # 🌟 2. World / 日常回调
@@ -304,8 +336,11 @@ class LitaAgentYR(StdSyncAgent):
         self.sales_completed.setdefault(current_day, 0)
         self.purchase_completed.setdefault(current_day, 0)
 
-        # MODIFIED: 先加入外生协议，再计算需求
-        # MODIFIED: Add exogenous contracts first, then calculate demand
+        # Reset daily counters for overprocurement factor adjustment
+        # 重置用于超采购因子调整的每日计数器
+        self._supply_negotiations_concluded_today = 0
+        self._supply_negotiations_succeeded_today = 0
+
         # 首先将外生协议写入im
         # First, write exogenous contracts into the inventory manager
         if self.awi.is_first_level:
@@ -313,7 +348,7 @@ class LitaAgentYR(StdSyncAgent):
             exogenous_contract_price = self.awi.current_exogenous_input_price
             if exogenous_contract_quantity > 0:  # Added from Step 11 / 从步骤11添加
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_supply"  # More specific name / 更具体的名称
+                exogenous_contract_partner = "simulator_exogenous_supply"
                 exogenous_contract = IMContract(
                     contract_id=exogenous_contract_id,
                     partner_id=exogenous_contract_partner,
@@ -325,16 +360,16 @@ class LitaAgentYR(StdSyncAgent):
                     material_type=MaterialType.RAW
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"):  # Added from Step 11 / 从步骤11添加
+                if os.path.exists("env.test"):
                     print(
                         f"📥 Day {current_day} ({self.id}): Added exogenous SUPPLY contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
 
         elif self.awi.is_last_level:
             exogenous_contract_quantity = self.awi.current_exogenous_output_quantity
             exogenous_contract_price = self.awi.current_exogenous_output_price
-            if exogenous_contract_quantity > 0:  # Added from Step 11 / 从步骤11添加
+            if exogenous_contract_quantity > 0:
                 exogenous_contract_id = str(uuid4())
-                exogenous_contract_partner = "simulator_exogenous_demand"  # More specific name / 更具体的名称
+                exogenous_contract_partner = "simulator_exogenous_demand"
                 exogenous_contract = IMContract(
                     contract_id=exogenous_contract_id,
                     partner_id=exogenous_contract_partner,
@@ -346,7 +381,7 @@ class LitaAgentYR(StdSyncAgent):
                     material_type=MaterialType.PRODUCT
                 )
                 self.im.add_transaction(exogenous_contract)
-                if os.path.exists("env.test"):  # Added from Step 11 / 从步骤11添加
+                if os.path.exists("env.test"):
                     print(
                         f"📤 Day {current_day} ({self.id}): Added exogenous DEMAND contract {exogenous_contract_id} to IM. Qty: {exogenous_contract_quantity}, Price: {exogenous_contract_price}")
 
@@ -354,7 +389,7 @@ class LitaAgentYR(StdSyncAgent):
         # After exogenous contracts are added, then calculate demand
         self.today_insufficient = self.im.get_today_insufficient(current_day)
         self.total_insufficient = self.im.get_total_insufficient(current_day)
-        if os.path.exists("env.test"):  # Added from Step 11 / 从步骤11添加
+        if os.path.exists("env.test"):
             print(
                 f"🌞 Day {current_day} ({self.id}) starting. Today Insufficient Raw: {self.today_insufficient}, Total Insufficient Raw (horizon): {self.total_insufficient} (calculated AFTER exogenous contracts)")
 
@@ -362,6 +397,7 @@ class LitaAgentYR(StdSyncAgent):
         # 更新动态参数 (从步骤4和7添加)
         self._update_dynamic_stockpiling_parameters()
         self._update_dynamic_profit_margin_parameters()
+        self._update_dynamic_overprocurement_factors() # New call / 新增调用
 
     def step(self) -> None:
         """每天结束时调用：执行 IM 的日终操作并刷新市场均价。"""
@@ -379,12 +415,18 @@ class LitaAgentYR(StdSyncAgent):
             self._market_material_price_avg = sum(self._recent_material_prices) / len(self._recent_material_prices)
         if self._recent_product_prices:
             self._market_product_price_avg = sum(self._recent_product_prices) / len(self._recent_product_prices)
-        if os.path.exists("env.test"):  # Added from Step 11 / 从步骤11添加
+        if os.path.exists("env.test"):
             print(
                 f"🌙 Day {self.awi.current_step} ({self.id}) ending. Market Material Avg Price: {self._market_material_price_avg:.2f}, Market Product Avg Price: {self._market_product_price_avg:.2f}. IM is now on day {self.im.current_day}.")
 
-        # 输出每日状态报告
-        # Output daily status report
+        # Update rolling window stats for overprocurement factor adjustment
+        # 更新用于超采购因子调整的滚动窗口统计数据
+        self._rolling_supply_negotiations_concluded.append(self._supply_negotiations_concluded_today)
+        self._rolling_supply_negotiations_succeeded.append(self._supply_negotiations_succeeded_today)
+        if len(self._rolling_supply_negotiations_concluded) > self.h.op_factor_update_window:
+            self._rolling_supply_negotiations_concluded.pop(0)
+            self._rolling_supply_negotiations_succeeded.pop(0)
+
         self._print_daily_status_report(result)
 
     # Method from Step 4 (Turn 15), logging improved in Step 11 (Turn 37)
@@ -1200,14 +1242,23 @@ class LitaAgentYR(StdSyncAgent):
         countered_quantities["emergency"] = 0
         countered_quantities["planned"] = defaultdict(int)
 
+        inventory_health = self._get_raw_inventory_health_status(self.awi.current_step)
+        procurement_aggressiveness_factor = 1.0
+        procurement_inv_price_adjust = 1.0
+        if inventory_health == "low":
+            procurement_aggressiveness_factor = 1.15  # Be more aggressive if inventory is low / 如果库存低则更积极
+            procurement_inv_price_adjust = 0.95 # 接受更低价格
+        elif inventory_health == "high":
+            procurement_aggressiveness_factor = 0.90  # Be more conservative if inventory is high / 如果库存高则更保守
+            procurement_inv_price_adjust = 1.05 # 接受更高价格
 
         emergency_demand = udpp.get(self.awi.current_step, 0)
-        emergency_limit = int(emergency_demand * (1 + self.h.emergency_overprocurement_factor))
+        emergency_limit = int(emergency_demand * (1 + self.h.emergency_overprocurement_factor) * procurement_aggressiveness_factor)
 
         planned_demand = sum(v for k, v in udpp.items() if k > self.awi.current_step)
-        planned_limit = planned_demand * (1 + self.h.planned_overprocurement_factor)
+        planned_limit = planned_demand * (1 + self.h.planned_overprocurement_factor) * procurement_aggressiveness_factor
 
-        optional_limit = planned_demand * self.h.optional_procurement_factor
+        optional_limit = planned_demand * self.h.optional_procurement_factor * procurement_aggressiveness_factor
 
         all_offers_info = [
             (neg_id, outcome, states[neg_id])
@@ -1235,13 +1286,13 @@ class LitaAgentYR(StdSyncAgent):
                     remaining_for_counter.append((neg_id, offer, state))
                     continue
                 # price OK， quantity OK
-                if (offer[UNIT_PRICE] <= self.awi.current_shortfall_penalty * 1.05 and
+                if (offer[UNIT_PRICE] <= self.awi.current_shortfall_penalty * procurement_inv_price_adjust and
                         offer[QUANTITY] <= strict_remaining_need):
                     responses[neg_id] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
                     accepted_quantities["emergency"] += offer[QUANTITY]
                     self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
                 # price OK， quantity little excess in late phase
-                elif offer[UNIT_PRICE] <= self.awi.current_shortfall_penalty * 1.05 and offer[QUANTITY] <= strict_remaining_need * 1.1 and self.get_nmi(neg_id).state.relative_time > 0.8:
+                elif offer[UNIT_PRICE] <= self.awi.current_shortfall_penalty * 1.1 * procurement_inv_price_adjust and offer[QUANTITY] <= strict_remaining_need * 1.1 and self.get_nmi(neg_id).state.relative_time > 0.8:
                     responses[neg_id] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
                     accepted_quantities["emergency"] += offer[QUANTITY]
                     self._consume_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
@@ -1273,7 +1324,7 @@ class LitaAgentYR(StdSyncAgent):
                 emer_counter_offer_quantity = self._distribute_to_partners(pidlist, int(remaining_demand_for_conter * self.h.emergency_overprocurement_factor))
                 for pid, offer, state in partners_to_counter_50:
 
-                    conceded_price = self._calc_conceded_price(pid, target_price=self.awi.current_shortfall_penalty, state=state, current_price=offer[UNIT_PRICE])
+                    conceded_price = self._calc_conceded_price(pid, target_price=self.awi.current_shortfall_penalty * procurement_inv_price_adjust, state=state, current_price=offer[UNIT_PRICE])
                     responses[pid] = SAOResponse(ResponseType.REJECT_OFFER,
                                                  (emer_counter_offer_quantity[pid], offer[TIME], conceded_price))
                     countered_quantities["emergency"] += emer_counter_offer_quantity[pid]
@@ -1348,7 +1399,7 @@ class LitaAgentYR(StdSyncAgent):
 
 
             price_is_acceptable = (
-                        effective_price <= max_affordable_raw_price_jit)  # Is it profitable considering storage? / 考虑存储是否盈利？
+                        effective_price <= max_affordable_raw_price_jit * procurement_inv_price_adjust)  # Is it profitable considering storage? / 考虑存储是否盈利？
 
             # 判断是否超出库存需求 Consider excess inv limit or not
             can_inv_limit_satisfied = self._check_cumulative_udpp(udpp, offer[TIME], offer[QUANTITY])
@@ -1386,7 +1437,7 @@ class LitaAgentYR(StdSyncAgent):
             cumulative_countered_from_t += sum(
                 countered_qty for time, countered_qty in countered_quantities["planned"].items() if time >= offer[TIME])
 
-            if cumulative_countered_from_t > cumulative_need_from_t * (1 + self.h.planned_overprocurement_factor): continue
+            if cumulative_countered_from_t > cumulative_need_from_t * (1 + self.h.planned_overprocurement_factor) * procurement_aggressiveness_factor: continue
 
 
             # 如果交付日没有足够的UDPP了，就停止counter offer / Stop proposing counter-offer if no unsatisfied daily production plan after delivery day
@@ -1443,7 +1494,7 @@ class LitaAgentYR(StdSyncAgent):
             effective_price = price + estimated_storage_cost_per_unit  # Price including storage from partner/ 包括存储的价格
 
             price_is_acceptable = (
-                    effective_price <= max_affordable_raw_price_jit)  # Is it profitable considering storage? / 考虑存储是否盈利？
+                    effective_price <= max_affordable_raw_price_jit * procurement_inv_price_adjust)  # Is it profitable considering storage? / 考虑存储是否盈利？
 
             # Price OK, qty excess
             # 逻辑：提前交货日期以尽可能找到满足的需求，如果找不到足够的需求，则减少交货数量
@@ -1530,7 +1581,7 @@ class LitaAgentYR(StdSyncAgent):
                     p_bottom_line=bottom_line_price,
                     rel_time=state.relative_time if state else 0.0,
                 )
-                target_quoted_price_for_negotiation = aspirational_target_price
+                target_quoted_price_for_negotiation = aspirational_target_price * procurement_inv_price_adjust
                 conceded_price = self._calc_conceded_price(pid, target_price=target_quoted_price_for_negotiation,
                                                            state=state, current_price=offer[UNIT_PRICE])
 
@@ -1616,7 +1667,7 @@ class LitaAgentYR(StdSyncAgent):
                         p_bottom_line=bottom_line_price,
                         rel_time=state.relative_time,
                 )
-                target_quoted_price_for_negotiation = aspirational_target_price
+                target_quoted_price_for_negotiation = aspirational_target_price * procurement_inv_price_adjust
                 conceded_price = self._calc_conceded_price(pid, target_price=target_quoted_price_for_negotiation,
                                                                state=state, current_price=offer[UNIT_PRICE])
                 response_for_pid = responses[pid]
@@ -2151,8 +2202,6 @@ class LitaAgentYR(StdSyncAgent):
             f"⚠️ ({self.id}) Could not determine partner ID for contract {contract.id}, partners: {contract.partners}, my ID: {self.id}")
         return "unknown_partner"  # Should ideally not happen / 理想情况下不应发生
 
-    # Modified in Step 7 (Turn 20)
-    # 在步骤7 (轮次20) 修改
     def on_negotiation_failure(
             self,
             partners: List[str],
@@ -2161,15 +2210,18 @@ class LitaAgentYR(StdSyncAgent):
             state: SAOState,
     ) -> None:
         """Called when a negotiation fails."""
-        """在谈判失败时调用。"""
-        for pid in partners:
-            if pid == self.id:  # Skip self / 跳过自己
+        for pid_idx, pid in enumerate(partners): # partners is a list of opponent IDs
+            if pid == self.id:
                 continue
-            if self._is_consumer(pid):  # It's a sales negotiation / 这是销售谈判
-                self._sales_failures_since_margin_update += 1  # Increment failure counter for dynamic margin adjustment / 增加失败计数器以进行动态利润率调整
 
-            # Update partner statistics for failed negotiation
-            # 更新伙伴的失败谈判统计数据
+            is_partner_supplier = self._is_supplier(pid)
+
+            if self._is_consumer(pid):
+                self._sales_failures_since_margin_update += 1
+            elif is_partner_supplier: # It's a supply negotiation that failed
+                self._supply_negotiations_concluded_today += 1
+
+
             stats = self.partner_stats.setdefault(
                 pid,
                 {"avg_price": 0.0, "price_M2": 0.0, "contracts": 0, "success": 0},
@@ -2177,11 +2229,8 @@ class LitaAgentYR(StdSyncAgent):
             stats["contracts"] += 1  # Increment total negotiations / 增加总谈判次数
             last_price = self._last_partner_offer.get(pid)  # Get opponent's last offered price / 获取对手的最新报价价格
             if last_price is not None:
-                self._update_acceptance_model(pid, last_price,
-                                              False)  # Update opponent model with rejection / 用拒绝更新对手模型
+                self._update_acceptance_model(pid, last_price, False)
 
-    # Modified in Step 7 (Turn 20)
-    # 在步骤7 (轮次20) 修改
     def on_negotiation_success(self, contract: Contract, mechanism: StdAWI) -> None:
         """Called when a negotiation succeeds and a contract is formed."""
         """在谈判成功并形成合同时调用。"""
@@ -2192,9 +2241,13 @@ class LitaAgentYR(StdSyncAgent):
                 f"Error ({self.id}): Could not identify partner for contract {contract.id}. Skipping IM update.")
             return
 
-        is_supply = partner in self.awi.my_suppliers  # Check if it's a supply contract / 检查是否为供应合同
-        if not is_supply:  # If it's a sales contract / 如果是销售合同
-            self._sales_successes_since_margin_update += 1  # Increment success counter for dynamic margin / 增加成功计数器以进行动态利润率调整
+        is_supply = partner in self.awi.my_suppliers
+        if not is_supply:
+            self._sales_successes_since_margin_update += 1
+        else: # It's a supply contract that succeeded
+            self._supply_negotiations_succeeded_today += 1
+            self._supply_negotiations_concluded_today += 1
+
 
         im_type = IMContractType.SUPPLY if is_supply else IMContractType.DEMAND
         mat_type = MaterialType.RAW if is_supply else MaterialType.PRODUCT
@@ -2375,6 +2428,69 @@ class LitaAgentYR(StdSyncAgent):
             self.min_profit_ratio = min_profit_ratio
         if bargain_threshold is not None:
             self.bargain_threshold = bargain_threshold
+
+    def _update_dynamic_overprocurement_factors(self) -> None:
+        """Dynamically adjusts overprocurement factors based on recent supply negotiation success."""
+        """根据近期的供应谈判成功率动态调整超采购因子。"""
+        if not self._rolling_supply_negotiations_concluded:  # Not enough data yet / 数据不足
+            return
+
+        total_concluded_in_window = sum(self._rolling_supply_negotiations_concluded)
+        total_succeeded_in_window = sum(self._rolling_supply_negotiations_succeeded)
+
+        if total_concluded_in_window == 0:  # No supply negotiations in the window / 窗口期内无供应谈判
+            # Optionally, revert to default or make no change
+            # self.h.emergency_overprocurement_factor = self.initial_emergency_op_factor
+            # self.h.planned_overprocurement_factor = self.initial_planned_op_factor
+            # if os.path.exists("env.test"):
+            #     print(f"🔎 Day {self.awi.current_step} ({self.id}): No supply negotiations in window. OP factors unchanged or reverted.")
+            return
+
+        supply_success_rate = total_succeeded_in_window / total_concluded_in_window
+        reason_parts = [
+            f"SupplySR({self.h.op_factor_update_window}d): {supply_success_rate:.2f} (S:{total_succeeded_in_window}/C:{total_concluded_in_window})"]
+
+        # Adjust Emergency Overprocurement Factor
+        # 调整紧急超采购因子
+        old_emergency_op = self.h.emergency_overprocurement_factor
+        new_emergency_op = old_emergency_op
+        if supply_success_rate < self.h.op_factor_low_sr_threshold:
+            new_emergency_op += self.h.emergency_op_factor_adj_step
+            reason_parts.append(f"EmergOP: LowSR -> +{self.h.emergency_op_factor_adj_step:.2f}")
+        elif supply_success_rate > self.h.op_factor_high_sr_threshold:
+            new_emergency_op -= self.h.emergency_op_factor_adj_step
+            reason_parts.append(f"EmergOP: HighSR -> -{self.h.emergency_op_factor_adj_step:.2f}")
+
+        self.h.emergency_overprocurement_factor = max(self.h.emergency_op_factor_min,
+                                                      min(self.h.emergency_op_factor_max, new_emergency_op))
+        if abs(self.h.emergency_overprocurement_factor - old_emergency_op) > 1e-4:
+            reason_parts.append(
+                f"EmergOP Final: {self.h.emergency_overprocurement_factor:.3f} (was {old_emergency_op:.3f})")
+
+        # Adjust Planned Overprocurement Factor
+        # 调整计划性超采购因子
+        old_planned_op = self.h.planned_overprocurement_factor
+        new_planned_op = old_planned_op
+        if supply_success_rate < self.h.op_factor_low_sr_threshold:
+            new_planned_op += self.h.planned_op_factor_adj_step
+            reason_parts.append(f"PlanOP: LowSR -> +{self.h.planned_op_factor_adj_step:.2f}")
+        elif supply_success_rate > self.h.op_factor_high_sr_threshold:
+            new_planned_op -= self.h.planned_op_factor_adj_step
+            reason_parts.append(f"PlanOP: HighSR -> -{self.h.planned_op_factor_adj_step:.2f}")
+
+        self.h.planned_overprocurement_factor = max(self.h.planned_op_factor_min,
+                                                    min(self.h.planned_op_factor_max, new_planned_op))
+        if abs(self.h.planned_overprocurement_factor - old_planned_op) > 1e-4:
+            reason_parts.append(f"PlanOP Final: {self.h.planned_overprocurement_factor:.3f} (was {old_planned_op:.3f})")
+
+        if (abs(self.h.emergency_overprocurement_factor - old_emergency_op) > 1e-4 or \
+            abs(self.h.planned_overprocurement_factor - old_planned_op) > 1e-4) and \
+                os.path.exists("env.test"):
+            print(
+                f"📈 Day {self.awi.current_step} ({self.id}): Overprocurement factors updated. Reasons: {' | '.join(reason_parts)}")
+        elif os.path.exists("env.test") and len(reason_parts) > 1:  # Log even if no change but evaluation happened
+            print(
+                f"🔎 Day {self.awi.current_step} ({self.id}): Overprocurement factors evaluated, no change. Reasons: {' | '.join(reason_parts)}")
 
     def decide_with_model(self, obs: Any) -> Any:  # Placeholder for RL model integration / RL模型集成占位符
         """Placeholder for decision making using an RL model."""
