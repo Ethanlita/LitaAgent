@@ -167,6 +167,10 @@ class HeuristicSettings:
     planned_overprocurement_factor = 0.15
     optional_procurement_factor = 1.2
 
+    min_oversell_factor: float = 0.0
+    max_oversell_factor: float = 0.1
+    base_oversell_factor: float = 0.05
+
     logic_select = "unified"  # unified or legacy, legacy should be deprecated later
 
 DEFAULT_HEURISTICS = HeuristicSettings()
@@ -1525,9 +1529,38 @@ class LitaAgentYR(StdSyncAgent):
             # price not OK, qty OK
             elif not price_is_acceptable and offer[QUANTITY] <= max_qty_acceptable_on_the_day:
                 bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                urgency_adjusted_bottom_line = profitability_bottom_line
+
+                inventory_health = self._get_raw_inventory_health_status(self.awi.current_step)
+                udpp_for_urgency = self.im.get_udpp(self.awi.current_step, self.awi.n_steps)
+                urgency_window_days = 3
+                is_urgent_udpp = False
+                total_urgent_need = 0
+                for day_offset in range(urgency_window_days + 1):
+                    check_day = offer[TIME] + day_offset
+                    if check_day < self.awi.n_steps:
+                        total_urgent_need += udpp_for_urgency.get(check_day, 0)
+
+                if total_urgent_need > self.im.daily_production_capacity * 0.5: # Heuristic
+                    is_urgent_udpp = True
+
+                if inventory_health == "low" or is_urgent_udpp:
+                    shortfall_based_floor = self.awi.current_shortfall_penalty * 0.8
+                    urgency_adjusted_bottom_line = max(profitability_bottom_line, shortfall_based_floor * 0.5)
+                    if inventory_health == "low" and is_urgent_udpp:
+                        urgency_adjusted_bottom_line = max(urgency_adjusted_bottom_line, shortfall_based_floor * 0.9)
+                    elif inventory_health == "low":
+                        urgency_adjusted_bottom_line = max(urgency_adjusted_bottom_line, shortfall_based_floor * 0.7)
+                    elif is_urgent_udpp:
+                        urgency_adjusted_bottom_line = max(urgency_adjusted_bottom_line, shortfall_based_floor * 0.7)
+                    urgency_adjusted_bottom_line = min(urgency_adjusted_bottom_line, self.awi.current_shortfall_penalty * 1.0)
+
+                if os.path.exists("env.test") and abs(urgency_adjusted_bottom_line - profitability_bottom_line) > 0.01:
+                    print(f"DEBUG: Urgency adjustment for {pid} at day {self.awi.current_step}: profitability_bottom_line={profitability_bottom_line:.2f}, urgency_adjusted_bottom_line={urgency_adjusted_bottom_line:.2f}, inv_health='{inventory_health}', is_urgent_udpp={is_urgent_udpp}, total_urgent_need={total_urgent_need}")
+
                 aspirational_target_price = self._get_aspirational_target_price(
                     pid=pid,
-                    p_bottom_line=bottom_line_price,
+                    p_bottom_line=urgency_adjusted_bottom_line,
                     rel_time=state.relative_time if state else 0.0,
                 )
                 target_quoted_price_for_negotiation = aspirational_target_price
@@ -1611,9 +1644,38 @@ class LitaAgentYR(StdSyncAgent):
 
                 # 数量改好，执行还价逻辑
                 bottom_line_price = max_affordable_raw_price_jit - estimated_storage_cost_per_unit
+                urgency_adjusted_bottom_line = profitability_bottom_line
+
+                inventory_health = self._get_raw_inventory_health_status(self.awi.current_step)
+                udpp_for_urgency = self.im.get_udpp(self.awi.current_step, self.awi.n_steps)
+                urgency_window_days = 3
+                is_urgent_udpp = False
+                total_urgent_need = 0
+                for day_offset in range(urgency_window_days + 1):
+                    check_day = offer[TIME] + day_offset
+                    if check_day < self.awi.n_steps:
+                        total_urgent_need += udpp_for_urgency.get(check_day, 0)
+
+                if total_urgent_need > self.im.daily_production_capacity * 0.5: # Heuristic
+                    is_urgent_udpp = True
+
+                if inventory_health == "low" or is_urgent_udpp:
+                    shortfall_based_floor = self.awi.current_shortfall_penalty * 0.8
+                    urgency_adjusted_bottom_line = max(profitability_bottom_line, shortfall_based_floor * 0.5)
+                    if inventory_health == "low" and is_urgent_udpp:
+                        urgency_adjusted_bottom_line = max(urgency_adjusted_bottom_line, shortfall_based_floor * 0.9)
+                    elif inventory_health == "low":
+                        urgency_adjusted_bottom_line = max(urgency_adjusted_bottom_line, shortfall_based_floor * 0.7)
+                    elif is_urgent_udpp:
+                        urgency_adjusted_bottom_line = max(urgency_adjusted_bottom_line, shortfall_based_floor * 0.7)
+                    urgency_adjusted_bottom_line = min(urgency_adjusted_bottom_line, self.awi.current_shortfall_penalty * 1.0)
+
+                if os.path.exists("env.test") and abs(urgency_adjusted_bottom_line - profitability_bottom_line) > 0.01:
+                    print(f"DEBUG: Urgency adjustment for {pid} at day {self.awi.current_step}: profitability_bottom_line={profitability_bottom_line:.2f}, urgency_adjusted_bottom_line={urgency_adjusted_bottom_line:.2f}, inv_health='{inventory_health}', is_urgent_udpp={is_urgent_udpp}, total_urgent_need={total_urgent_need}")
+
                 aspirational_target_price = self._get_aspirational_target_price(
                         pid=pid,
-                        p_bottom_line=bottom_line_price,
+                        p_bottom_line=urgency_adjusted_bottom_line,
                         rel_time=state.relative_time,
                 )
                 target_quoted_price_for_negotiation = aspirational_target_price
@@ -2054,86 +2116,139 @@ class LitaAgentYR(StdSyncAgent):
         for pid, offer in offers.items():
             qty, t, price = offer[QUANTITY], offer[TIME], offer[UNIT_PRICE]
             state = states.get(pid)
+            reason_log_parts: list[str] = []
+            min_sell_price_procurement_confidence_adjustment = 0.0
             self._recent_product_prices.append(price)  # Update market price tracking / 更新市场价格跟踪
             if len(self._recent_product_prices) > self._avg_window: self._recent_product_prices.pop(0)
 
-            # MODIFIED: Capacity and material availability check using IM's estimated_available
-            # 修改：使用IM的estimated_available检查产能和材料可用性
-
-            # Available production capacity on day 't' for *new* production
-            # (IM's get_production_plan(t) reflects what's already committed for day t)
-            # 第 't' 天用于*新*生产的可用生产能力
-            # (IM的get_production_plan(t)反映了已为第t天承诺的内容)
+            # --- Start of Oversell and Capacity Logic ---
             available_capacity_on_day_t = self.im.daily_production_capacity - self.im.get_production_plan(t)
 
-            # Estimated raw materials available at the start of day 't' (for production on day 't')
-            # 第 't' 天开始时可用的预估原材料（用于第 't' 天的生产）
-            # materials_available_at_start_of_day_t = self.im.get_inventory_summary(t, MaterialType.RAW).get(
-            #     'estimated_available', 0)
+            # Call _can_secure_materials_for_sale for the *original offered quantity* to inform oversell factor decision.
+            # The result of this call is used by _get_current_oversell_factor.
+            # A second, binding call to _can_secure_materials_for_sale will occur later with actual_qty_being_considered.
+            temp_proc_conf_for_os_factor = self._can_secure_materials_for_sale(qty, t)
+            current_os_factor = self._get_current_oversell_factor(temp_proc_conf_for_os_factor)
 
-            # Maximum quantity we can produce for THIS offer on day 't'
-            # considering both capacity and materials available specifically for production on day 't'.
-            # 我们可以在第 't' 天为这个特定报价生产的最大数量，
-            # 同时考虑专门用于第 't' 天生产的产能和可用材料。
-            # max_producible_for_offer_on_day_t = min(available_capacity_on_day_t, materials_available_at_start_of_day_t)
-            max_producible_for_offer_on_day_t = available_capacity_on_day_t
+            max_sellable_qty_with_oversell = available_capacity_on_day_t * (1 + current_os_factor)
+            max_sellable_qty_with_oversell = int(max_sellable_qty_with_oversell) # Convert to int
 
-            if qty > max_producible_for_offer_on_day_t:  # If offered quantity exceeds what we can produce / 如果报价数量超过我们的生产能力
-                available_qty_for_offer = int(max_producible_for_offer_on_day_t)
-                # Check if we can counter with a valid NMI quantity
-                # 检查是否可以用有效的NMI数量还价
-                if available_qty_for_offer > 0 and available_qty_for_offer >= self.get_nmi(pid).issues[
-                    QUANTITY].min_value:
-                    # Try to counter with the maximum possible producible quantity
-                    # 尝试以最大可生产数量还价
-                    counter_offer_outcome = self._pareto_counter_offer(pid, available_qty_for_offer, t, price, state)
-                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_outcome)
-                    if os.path.exists("env.test"): print(
-                        f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {qty} on Day {t}: Over capacity/material for day {t} (max_prod={max_producible_for_offer_on_day_t:.0f}). Countering with Qty {available_qty_for_offer}.")
+            actual_qty_being_considered = qty
+            is_countering_qty_due_to_capacity_oversell = False
+
+            if qty > max_sellable_qty_with_oversell:
+                # Try to get NMI min quantity, ensure issues[QUANTITY] exists and has min_value
+                min_val_from_nmi = 1 # Default fallback if NMI access fails
+                if self.get_nmi(pid) and QUANTITY in self.get_nmi(pid).issues :
+                    nmi_qty_issue = self.get_nmi(pid).issues[QUANTITY]
+                    if hasattr(nmi_qty_issue, 'min_value') and isinstance(nmi_qty_issue.min_value, (int, float)):
+                         min_val_from_nmi = int(nmi_qty_issue.min_value)
+
+                if max_sellable_qty_with_oversell >= min_val_from_nmi:
+                    actual_qty_being_considered = max_sellable_qty_with_oversell
+                    is_countering_qty_due_to_capacity_oversell = True
+                    if os.path.exists("env.test"): # Added log for clarity
+                        print(f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid}: Qty {qty} > MaxOversellQty {max_sellable_qty_with_oversell}. Countering Qty to {actual_qty_being_considered}.")
+                    reason_log_parts.append(f"QtyReducedToOversellCap: {actual_qty_being_considered} (was {qty}, OSFactor: {current_os_factor:.2f})")
                 else:
-                    # If cannot even produce a minimal valid quantity, reject.
-                    # 如果连最小有效数量都无法生产，则拒绝。
+                    if os.path.exists("env.test"):
+                        print(f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid}: Qty {qty} > MaxOversellQty {max_sellable_qty_with_oversell} & MaxOSQty < NMI_min ({min_val_from_nmi}). Rejecting.")
                     res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
-                    if os.path.exists("env.test"): print(
-                        f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {qty} on Day {t}: No/Insufficient capacity/material for day {t} (max_prod={max_producible_for_offer_on_day_t:.0f}, NMI_min={self.get_nmi(pid).issues[QUANTITY].min_value}). Rejecting.")
-                continue  # Move to next offer / 处理下一个报价
+                    continue
+            # --- End of Oversell and Capacity Logic ---
 
-            # If here, qty is producible on day t. Proceed with profitability check.
-            # 如果到这里，数量在第t天是可生产的。继续进行盈利能力检查。
-            avg_raw_cost = self.get_avg_raw_cost_fallback(self.awi.current_step,
-                                                          pid)  # Estimated raw material cost / 估算的原材料成本
-            unit_cost = avg_raw_cost + self.im.processing_cost  # Total unit cost / 总单位成本
-            current_min_margin_for_calc = self.min_profit_ratio  # Base profit margin / 基础利润率
-            reason_log_parts = [f"BaseMinMargin: {current_min_margin_for_calc:.3f}"]
+            # --- Start of Material Procurement Confidence Check (uses actual_qty_being_considered) ---
+            raw_materials_needed = actual_qty_being_considered # Use the potentially adjusted quantity
+            # material_actually_needed_by_day = t (already known)
+            procurement_confidence = self._can_secure_materials_for_sale(raw_materials_needed, t)
 
-            # Increase margin if capacity is tight for the delivery day and this quantity
-            # 如果交货日期的产能因这个数量而紧张，则提高利润率
-            if self._is_production_capacity_tight(t, qty):  # Pass qty of current offer / 传递当前报价的数量
+            if procurement_confidence == "low":
+                reason_log_parts.append(f"ProcConfLowForQty{raw_materials_needed}")
+                # Attempt to counter with a delay if possible
+                delayed_t = t + self.h.pareto_delay_days # Define your delay period
+                time_issue = self.get_nmi(pid).issues[TIME]
+                max_allowable_time = time_issue.max_value if isinstance(time_issue.max_value, int) else self.awi.n_steps -1
+
+                if delayed_t <= max_allowable_time:
+                    # Check if materials can be secured for the delayed time
+                    delayed_procurement_confidence = self._can_secure_materials_for_sale(raw_materials_needed, delayed_t)
+                    if delayed_procurement_confidence != "low": # if high or medium for delayed
+                        # Counter with delayed time, keep original price for now (or adjust if needed)
+                        # Price adjustment for delay could be a heuristic or based on _calc_conceded_price
+                        price_adj_for_delay_factor = 1.0 - self.h.pareto_delay_price_cut # Example reduction
+                        delayed_price_offer = price * price_adj_for_delay_factor
+
+                        # Recalculate min_sell_price for the delayed offer
+                        # This needs to be done carefully, considering avg_raw_cost might change if we use delayed_t for fallback
+                        # For simplicity, let's assume unit_cost remains similar for this check, or use a specific logic
+                        # For now, we use the original unit_cost for deciding if the delayed offer is viable generally
+                        # but the actual counter price needs to be determined by concession logic later
+                        avg_raw_cost_for_delay_check = self.get_avg_raw_cost_fallback(self.awi.current_step, pid) # Potentially use 'delayed_t' if it impacts cost view
+                        unit_cost_for_delay_check = avg_raw_cost_for_delay_check + self.im.processing_cost
+                        # min_sell_price_for_delay = unit_cost_for_delay_check * (1 + self.min_profit_ratio) # base margin for delayed
+
+                        # We need a target price for this delayed offer to pass to concession
+                        # Let's use the original price as the opponent's current stance, and our bottom line is min_sell_price_for_delay
+                        # However, the _pareto_counter_offer and _calc_conceded_price handle this.
+                        # We just need to pass a price that reflects our willingness due to delay.
+                        # Let's use the original price, the concession logic will adjust it.
+
+                        # The crucial part is that _pareto_counter_offer will use this delayed_t
+                        counter_offer_delayed = self._pareto_counter_offer(pid, raw_materials_needed, delayed_t, price, state)
+
+                        # Ensure the new price from _pareto_counter_offer is still profitable
+                        # This check should ideally be inside _pareto_counter_offer or handled by its blended price logic
+                        # For now, let's assume _pareto_counter_offer aims for profitability
+
+                        res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_delayed)
+                        if os.path.exists("env.test"):
+                            print(f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {raw_materials_needed} on Day {t}: LowProcConf. Countering with Delay to Day {delayed_t}, New Price {counter_offer_delayed[UNIT_PRICE]:.2f}. Original Price: {price:.2f}")
+                        reason_log_parts.append(f"CounteredWithDelayToDay{delayed_t}")
+                        continue
+                # If delay is not possible or still low confidence for delay, reject.
+                if os.path.exists("env.test"):
+                    print(f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {raw_materials_needed} on Day {t}: LowProcConf. Delay not viable or still low confidence. Rejecting.")
+                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, None)
+                continue
+            elif procurement_confidence == "medium":
+                min_sell_price_procurement_confidence_adjustment = 0.03 # Increase margin by 3%
+                reason_log_parts.append(f"ProcConfMediumForQty{raw_materials_needed}MarginAdj:+{min_sell_price_procurement_confidence_adjustment:.2f}")
+            # If procurement_confidence is "high", no adjustment needed here.
+            # --- End of Material Procurement Confidence Check ---
+
+            avg_raw_cost = self.get_avg_raw_cost_fallback(self.awi.current_step, pid)
+            unit_cost = avg_raw_cost + self.im.processing_cost
+            current_min_margin_for_calc = self.min_profit_ratio
+
+            # Add BaseMinMargin to log parts if not already present from other logic paths
+            if not any("BaseMinMargin" in s for s in reason_log_parts): # Check if already added by other branches
+                reason_log_parts.append(f"BaseMinMargin: {current_min_margin_for_calc:.3f}")
+
+            if self._is_production_capacity_tight(t, actual_qty_being_considered):
                 current_min_margin_for_calc += self.capacity_tight_margin_increase
-                reason_log_parts.append(f"CapacityTight! AdjustedMinMargin: {current_min_margin_for_calc:.3f}")
-                if os.path.exists("env.test"): print(
-                    f"🏭 Day {self.awi.current_step} ({self.id}) Sales Offer to {pid} for Qty {qty} on Day {t}: Capacity tight for day {t}, using increased margin {current_min_margin_for_calc:.3f}.")
+                reason_log_parts.append(f"CapacityTight for Qty {actual_qty_being_considered}! Margin adj by +{self.capacity_tight_margin_increase:.3f} -> {current_min_margin_for_calc:.3f}")
 
-            min_sell_price = unit_cost * (1 + current_min_margin_for_calc)  # Minimum acceptable selling price / 最低可接受售价
+            final_margin_for_this_offer = current_min_margin_for_calc + min_sell_price_procurement_confidence_adjustment
+            min_sell_price = unit_cost * (1 + final_margin_for_this_offer)
 
-            if price >= min_sell_price:  # If offer price is profitable / 如果报价价格有利可图
-                res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)  # Accept the offer / 接受报价
-                if os.path.exists("env.test"): print(
-                    f"✅ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Q:{qty} P:{price:.2f} T:{t}): Accepted. MinSellPrice={min_sell_price:.2f}. Reasons: {'|'.join(reason_log_parts)}")
-            else:  # Price not profitable, try to counter / 价格无利可图，尝试还价
-                aspirational_target_price = self._get_aspirational_target_price(
-                    pid=pid,
-                    p_bottom_line=min_sell_price,
-                    rel_time=state.relative_time if state else 0.0,
-                )
+            if price >= min_sell_price:
+                if is_countering_qty_due_to_capacity_oversell:
+                    # Price is good, but we had to reduce quantity. Counter with our quantity.
+                    outcome_tuple = (actual_qty_being_considered, t, price)
+                    res[pid] = SAOResponse(ResponseType.REJECT_OFFER, outcome_tuple)
+                    if os.path.exists("env.test"): print(f"✅ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid}: Price OK. Countering Qty to {actual_qty_being_considered} due to OversellCap. MinSellPrice={min_sell_price:.2f}. Details: {'|'.join(reason_log_parts)}")
+                else:
+                    # Price is good, original quantity was fine (actual_qty_being_considered == qty). Accept.
+                    res[pid] = SAOResponse(ResponseType.ACCEPT_OFFER, offer)
+                    if os.path.exists("env.test"): print(f"✅ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Q:{actual_qty_being_considered} P:{price:.2f} T:{t}): Accepted. MinSellPrice={min_sell_price:.2f}. Details: {'|'.join(reason_log_parts)}")
+            else:
+                # Price is too low. Counter with our price and actual_qty_being_considered.
+                aspirational_target_price = self._get_aspirational_target_price(pid, p_bottom_line=min_sell_price, rel_time=state.relative_time if state else 0.0)
                 target_price_for_counter = aspirational_target_price
-                conceded_price = self._calc_conceded_price(pid, target_price_for_counter, state,
-                                                        price)  # Apply concession logic / 应用让步逻辑
-                counter_offer = self._pareto_counter_offer(pid, qty, t, conceded_price,
-                                                           state)  # Generate Pareto-aware counter / 生成帕累托意识还价
-                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
-                if os.path.exists("env.test"): print(
-                    f"❌ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Q:{qty} P:{price:.2f} T:{t}): Rejected (Price < MinSellPrice {min_sell_price:.2f}). Countering with P:{counter_offer[UNIT_PRICE]:.2f}. Reasons: {'|'.join(reason_log_parts)}")
+                conceded_price = self._calc_conceded_price(pid, target_price_for_counter, state, price)
+                counter_offer_outcome = self._pareto_counter_offer(pid, actual_qty_being_considered, t, conceded_price, state)
+                res[pid] = SAOResponse(ResponseType.REJECT_OFFER, counter_offer_outcome)
+                if os.path.exists("env.test"): print(f"❌ Day {self.awi.current_step} ({self.id}) Sales Offer from {pid} (Original Q:{qty} P:{price:.2f} T:{t}): Rejected (Price < MinSellPrice {min_sell_price:.2f}). Countering with Q:{counter_offer_outcome[QUANTITY]} P:{counter_offer_outcome[UNIT_PRICE]:.2f} T:{counter_offer_outcome[TIME]}. Details: {'|'.join(reason_log_parts)}")
         return res
 
     # ------------------------------------------------------------------
@@ -2249,6 +2364,46 @@ class LitaAgentYR(StdSyncAgent):
     # 🌟 7. 动态策略调节接口
     # 🌟 7. Dynamic strategy adjustment API
     # ------------------------------------------------------------------
+    def _get_current_oversell_factor(self, procurement_confidence: str) -> float:
+        # procurement_confidence is from _can_secure_materials_for_sale ("high", "medium", "low")
+        if not self.im: # Should not happen if IM is initialized
+            return self.h.min_oversell_factor
+
+        current_prod_inventory = self.im.get_inventory_summary(self.awi.current_step, MaterialType.PRODUCT)['current_stock']
+
+        future_total_product_demand_horizon = min(self.awi.n_steps, self.awi.current_step + 5)
+        future_total_product_demand = 0
+        # Ensure get_pending_contracts exists and is used correctly
+        if hasattr(self.im, 'get_pending_contracts'):
+            for d_offset in range(1, future_total_product_demand_horizon - self.awi.current_step + 1):
+                check_day = self.awi.current_step + d_offset
+                if check_day >= self.awi.n_steps: break
+                for contract_detail in self.im.get_pending_contracts(is_supply=False, day=check_day):
+                    if contract_detail.material_type == MaterialType.PRODUCT: # Ensure it's product demand
+                        future_total_product_demand += contract_detail.quantity
+
+        is_high_product_inventory = current_prod_inventory > (future_total_product_demand + self.im.daily_production_capacity)
+
+        target_oversell_factor = self.h.min_oversell_factor
+
+        if procurement_confidence == "high":
+            if is_high_product_inventory:
+                target_oversell_factor = self.h.max_oversell_factor
+            else:
+                target_oversell_factor = self.h.base_oversell_factor
+        elif procurement_confidence == "medium":
+            if is_high_product_inventory:
+                target_oversell_factor = self.h.base_oversell_factor * 0.5
+            else:
+                target_oversell_factor = self.h.min_oversell_factor
+        else: # procurement_confidence == "low"
+            target_oversell_factor = self.h.min_oversell_factor
+
+        if os.path.exists("env.test"):
+            print(f"🧠 Day {self.awi.current_step} ({self.id}): OversellFactorCalc. ProcConf: {procurement_confidence}, HighProdInv: {is_high_product_inventory} (Inv: {current_prod_inventory}, FutDemand: {future_total_product_demand}) -> TargetOversellFactor: {target_oversell_factor:.2f}")
+
+        return target_oversell_factor
+
     def _update_dynamic_profit_margin_parameters(self) -> None:
         """Dynamically adjusts `min_profit_ratio` based on inventory, demand, game stage, and sales conversion."""
         """根据库存、需求、游戏阶段和销售转化率动态调整 `min_profit_ratio`。"""
