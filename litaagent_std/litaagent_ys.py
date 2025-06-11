@@ -165,8 +165,8 @@ class HeuristicSettings:
 
     aspirational_decay_rate: float = 3.0  # 期望目标价的衰减指数 (alpha)
 
-    emergency_overprocurement_factor: float = 0.5  # Renamed for clarity if needed, but current name is fine
-    planned_overprocurement_factor: float = 0.2  # Renamed for clarity if needed
+    emergency_overprocurement_factor: float = 0.8  # Renamed for clarity if needed, but current name is fine
+    planned_overprocurement_factor: float = 0.4  # Renamed for clarity if needed
     optional_procurement_factor: float = 1.2
 
     logic_select: str = "unified"  # unified or legacy, legacy should be deprecated later
@@ -174,15 +174,15 @@ class HeuristicSettings:
     # New settings for dynamic overprocurement factor adjustment
     # 新增：动态超采购因子调整的参数
     op_factor_update_window: int = 5  # Days for rolling average / 滚动平均的天数
-    op_factor_low_sr_threshold: float = 0.3  # Low success rate threshold / 低成功率阈值
-    op_factor_high_sr_threshold: float = 0.7  # High success rate threshold / 高成功率阈值
+    op_factor_low_sr_threshold: float = 0.5  # Low success rate threshold / 低成功率阈值
+    op_factor_high_sr_threshold: float = 1.0  # High success rate threshold / 高成功率阈值
 
     emergency_op_factor_min: float = 0.0
-    emergency_op_factor_max: float = 0.5  # Max 50% overprocurement for emergency
+    emergency_op_factor_max: float = 2.0  # Max 200% overprocurement for emergency
     emergency_op_factor_adj_step: float = 0.05
 
     planned_op_factor_min: float = 0.0
-    planned_op_factor_max: float = 0.4  # Max 40% overprocurement for planned
+    planned_op_factor_max: float = 2.0  # Max 200% overprocurement for planned
     planned_op_factor_adj_step: float = 0.05
 
 
