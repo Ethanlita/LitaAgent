@@ -74,3 +74,8 @@ env.test.*
 *.out
 *.bak
 *.tmp
+
+# Binary / docs (ignore on request)
+*.png
+*.pdf
+*.tex
