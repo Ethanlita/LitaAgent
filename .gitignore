@@ -1,0 +1,76 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.*/
+venv.*/
+
+# Distribution / packaging
+build/
+dist/
+eggs/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+*.egg
+
+# Testing / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+.cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+.pyrightcache/
+.pyre/
+.pytype/
+.tox/
+.nox/
+htmlcov/
+coverage.xml
+nosetests.xml
+*.cover
+*.py,cover
+
+# Jupyter
+.ipynb_checkpoints
+.jupyter/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Project outputs and logs
+results/
+tournament_results/
+tournament_logs/
+test_logs/
+test_debug_logs/
+test_debug_logs2/
+test_tracker_full/
+test_tracker_logs/
+test_tracker_output/
+out/
+console.out
+console_Y_YS.out
+env.test
+env.test.1
+env.test.*
+*.log
+*.out
+*.bak
+*.tmp
