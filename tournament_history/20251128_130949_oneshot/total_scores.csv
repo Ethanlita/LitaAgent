@@ -1,0 +1,7 @@
+index,agent_type,score
+0,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.oneshot.mat.mat.MATAgent,1.0457629727832574
+1,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_y.LitaAgentY,0.9465212365938
+2,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_yr.LitaAgentYR,0.9336563652615494
+3,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_cir.LitaAgentCIR,0.7949754399188227
+4,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_n.LitaAgentN,0.7893587019014711
+5,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_p.LitaAgentP,0.5694672277633729

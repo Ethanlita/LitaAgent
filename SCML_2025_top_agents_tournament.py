@@ -242,6 +242,7 @@ def run_tournament(agent_types, n_configs=5, n_runs_per_world=1, n_steps=50, log
         n_steps=n_steps,
         print_exceptions=True,
         verbose=True,
+        parallelism='parallel:0.5',  # 限制并行度为 CPU 核心数的 50%，避免卡死
         # Enable logging via world_params
         world_params=dict(
             log_folder=log_base_dir,

@@ -52,6 +52,7 @@ def run(
         verbose=True,
         n_steps=n_steps,
         n_configs=n_configs,
+        parallelism='parallel:0.5',  # 限制并行度为 CPU 核心数的 50%，避免卡死
     )
     # just make names shorter
     results.total_scores.agent_type = results.total_scores.agent_type.str.split(  # type: ignore

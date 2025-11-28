@@ -1,0 +1,231 @@
+{
+  "world_id": "unknown",
+  "agents": {
+    "00Li@0": {
+      "type": "LitaAgentN",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 3376,
+        "negotiations_failed": 6213,
+        "contracts_signed": 3376,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "04LYR@1": {
+      "type": "LitaAgentYR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 207,
+        "negotiations_failed": 593,
+        "contracts_signed": 207,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "01LCI@0": {
+      "type": "LitaAgentCIR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 1183,
+        "negotiations_failed": 815,
+        "contracts_signed": 1183,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "00LYR@0": {
+      "type": "LitaAgentYR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 1233,
+        "negotiations_failed": 1951,
+        "contracts_signed": 1233,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "05Li@1": {
+      "type": "LitaAgentY",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 871,
+        "negotiations_failed": 5121,
+        "contracts_signed": 871,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "01Li@0": {
+      "type": "LitaAgentP",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 2246,
+        "negotiations_failed": 3740,
+        "contracts_signed": 2246,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "04Li@1": {
+      "type": "LitaAgentP",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 337,
+        "negotiations_failed": 2056,
+        "contracts_signed": 337,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "00LCI@0": {
+      "type": "LitaAgentCIR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 1726,
+        "negotiations_failed": 1470,
+        "contracts_signed": 1726,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "06Li@1": {
+      "type": "LitaAgentN",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 535,
+        "negotiations_failed": 2464,
+        "contracts_signed": 535,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "05LYR@1": {
+      "type": "LitaAgentYR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 875,
+        "negotiations_failed": 1125,
+        "contracts_signed": 875,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "05LCI@1": {
+      "type": "LitaAgentCIR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 0,
+        "negotiations_failed": 2000,
+        "contracts_signed": 0,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "06LCI@1": {
+      "type": "LitaAgentCIR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 0,
+        "negotiations_failed": 1000,
+        "contracts_signed": 0,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "01LYR@0": {
+      "type": "LitaAgentYR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 858,
+        "negotiations_failed": 1131,
+        "contracts_signed": 858,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "06LYR@1": {
+      "type": "LitaAgentYR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 444,
+        "negotiations_failed": 556,
+        "contracts_signed": 444,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    },
+    "04LCI@1": {
+      "type": "LitaAgentCIR",
+      "stats": {
+        "negotiations_started": 0,
+        "negotiations_success": 0,
+        "negotiations_failed": 800,
+        "contracts_signed": 0,
+        "contracts_breached": 0,
+        "offers_made": 0,
+        "offers_accepted": 0,
+        "offers_rejected": 0,
+        "production_scheduled": 0,
+        "production_executed": 0
+      }
+    }
+  },
+  "timestamp": "2025-11-28T13:48:14.000269"
+}

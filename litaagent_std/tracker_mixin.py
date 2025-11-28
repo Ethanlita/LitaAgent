@@ -120,6 +120,8 @@ def patch_agent_class(agent_class: Type) -> Type:
     original_before_step = agent_class.before_step if hasattr(agent_class, 'before_step') else None
     original_on_negotiation_success = agent_class.on_negotiation_success if hasattr(agent_class, 'on_negotiation_success') else None
     original_on_negotiation_failure = agent_class.on_negotiation_failure if hasattr(agent_class, 'on_negotiation_failure') else None
+    original_counter_all = agent_class.counter_all if hasattr(agent_class, 'counter_all') else None
+    original_first_proposals = agent_class.first_proposals if hasattr(agent_class, 'first_proposals') else None
     
     # 添加 tracker 属性
     agent_class._tracker_logger = None
@@ -271,6 +273,103 @@ def patch_agent_class(agent_class: Type) -> Type:
                 except Exception:
                     pass
         agent_class.on_negotiation_failure = patched_on_negotiation_failure
+    
+    # 包装 counter_all 方法 - 记录每一轮协商的详细信息
+    if original_counter_all:
+        def patched_counter_all(self, offers, states):
+            tracker = self.tracker
+            responses = original_counter_all(self, offers, states)
+            
+            # 记录每个报价和响应
+            if tracker:
+                try:
+                    for partner_id, offer in offers.items():
+                        state = states.get(partner_id)
+                        response = responses.get(partner_id)
+                        
+                        # 解析报价 (quantity, time, unit_price)
+                        offer_qty = offer[0] if offer else 0
+                        offer_time = offer[1] if offer and len(offer) > 1 else 0
+                        offer_price = offer[2] if offer and len(offer) > 2 else 0
+                        
+                        # 记录收到的报价
+                        tracker.negotiation_offer_received(partner_id, {
+                            "quantity": offer_qty,
+                            "delivery_day": offer_time,
+                            "unit_price": offer_price,
+                            "round": state.step if state else 0,
+                        })
+                        
+                        # 记录我们的响应
+                        if response:
+                            response_type = str(response.response) if response.response else "unknown"
+                            counter_offer = response.outcome
+                            
+                            if response_type == "ResponseType.ACCEPT_OFFER":
+                                tracker.negotiation_accept(partner_id, {
+                                    "quantity": offer_qty,
+                                    "delivery_day": offer_time,
+                                    "unit_price": offer_price,
+                                }, reason="accepted_in_counter_all")
+                            elif response_type == "ResponseType.REJECT_OFFER" and counter_offer:
+                                counter_qty = counter_offer[0] if counter_offer else 0
+                                counter_time = counter_offer[1] if counter_offer and len(counter_offer) > 1 else 0
+                                counter_price = counter_offer[2] if counter_offer and len(counter_offer) > 2 else 0
+                                
+                                tracker.negotiation_offer_made(partner_id, {
+                                    "quantity": counter_qty,
+                                    "delivery_day": counter_time,
+                                    "unit_price": counter_price,
+                                    "round": state.step if state else 0,
+                                }, reason="counter_offer")
+                            elif response_type == "ResponseType.END_NEGOTIATION":
+                                tracker.negotiation_reject(partner_id, {
+                                    "quantity": offer_qty,
+                                    "delivery_day": offer_time,
+                                    "unit_price": offer_price,
+                                }, reason="end_negotiation")
+                except Exception:
+                    pass
+            
+            return responses
+        agent_class.counter_all = patched_counter_all
+    
+    # 包装 first_proposals 方法 - 记录协商开始和初始报价
+    if original_first_proposals:
+        def patched_first_proposals(self):
+            tracker = self.tracker
+            proposals = original_first_proposals(self)
+            
+            if tracker and proposals:
+                try:
+                    for partner_id, proposal in proposals.items():
+                        if proposal:
+                            prop_qty = proposal[0] if proposal else 0
+                            prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
+                            prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
+                            
+                            # 判断是买方还是卖方
+                            is_seller = hasattr(self.awi, 'is_first_level') and not self.awi.is_first_level
+                            
+                            # 记录协商开始
+                            tracker.negotiation_started(partner_id, {
+                                "quantity_range": str(prop_qty),
+                                "time_range": str(prop_time),
+                                "price_range": str(prop_price),
+                            }, is_seller=is_seller)
+                            
+                            # 记录初始报价
+                            tracker.negotiation_offer_made(partner_id, {
+                                "quantity": prop_qty,
+                                "delivery_day": prop_time,
+                                "unit_price": prop_price,
+                                "round": 0,
+                            }, reason="first_proposal")
+                except Exception:
+                    pass
+            
+            return proposals
+        agent_class.first_proposals = patched_first_proposals
     
     return agent_class
 

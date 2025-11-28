@@ -163,6 +163,7 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
         n_steps=TOURNAMENT_CONFIG['n_steps'],
         print_exceptions=True,
         verbose=True,
+        parallelism='serial',  # 临时使用串行模式调试死锁问题
     )
     
     # 保存 Tracker 数据

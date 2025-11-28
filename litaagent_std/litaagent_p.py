@@ -30,6 +30,43 @@ from negmas.common import MechanismState
 
 __all__ = ["LitaAgentP"]
 
+# ============================================================
+# 类级别配置（只读取一次）
+# ============================================================
+_config_file_path = os.path.join(os.path.dirname(__file__), '..', 'agent_config.json')
+_env_local_path = os.path.join(os.path.dirname(__file__), '..', '.env.local')
+_DEBUG_ENABLED = os.path.exists(_env_local_path)
+_CONFIG_PTODAY = None  # 延迟加载
+
+def _load_config_ptoday():
+    """加载配置文件中的 ptoday 值（只执行一次）"""
+    global _CONFIG_PTODAY
+    if _CONFIG_PTODAY is not None:
+        return _CONFIG_PTODAY
+    
+    if os.path.exists(_config_file_path):
+        try:
+            with open(_config_file_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            if 'ptoday' in config_data:
+                _CONFIG_PTODAY = float(config_data['ptoday'])
+                if _DEBUG_ENABLED:
+                    print(f"LitaAgentP: Loaded ptoday={_CONFIG_PTODAY} from {_config_file_path}")
+            else:
+                _CONFIG_PTODAY = -1  # 标记为未找到
+                if _DEBUG_ENABLED:
+                    print(f"LitaAgentP: 'ptoday' not found in {_config_file_path}")
+        except (json.JSONDecodeError, FileNotFoundError, TypeError, ValueError) as e:
+            _CONFIG_PTODAY = -1  # 标记为加载失败
+            if _DEBUG_ENABLED:
+                print(f"LitaAgentP: Error loading config {_config_file_path}: {e}")
+    else:
+        _CONFIG_PTODAY = -1  # 标记为文件不存在
+        if _DEBUG_ENABLED:
+            print(f"LitaAgentP: Config file {_config_file_path} not found")
+    
+    return _CONFIG_PTODAY
+
 
 # Utility functions (copied and adapted from PenguinAgent)
 # 实用函数 (从 PenguinAgent 复制并适配)
@@ -96,34 +133,10 @@ class LitaAgentP(StdSyncAgent):
         """
         super().__init__(*args, **kwargs)
 
-        # --- 从配置文件加载 ptoday ---
-        # 假设配置文件 agent_config.json 在项目根目录
-        # LitaAgentP.py 在 litaagent_std/ 子目录中
-        config_file_path = os.path.join(os.path.dirname(__file__), '..', 'agent_config.json')
-
-        loaded_ptoday = ptoday  # 默认为参数传入的值
-
-        if os.path.exists(config_file_path):
-            try:
-                with open(config_file_path, 'r', encoding='utf-8') as f:
-                    config_data = json.load(f)
-                if 'ptoday' in config_data:
-                    loaded_ptoday = float(config_data['ptoday'])
-                    if self.id:  # self.id 可能在 super().__init__ 后才完全可用
-                        print(
-                            f"LitaAgentP ({self.id if hasattr(self, 'id') else 'N/A'}): Loaded ptoday={loaded_ptoday} from {config_file_path}")
-                else:
-                    if self.id:
-                        print(
-                            f"LitaAgentP ({self.id if hasattr(self, 'id') else 'N/A'}): 'ptoday' not found in {config_file_path}. Using default/argument: {loaded_ptoday}")
-            except (json.JSONDecodeError, FileNotFoundError, TypeError, ValueError) as e:
-                if self.id:
-                    print(
-                        f"LitaAgentP ({self.id if hasattr(self, 'id') else 'N/A'}): Error loading config {config_file_path}: {e}. Using default/argument: {loaded_ptoday}")
-        else:
-            if self.id:
-                print(
-                    f"LitaAgentP ({self.id if hasattr(self, 'id') else 'N/A'}): Config file {config_file_path} not found. Using default/argument: {loaded_ptoday}")
+        # --- 从类级别配置获取 ptoday ---
+        loaded_ptoday = _load_config_ptoday()
+        if loaded_ptoday is None or loaded_ptoday < 0:
+            loaded_ptoday = ptoday  # 使用参数默认值
         # --- 加载结束 ---
 
         self._threshold_factor = threshold_factor

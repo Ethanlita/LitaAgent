@@ -163,6 +163,7 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
         n_steps=TOURNAMENT_CONFIG['n_steps'],
         print_exceptions=True,
         verbose=True,
+        parallelism='parallel:0.5',  # 限制并行度为 CPU 核心数的 50%，避免卡死
     )
     
     # 保存 Tracker 数据

@@ -1,0 +1,37 @@
+{
+  "id": "20251128_012247_std",
+  "source_dir": "C:\\Users\\11985\\negmas\\tournaments\\20251128H012247865205Kqg-stage-0001",
+  "imported_at": "2025-11-28T14:25:07.795973",
+  "track": "std",
+  "settings": {
+    "n_configs": 3,
+    "n_runs_per_world": 1,
+    "n_steps": 50,
+    "n_worlds": 180,
+    "n_processes": null,
+    "parallelism": "parallel",
+    "world_generator": "scml.utils.anac_std_world_generator",
+    "score_calculator": "scml.utils.balance_calculator_oneshot",
+    "publish_exogenous_summary": true,
+    "publish_trading_prices": true,
+    "min_factories_per_level": 4,
+    "n_agents_per_competitor": 1,
+    "n_competitors_per_world": 3
+  },
+  "competitors": [
+    "LitaAgentY",
+    "LitaAgentYR",
+    "LitaAgentCIR",
+    "LitaAgentN",
+    "LitaAgentP",
+    "XenoSotaAgent"
+  ],
+  "n_competitors": 6,
+  "results": {
+    "n_completed": 0,
+    "total_duration_seconds": 0.0,
+    "winner": null,
+    "winner_score": null
+  },
+  "timestamp": "2025-11-28 01:22:47"
+}

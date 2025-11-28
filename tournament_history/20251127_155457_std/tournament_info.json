@@ -1,0 +1,36 @@
+{
+  "id": "20251127_155457_std",
+  "source_dir": "C:\\Users\\11985\\negmas\\tournaments\\20251127H1554570085122Yx-stage-0001",
+  "imported_at": "2025-11-28T14:25:07.779473",
+  "track": "std",
+  "settings": {
+    "n_configs": 5,
+    "n_runs_per_world": 2,
+    "n_steps": 100,
+    "n_worlds": 300,
+    "n_processes": null,
+    "parallelism": "parallel",
+    "world_generator": "scml.utils.anac_std_world_generator",
+    "score_calculator": "scml.utils.balance_calculator_oneshot",
+    "publish_exogenous_summary": true,
+    "publish_trading_prices": true,
+    "min_factories_per_level": 4,
+    "n_agents_per_competitor": 1,
+    "n_competitors_per_world": 3
+  },
+  "competitors": [
+    "AS0",
+    "XenoSotaAgent",
+    "UltraSuperMiracleSoraFinalAgentZ",
+    "PriceTrendStdAgent",
+    "PenguinAgent"
+  ],
+  "n_competitors": 5,
+  "results": {
+    "n_completed": 0,
+    "total_duration_seconds": 0.0,
+    "winner": null,
+    "winner_score": null
+  },
+  "timestamp": "2025-11-27 15:54:57"
+}
