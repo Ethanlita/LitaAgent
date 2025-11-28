@@ -22,6 +22,8 @@ CONFIGS, REPS, STEPS = 10, 5, 25
 context = ANACStdContext( # what are the rounds here, number of trials, process (needs processes or not), etc. and align with the actual parameters of the live competitoin.
     n_steps=STEPS, n_processes=3, world_params=dict(construct_graphs=True)
 )
+'''
+#%% Y
 print("----------------------------------Now Start with Y-------------------------------")
 single_agent_runner1 = WorldRunner(
     context, n_configs=CONFIGS, n_repetitions=REPS, save_worlds=True
@@ -38,6 +40,8 @@ single_agent_runner1.draw_worlds_of(LitaAgentY)
 single_agent_runner1.plot_stats(agg=False)
 single_agent_runner1.score_summary()
 plt.show()
+
+#%% YS
 print("----------------------------------Now Start with YS-------------------------------")
 single_agent_runner1 = WorldRunner(
     context, n_configs=CONFIGS, n_repetitions=REPS, save_worlds=True
@@ -45,15 +49,17 @@ single_agent_runner1 = WorldRunner(
 full_market_runner1 = WorldRunner.from_runner(
     single_agent_runner1, control_all_agents=True
 )
-from litaagent_std.litaagent_ys import LitaAgentY
+from litaagent_std.litaagent_ys import LitaAgentYR
 #%% create a world with a single agent and run it
-single_agent_runner1(LitaAgentY)
-single_agent_runner1.draw_worlds_of(LitaAgentY)
+single_agent_runner1(LitaAgentYR)
+single_agent_runner1.draw_worlds_of(LitaAgentYR)
 
 #%% plot the results
 single_agent_runner1.plot_stats(agg=False)
 single_agent_runner1.score_summary()
 plt.show()
+'''
+#%% YR
 print("----------------------------------Now Start with YR-------------------------------")
 single_agent_runner2 = WorldRunner(
     context, n_configs=CONFIGS, n_repetitions=REPS, save_worlds=True
