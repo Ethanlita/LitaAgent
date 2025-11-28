@@ -105,7 +105,7 @@ class LitaAgentP(StdSyncAgent):
 
         if os.path.exists(config_file_path):
             try:
-                with open(config_file_path, 'r') as f:
+                with open(config_file_path, 'r', encoding='utf-8') as f:
                     config_data = json.load(f)
                 if 'ptoday' in config_data:
                     loaded_ptoday = float(config_data['ptoday'])

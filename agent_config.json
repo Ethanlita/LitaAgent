@@ -1,4 +1,4 @@
 {
     "ptoday": 0.7,
-    "_comment": "LitaAgentP 配置文件 - ptoday 表示为满足当日需求而与之谈判的伙伴的百分比"
+    "_comment": "LitaAgentP config - ptoday is the percentage of partners to negotiate with for today's needs"
 }
