@@ -383,6 +383,18 @@ class AgentLogger:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(self.export(), f, indent=2, ensure_ascii=False, cls=NumpyJSONEncoder)
 
+    def __getstate__(self):
+        """使 AgentLogger 可被 pickle（去除线程锁，避免 spawn 模式卡死）"""
+        state = self.__dict__.copy()
+        # 线程锁无法序列化，spawn 时会导致阻塞
+        state["_lock"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # 反序列化后重新创建锁
+        self._lock = threading.Lock()
+
 
 # ============================================================
 # Global Tracker Manager
@@ -494,7 +506,17 @@ class TrackedAgent:
     """
     
     _tracker_logger: Optional[AgentLogger] = None
-    
+
+    def __getstate__(self):
+        """在多进程 spawn 时移除 logger，避免将锁一并序列化"""
+        state = self.__dict__.copy()
+        state["_tracker_logger"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._tracker_logger = None
+
     @property
     def logger(self) -> AgentLogger:
         """获取当前 Agent 的 Logger"""
