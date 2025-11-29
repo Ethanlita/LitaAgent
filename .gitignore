@@ -79,3 +79,9 @@ env.test.*
 *.png
 *.pdf
 *.tex
+
+# dask test logs
+test_dask_full_logs/
+
+# other logs
+*logs*

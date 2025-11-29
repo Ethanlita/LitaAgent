@@ -138,7 +138,7 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
     print("\n📝 配置 Tracker 系统...")
     TrackerManager._loggers.clear()
     TrackerConfig.configure(
-        enabled=False,  # 暂时禁用 Tracker 排查卡死问题
+        enabled=True,
         log_dir=output_dir,
         console_echo=False
     )
@@ -163,17 +163,10 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
         n_steps=TOURNAMENT_CONFIG['n_steps'],
         print_exceptions=True,
         verbose=True,
-        parallelism='parallel:0.5',  # 限制并行度为 CPU 核心数的 50%，避免卡死
+        # 重要：使用 serial 模式以确保 Tracker 正常工作
+        # 并行模式下，每个子进程有独立的 TrackerManager，数据不会被保存
+        parallelism='serial',
     )
-    
-    # 保存 Tracker 数据
-    print("\n💾 保存追踪数据...")
-    tracker_log_dir = os.path.join(output_dir, "tracker_logs")
-    TrackerManager.save_all(tracker_log_dir)
-    
-    # 保存比赛结果
-    print("\n📊 保存比赛结果...")
-    save_tournament_results(output_dir, results, TOURNAMENT_CONFIG)
     
     # 显示结果
     print("\n" + "=" * 60)
@@ -191,23 +184,15 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
             tag = "⭐" if agent_name in lita_names else ""
             print(f"  {rank}. {agent_name}: {row['score']:.4f} {tag}")
     
-    print(f"\n✅ 完成！结果已保存到: {output_dir}")
+    print(f"\n✅ 比赛完成！")
     
-    # 启动可视化服务器
-    if not no_server:
-        print("\n🌐 启动可视化服务器...")
-        try:
-            from scml_analyzer.visualizer import start_server
-            start_server(output_dir, port=port, open_browser=True)
-        except ImportError:
-            print("  ⚠️ 无法导入 scml_analyzer.visualizer")
-        except KeyboardInterrupt:
-            print("\n👋 服务器已停止")
-        except Exception as e:
-            print(f"  ⚠️ 启动服务器失败: {e}")
-    else:
-        print("\n📌 提示: 使用以下命令启动可视化服务器:")
-        print(f'  python -m scml_analyzer.visualizer --data "{output_dir}"')
+    # 后处理：保存数据、导入到 tournament_history、启动 Visualizer
+    from scml_analyzer.postprocess import postprocess_tournament
+    postprocess_tournament(
+        output_dir=output_dir,
+        start_visualizer=not no_server,
+        visualizer_port=port,
+    )
     
     return results
 

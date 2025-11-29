@@ -371,3 +371,23 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Tournament Complete!")
     print("=" * 60)
+    
+    # 导入数据到 tournament_history
+    log_dir = os.path.join(args.output_dir, "std")
+    try:
+        from scml_analyzer.history import import_tournament
+        tournament_id = import_tournament(log_dir, copy_mode=False)
+        if tournament_id:
+            print(f"✓ 数据已导入: {tournament_id}")
+    except Exception as e:
+        print(f"⚠ 导入失败: {e}")
+    
+    # 启动无参数可视化服务器
+    print("\n启动可视化服务器...")
+    try:
+        from scml_analyzer.visualizer import start_server
+        start_server(port=8080, open_browser=True)
+    except KeyboardInterrupt:
+        print("\n👋 服务器已停止")
+    except Exception as e:
+        print(f"启动服务器失败: {e}")

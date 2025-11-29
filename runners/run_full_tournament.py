@@ -284,11 +284,39 @@ if __name__ == "__main__":
     print(f"Output: {args.output_dir}")
     
     if args.track in ["oneshot", "both"]:
-        run_oneshot_tournament(n_steps=args.n_steps, output_dir=args.output_dir)
+        world, scores = run_oneshot_tournament(n_steps=args.n_steps, output_dir=args.output_dir)
+        # 导入数据到 tournament_history
+        try:
+            from scml_analyzer.history import import_tournament
+            log_dir = os.path.join(args.output_dir, "oneshot")
+            tournament_id = import_tournament(log_dir, copy_mode=False)
+            if tournament_id:
+                print(f"✓ OneShot 数据已导入: {tournament_id}")
+        except Exception as e:
+            print(f"⚠ 导入失败: {e}")
     
     if args.track in ["std", "both"]:
-        run_std_tournament(n_steps=args.n_steps, output_dir=args.output_dir)
+        world, scores = run_std_tournament(n_steps=args.n_steps, output_dir=args.output_dir)
+        # 导入数据到 tournament_history
+        try:
+            from scml_analyzer.history import import_tournament
+            log_dir = os.path.join(args.output_dir, "std")
+            tournament_id = import_tournament(log_dir, copy_mode=False)
+            if tournament_id:
+                print(f"✓ Std 数据已导入: {tournament_id}")
+        except Exception as e:
+            print(f"⚠ 导入失败: {e}")
     
     print("\n" + "="*60)
     print("Tournament Complete!")
     print("="*60)
+    
+    # 启动无参数可视化服务器
+    print("\n启动可视化服务器...")
+    try:
+        from scml_analyzer.visualizer import start_server
+        start_server(port=8080, open_browser=True)
+    except KeyboardInterrupt:
+        print("\n👋 服务器已停止")
+    except Exception as e:
+        print(f"启动服务器失败: {e}")

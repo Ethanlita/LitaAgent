@@ -762,3 +762,227 @@ if __name__ == "__main__":
     print(f"{LitaAgentP.__name__} class is defined. To run, use SCML simulation tools.")
     print(f"{LitaAgentP.__name__} 类已定义。要运行，请使用 SCML 模拟工具。")
     pass
+
+
+# ============================================================
+# Tracked Version for Parallel Mode
+# 用于并行模式的 Tracked 版本
+# ============================================================
+
+# 尝试导入 Tracker
+try:
+    from scml_analyzer.auto_tracker import TrackerManager, AgentLogger
+    _TRACKER_AVAILABLE = True
+except ImportError:
+    _TRACKER_AVAILABLE = False
+    TrackerManager = None
+    AgentLogger = None
+
+
+class LitaAgentPTracked(LitaAgentP):
+    """
+    带有 Tracker 功能的 LitaAgentP（支持并行模式）
+    
+    使用方法：
+        1. 设置环境变量 SCML_TRACKER_LOG_DIR 为日志目录路径
+        2. 在比赛中使用 LitaAgentPTracked 代替 LitaAgentP
+    
+    Example:
+        import os
+        os.environ['SCML_TRACKER_LOG_DIR'] = os.path.abspath('./tracker_logs')
+        
+        from litaagent_std.litaagent_p import LitaAgentPTracked
+        # 然后在比赛中使用 LitaAgentPTracked
+    """
+    
+    _tracker_logger = None
+    
+    @property
+    def tracker(self):
+        """获取 Tracker Logger"""
+        if not _TRACKER_AVAILABLE:
+            return None
+        if self._tracker_logger is None:
+            agent_id = getattr(self, 'id', 'unknown')
+            self._tracker_logger = TrackerManager.get_logger(agent_id, 'LitaAgentP')
+        return self._tracker_logger
+    
+    def init(self):
+        super().init()
+        tracker = self.tracker
+        if tracker:
+            tracker.custom("agent_initialized", 
+                n_steps=getattr(self.awi, 'n_steps', None),
+                n_lines=getattr(self.awi, 'n_lines', None),
+                level=getattr(self.awi, 'level', None),
+            )
+    
+    def before_step(self):
+        super().before_step()
+        tracker = self.tracker
+        if tracker:
+            tracker.set_day(self.awi.current_step)
+            try:
+                awi = self.awi
+                balance = getattr(awi, 'current_balance', 0.0) or 0.0
+                score = getattr(awi, 'current_score', 1.0) or 1.0
+                exo_input_qty = getattr(awi, 'current_exogenous_input_quantity', 0) or 0
+                exo_output_qty = getattr(awi, 'current_exogenous_output_quantity', 0) or 0
+                
+                tracker.inventory_state(
+                    raw_material=exo_input_qty,
+                    product=exo_output_qty,
+                    balance=balance,
+                )
+                tracker.custom("daily_status",
+                    score=score,
+                    balance=balance,
+                    exo_input_qty=exo_input_qty,
+                    exo_output_qty=exo_output_qty,
+                    needed_supplies=getattr(awi, 'needed_supplies', 0) or 0,
+                    needed_sales=getattr(awi, 'needed_sales', 0) or 0,
+                    total_supplies=getattr(awi, 'total_supplies', 0) or 0,
+                    total_sales=getattr(awi, 'total_sales', 0) or 0,
+                )
+            except Exception:
+                pass
+    
+    def step(self):
+        super().step()
+        tracker = self.tracker
+        if tracker:
+            try:
+                current_step = getattr(self.awi, 'current_step', 0)
+                n_steps = getattr(self.awi, 'n_steps', 0)
+                
+                if current_step >= n_steps - 1:
+                    world_id = 'unknown'
+                    if hasattr(self.awi, '_world') and self.awi._world:
+                        world_id = getattr(self.awi._world, 'id', 'unknown') or 'unknown'
+                    tracker.world_id = world_id
+                    
+                    log_dir = os.environ.get('SCML_TRACKER_LOG_DIR', None)
+                    if log_dir:
+                        os.makedirs(log_dir, exist_ok=True)
+                        safe_agent_id = tracker.agent_id.replace("@", "_at_").replace("/", "_")
+                        safe_world_id = str(world_id).replace("/", "_").replace("\\", "_")[:50]
+                        filename = f"agent_{safe_agent_id}_world_{safe_world_id}.json"
+                        filepath = os.path.join(log_dir, filename)
+                        tracker.save(filepath)
+            except Exception:
+                pass
+    
+    def on_negotiation_success(self, contract, mechanism):
+        super().on_negotiation_success(contract, mechanism)
+        tracker = self.tracker
+        if tracker:
+            try:
+                partner = [p for p in contract.partners if p != self.id][0]
+                agreement = contract.agreement
+                is_seller = not getattr(self.awi, 'is_first_level', True)
+                
+                qty = agreement.get("quantity", 0) if isinstance(agreement, dict) else getattr(agreement, 'quantity', 0)
+                price = agreement.get("unit_price", 0) if isinstance(agreement, dict) else getattr(agreement, 'unit_price', 0)
+                time = agreement.get("time", 0) if isinstance(agreement, dict) else getattr(agreement, 'time', 0)
+                
+                tracker.contract_signed(
+                    contract_id=str(contract.id),
+                    partner=partner,
+                    quantity=qty,
+                    price=price,
+                    delivery_day=time,
+                    is_seller=is_seller,
+                )
+                tracker.negotiation_success(partner, {"quantity": qty, "price": price})
+            except Exception:
+                pass
+    
+    def on_negotiation_failure(self, partners, annotation, mechanism, state):
+        super().on_negotiation_failure(partners, annotation, mechanism, state)
+        tracker = self.tracker
+        if tracker:
+            try:
+                partner = partners[0] if partners else "unknown"
+                tracker.negotiation_failure(partner, "negotiation_ended_without_agreement")
+            except Exception:
+                pass
+    
+    def counter_all(self, offers, states):
+        responses = super().counter_all(offers, states)
+        tracker = self.tracker
+        if tracker:
+            try:
+                for partner_id, offer in offers.items():
+                    state = states.get(partner_id)
+                    response = responses.get(partner_id)
+                    
+                    offer_qty = offer[0] if offer else 0
+                    offer_time = offer[1] if offer and len(offer) > 1 else 0
+                    offer_price = offer[2] if offer and len(offer) > 2 else 0
+                    
+                    tracker.negotiation_offer_received(partner_id, {
+                        "quantity": offer_qty,
+                        "delivery_day": offer_time,
+                        "unit_price": offer_price,
+                        "round": state.step if state else 0,
+                    })
+                    
+                    if response:
+                        response_type = str(response.response) if response.response else "unknown"
+                        counter_offer = response.outcome
+                        
+                        if "ACCEPT" in response_type:
+                            tracker.negotiation_accept(partner_id, {
+                                "quantity": offer_qty,
+                                "delivery_day": offer_time,
+                                "unit_price": offer_price,
+                            }, reason="accepted_in_counter_all")
+                        elif "REJECT" in response_type and counter_offer:
+                            counter_qty = counter_offer[0] if counter_offer else 0
+                            counter_time = counter_offer[1] if counter_offer and len(counter_offer) > 1 else 0
+                            counter_price = counter_offer[2] if counter_offer and len(counter_offer) > 2 else 0
+                            
+                            tracker.negotiation_offer_made(partner_id, {
+                                "quantity": counter_qty,
+                                "delivery_day": counter_time,
+                                "unit_price": counter_price,
+                                "round": state.step if state else 0,
+                            }, reason="counter_offer")
+                        elif "END" in response_type:
+                            tracker.negotiation_reject(partner_id, {
+                                "quantity": offer_qty,
+                                "delivery_day": offer_time,
+                                "unit_price": offer_price,
+                            }, reason="end_negotiation")
+            except Exception:
+                pass
+        return responses
+    
+    def first_proposals(self):
+        proposals = super().first_proposals()
+        tracker = self.tracker
+        if tracker and proposals:
+            try:
+                for partner_id, proposal in proposals.items():
+                    if proposal:
+                        prop_qty = proposal[0] if proposal else 0
+                        prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
+                        prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
+                        
+                        is_seller = hasattr(self.awi, 'is_first_level') and not self.awi.is_first_level
+                        
+                        tracker.negotiation_started(partner_id, {
+                            "quantity_range": str(prop_qty),
+                            "time_range": str(prop_time),
+                            "price_range": str(prop_price),
+                        }, is_seller=is_seller)
+                        
+                        tracker.negotiation_offer_made(partner_id, {
+                            "quantity": prop_qty,
+                            "delivery_day": prop_time,
+                            "unit_price": prop_price,
+                            "round": 0,
+                        }, reason="first_proposal")
+            except Exception:
+                pass
+        return proposals

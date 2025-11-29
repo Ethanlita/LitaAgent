@@ -364,36 +364,35 @@ def run_tournament_and_analyze(agents, mode='quick'):
     return results, analysis_summary
 
 
-def visualize_data(log_dir: str, launch_browser: bool = True, port: int = 8080):
+def visualize_data(log_dir: str = None, launch_browser: bool = True, port: int = 8080):
     """
     可视化已有的比赛数据
     
     Args:
-        log_dir: 比赛日志目录
+        log_dir: 比赛日志目录 (可选，如果不提供则显示 tournament_history 列表)
         launch_browser: 是否自动打开浏览器
         port: HTTP服务器端口
     """
-    from scml_analyzer.visualizer import VisualizerData, generate_html_report, start_server
+    from scml_analyzer.visualizer import start_server
     
     print("=" * 60)
     print("SCML Analyzer - 数据可视化")
     print("=" * 60)
     
-    print(f"\n加载数据: {log_dir}")
+    if log_dir:
+        # 如果提供了 log_dir，先导入到 tournament_history
+        try:
+            from scml_analyzer.history import import_tournament
+            print(f"\n导入数据: {log_dir}")
+            tournament_id = import_tournament(log_dir, copy_mode=False)
+            if tournament_id:
+                print(f"✓ 数据已导入: {tournament_id}")
+        except Exception as e:
+            print(f"⚠ 导入失败: {e}")
     
-    # Load data
-    vis_data = VisualizerData(log_dir)
-    
-    # Generate HTML report
-    report_path = os.path.join(log_dir, "analysis_report.html")
-    html_content = generate_html_report(vis_data)
-    with open(report_path, 'w', encoding='utf-8') as f:
-        f.write(html_content)
-    print(f"\n✓ 报告已生成: {report_path}")
-    
-    # Start server
+    # 启动无参数可视化服务器
     print(f"\n启动可视化服务器...")
-    start_server(log_dir, port=port, open_browser=launch_browser)
+    start_server(port=port, open_browser=launch_browser)
 
 
 def main():
@@ -463,10 +462,22 @@ def main():
             if output_suppressor:
                 output_suppressor.restore()
                 output_suppressor = None
-            visualize_data(log_dir, launch_browser=True, port=args.port)
+            
+            # 先导入数据到 tournament_history
+            try:
+                from scml_analyzer.history import import_tournament
+                tournament_id = import_tournament(log_dir, copy_mode=False)
+                if tournament_id:
+                    print(f"✓ 数据已导入: {tournament_id}")
+            except Exception as e:
+                print(f"⚠ 导入失败: {e}")
+            
+            # 启动无参数可视化
+            visualize_data(log_dir=None, launch_browser=True, port=args.port)
         else:
             print(f"\n提示: 使用以下命令启动可视化界面:")
             print(f"  python run_scml_analyzer.py --visualize \"{log_dir}\"")
+            print(f"  或直接运行: python -c \"from scml_analyzer.visualizer import start_server; start_server()\"")
         
     finally:
         # 恢复 print

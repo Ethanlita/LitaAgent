@@ -274,6 +274,28 @@ def main():
             stats.to_json(results_file, orient='records', indent=2)
             rprint(f"\n[cyan]Results saved to: {log_dir}[/cyan]")
         
+        # 导入数据到 tournament_history 并启动可视化服务器
+        rprint("\n[bold cyan]🌐 导入数据并启动可视化服务器...[/bold cyan]")
+        try:
+            from scml_analyzer.history import import_tournament
+            from scml_analyzer.visualizer import start_server
+            
+            # 直接从 log_dir 导入（这些 runner 不使用 negmas tournament API）
+            tournament_id = import_tournament(log_dir, copy_mode=False)
+            if tournament_id:
+                rprint(f"[green]✓ 数据已导入: {tournament_id}[/green]")
+            
+            # 启动无参数可视化服务器
+            start_server(port=8080, open_browser=True)
+        except ImportError as e:
+            rprint(f"[yellow]无法导入模块: {e}[/yellow]")
+        except KeyboardInterrupt:
+            rprint("\n[yellow]👋 服务器已停止[/yellow]")
+        except Exception as e:
+            rprint(f"[red]启动服务器失败: {e}[/red]")
+            import traceback
+            traceback.print_exc()
+        
         return scores_df, log_dir
         
     except Exception as e:
