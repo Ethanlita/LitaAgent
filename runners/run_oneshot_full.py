@@ -62,9 +62,9 @@ except Exception as e:
 TOURNAMENT_CONFIG = {
     "name": "SCML 2025 OneShot 完整比赛",
     "track": "oneshot",
-    "n_configs": 10,           # 配置数
+    "n_configs": 20,           # 配置数 (Official-like size)
     "n_runs_per_world": 2,     # 每配置运行次数
-    "n_steps": 50,             # 每场步数
+    "n_steps": (50, 200),      # 每场步数 (OneShot 官方随机范围)
 }
 
 
@@ -162,10 +162,9 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
         n_runs_per_world=TOURNAMENT_CONFIG['n_runs_per_world'],
         n_steps=TOURNAMENT_CONFIG['n_steps'],
         print_exceptions=True,
-        verbose=True,
-        # 重要：使用 serial 模式以确保 Tracker 正常工作
-        # 并行模式下，每个子进程有独立的 TrackerManager，数据不会被保存
-        parallelism='serial',
+        verbose=False,
+        # 使用 parallel 模式以启用进度条，并利用 TrackedAgent 的自动保存功能
+        parallelism='parallel',
     )
     
     # 显示结果

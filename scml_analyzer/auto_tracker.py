@@ -152,6 +152,18 @@ class AgentLogger:
         
         # 时间序列数据
         self._time_series: Dict[str, List[tuple]] = defaultdict(list)
+
+    def __getstate__(self):
+        """Pickle support: exclude lock"""
+        state = self.__dict__.copy()
+        if '_lock' in state:
+            del state['_lock']
+        return state
+
+    def __setstate__(self, state):
+        """Pickle support: restore lock"""
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
     
     def set_day(self, day: int):
         """设置当前天数"""
@@ -397,12 +409,24 @@ class TrackerManager:
     _loggers: Dict[str, AgentLogger] = {}
     _world_id: str = "unknown"
     _lock = threading.Lock()
+    _pid = os.getpid()
+    
+    @classmethod
+    def _get_lock(cls):
+        """获取进程安全的锁"""
+        if os.getpid() != cls._pid:
+            cls._lock = threading.Lock()
+            cls._pid = os.getpid()
+            # 在新进程中（fork模式），清空继承的 loggers
+            cls._loggers = {} 
+        return cls._lock
     
     @classmethod
     def configure(cls, log_dir: Optional[str] = None, **kwargs):
         """配置 Tracker"""
         TrackerConfig.configure(log_dir=log_dir, **kwargs)
-        cls._loggers.clear()
+        with cls._get_lock():
+            cls._loggers.clear()
     
     @classmethod
     def set_world(cls, world_id: str):
@@ -412,7 +436,7 @@ class TrackerManager:
     @classmethod
     def get_logger(cls, agent_id: str, agent_type: str) -> AgentLogger:
         """获取或创建 Agent 的 Logger"""
-        with cls._lock:
+        with cls._get_lock():
             if agent_id not in cls._loggers:
                 cls._loggers[agent_id] = AgentLogger(
                     agent_id=agent_id,
@@ -471,6 +495,47 @@ class TrackerManager:
             },
         }
     
+    @classmethod
+    def rebuild_summary(cls, log_dir: str) -> Optional[str]:
+        """
+        从日志目录重建 summary 文件
+        适用于并行执行后，主进程没有收集到数据的情况
+        """
+        path = Path(log_dir)
+        if not path.exists():
+            return None
+            
+        agent_files = list(path.glob("agent_*.json"))
+        if not agent_files:
+            return None
+            
+        summary = {
+            "world_id": "rebuilt_from_files",
+            "agents": {},
+            "timestamp": datetime.now().isoformat(),
+        }
+        
+        for file_path in agent_files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    agent_id = data.get("agent_id", "unknown")
+                    summary["agents"][agent_id] = {
+                        "type": data.get("agent_type", "unknown"),
+                        "stats": data.get("stats", {}),
+                    }
+                    # 尝试获取 world_id
+                    if summary["world_id"] == "rebuilt_from_files":
+                        summary["world_id"] = data.get("world_id", "unknown")
+            except Exception:
+                pass
+                
+        summary_path = os.path.join(log_dir, "tracker_summary.json")
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False, cls=NumpyJSONEncoder)
+            
+        return summary_path
+
     @classmethod
     def cleanup(cls):
         """清理所有 Logger"""
@@ -541,6 +606,13 @@ class TrackedAgent:
     def step(self):
         """执行步骤"""
         result = super().step()
+        
+        # 在最后一步自动保存日志
+        # 这对于并行执行至关重要，因为进程结束时内存中的日志会丢失
+        if hasattr(self, 'awi') and hasattr(self.awi, 'n_steps'):
+            if self.awi.current_step == self.awi.n_steps - 1:
+                self.logger.save()
+                
         return result
     
     def on_negotiation_success(self, contract, mechanism):

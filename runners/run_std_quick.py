@@ -19,6 +19,7 @@ import os
 import sys
 import json
 import argparse
+import multiprocessing
 from pathlib import Path
 from datetime import datetime
 
@@ -30,12 +31,20 @@ sys.path.insert(0, str(PROJECT_ROOT))
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+# 使用 spawn 启动方法，避免 fork 导致的死锁问题
+# 必须在导入其他模块之前设置
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # 已经设置过了
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from scml.std import SCML2024StdWorld
 from scml.utils import anac2024_std
+from scml.std.agents import RandomStdAgent, GreedyStdAgent, SyncRandomStdAgent
 
 # LitaAgent 系列
 from litaagent_std.litaagent_y import LitaAgentY
@@ -62,9 +71,10 @@ except Exception as e:
 TOURNAMENT_CONFIG = {
     "name": "SCML 2025 Standard 快速比赛",
     "track": "std",
-    "n_configs": 3,            # 配置数 (较少)
-    "n_runs_per_world": 1,     # 每配置运行次数 (只运行1次)
-    "n_steps": 50,             # 每场步数 (较少)
+    "n_configs": 3,                 # 配置数 (较少)
+    "n_runs_per_world": 1,          # 每配置运行次数 (只运行1次)
+    "n_steps": 50,                  # 每场步数 (较少)
+    "max_worlds_per_config": 10,    # 每个配置最多 10 个 world (限制总数!)
 }
 
 
@@ -77,9 +87,20 @@ def get_all_agents():
     tracked_agents = inject_tracker_to_agents(lita_agents)
     
     # 组合 LitaAgents + 2025 Top Agents
-    all_agents = tracked_agents + list(TOP_AGENTS_2025)
+    competitors = tracked_agents + list(TOP_AGENTS_2025)
     
-    return all_agents, [a.__name__ for a in lita_agents]
+    # 如果参赛者太少，添加内置 Agent 填充
+    if len(competitors) < 10:
+        fillers = [
+            RandomStdAgent, 
+            GreedyStdAgent, 
+            SyncRandomStdAgent
+        ]
+        # 注入 Tracker 到 fillers (可选，如果想分析它们)
+        # tracked_fillers = inject_tracker_to_agents(fillers)
+        competitors.extend(fillers)
+    
+    return competitors, [a.__name__ for a in lita_agents]
 
 
 def save_tournament_results(output_dir: str, results, config: dict):
@@ -131,15 +152,20 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
     print(f"  • 配置数: {TOURNAMENT_CONFIG['n_configs']}")
     print(f"  • 每配置运行次数: {TOURNAMENT_CONFIG['n_runs_per_world']}")
     print(f"  • 每场步数: {TOURNAMENT_CONFIG['n_steps']}")
-    print(f"  • 总比赛数: {TOURNAMENT_CONFIG['n_configs'] * TOURNAMENT_CONFIG['n_runs_per_world']}")
+    print(f"  • 每配置最大 World 数: {TOURNAMENT_CONFIG['max_worlds_per_config']}")
+    max_total = TOURNAMENT_CONFIG['n_configs'] * TOURNAMENT_CONFIG['max_worlds_per_config']
+    print(f"  • 最大总 World 数: {max_total}")
     print(f"  • 输出目录: {output_dir}")
     
     # 配置 Tracker
     print("\n📝 配置 Tracker 系统...")
+    tracker_log_dir = os.path.join(output_dir, "tracker_logs")
+    os.makedirs(tracker_log_dir, exist_ok=True)
+    
     TrackerManager._loggers.clear()
     TrackerConfig.configure(
         enabled=True,
-        log_dir=output_dir,
+        log_dir=tracker_log_dir,
         console_echo=False
     )
     
@@ -149,7 +175,7 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
     
     print(f"\n参赛 Agents ({len(all_agents)}):")
     for i, agent in enumerate(all_agents, 1):
-        tag = "[LitaAgent]" if agent.__name__ in lita_names else "[Top Agent]"
+        tag = "[LitaAgent]" if agent.__name__ in lita_names else ""
         print(f"  {i}. {agent.__name__} {tag}")
     
     # 运行锦标赛
@@ -161,12 +187,19 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
         n_configs=TOURNAMENT_CONFIG['n_configs'],
         n_runs_per_world=TOURNAMENT_CONFIG['n_runs_per_world'],
         n_steps=TOURNAMENT_CONFIG['n_steps'],
+        max_worlds_per_config=TOURNAMENT_CONFIG['max_worlds_per_config'],
         print_exceptions=True,
-        verbose=True,
-        # 重要：使用 serial 模式以确保 Tracker 正常工作
-        # 并行模式下，每个子进程有独立的 TrackerManager，数据不会被保存
-        parallelism='serial',
+        verbose=False,
+        # 使用 parallel 模式以恢复进度条
+        # Tracker 数据由 Agent 在 step() 中自动保存到文件
+        parallelism='parallel',
+        # 设置总超时时间为 30 分钟，防止无限等待
+        total_timeout=1800,
     )
+    
+    # 重建 Tracker Summary (虽然 serial 模式下不需要，但保留无妨)
+    print("\n📊 重建 Tracker Summary...")
+    TrackerManager.rebuild_summary(tracker_log_dir)
     
     # 显示结果
     print("\n" + "=" * 60)

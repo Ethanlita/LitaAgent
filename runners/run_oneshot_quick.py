@@ -162,7 +162,7 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
         n_runs_per_world=TOURNAMENT_CONFIG['n_runs_per_world'],
         n_steps=TOURNAMENT_CONFIG['n_steps'],
         print_exceptions=True,
-        verbose=True,
+        verbose=False,
         # 重要：使用 serial 模式以确保 Tracker 正常工作
         # 并行模式下，每个子进程有独立的 TrackerManager，数据不会被保存
         parallelism='serial',

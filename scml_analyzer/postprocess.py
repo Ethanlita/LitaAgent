@@ -49,7 +49,22 @@ def postprocess_tournament(
     # 1. 保存 Tracker 数据
     print("\n💾 保存 Tracker 数据...")
     tracker_log_dir = os.path.join(output_dir, "tracker_logs")
-    TrackerManager.save_all(tracker_log_dir)
+    
+    # 检查是否已有数据（并行模式下可能已由 Agent 写入）
+    has_existing_logs = False
+    if os.path.exists(tracker_log_dir):
+        existing_files = list(Path(tracker_log_dir).glob("agent_*.json"))
+        if existing_files:
+            has_existing_logs = True
+            print(f"  ℹ️ 检测到已有 {len(existing_files)} 个日志文件")
+    
+    # 如果内存中有 Logger，保存它们（覆盖或补充）
+    if TrackerManager.get_all_loggers():
+        TrackerManager.save_all(tracker_log_dir)
+    elif has_existing_logs:
+        # 如果内存中没有 Logger 但文件存在（并行模式），尝试重建 summary
+        print("  🔄 重建 Tracker Summary...")
+        TrackerManager.rebuild_summary(tracker_log_dir)
     
     # 统计保存的文件
     if os.path.exists(tracker_log_dir):

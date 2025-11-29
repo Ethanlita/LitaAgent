@@ -1,0 +1,8 @@
+scml
+scml-agents
+pandas
+numpy
+matplotlib
+negmas
+tqdm
+psutil
