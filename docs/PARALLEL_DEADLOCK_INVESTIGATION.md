@@ -536,11 +536,17 @@ for i, future in track(
 | 纯内置 agents 大规模测试 | 756 worlds, 无 scml_analyzer | 确认是否是 scml_analyzer 的问题 |
 
 ### 10.4 后续排查计划
+**需要运行大规模干净测试**：我们现在的工作基本上集中于创建了一个新的scml_analyzer来跟踪agent的运行情况。然而，这一工具本身也有可能导致问题，我们必须排除这种可能性。
+具体而言，我们需要进行一次大规模的、完整的”干净运行“：即在不使用scml_analyzer追踪agent的情况下，运行一场完整的SCML 2025 Standard比赛，且应当有以下Agent参加： 
+  - Negmas内置agent
+  - 所有的LitaAgent
+  - 所有参加SCML 2025的Agent（先选Top 5，如果未能复现Hung的问题，则进一步扩大规模到全部）
+以之前的经验，这种规模的比赛一定会Hung。
 
-**如果纯内置 agents 大规模测试不会挂起**：
+**如果 agents 大规模测试不会挂起**：
 - 问题在 scml_analyzer，需要检查其多进程安全性
 
-**如果纯内置 agents 大规模测试仍然挂起**：
+**如果 agents 大规模测试仍然挂起**：
 1. **考虑将 Python 版本切换到 3.11** - 官方推荐版本
 2. **尝试使用 `dask` 作为并行后端** - `parallelism='dask'`
 3. **尝试使用 `loky` 替代 `multiprocessing`** - 更健壮的进程池实现
