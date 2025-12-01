@@ -2,7 +2,133 @@
 
 **日期**: 2025年11月29日  
 **状态**: 调查中  
-**影响**: Windows 平台上使用 `parallelism="parallel"` 运行 SCML 锦标赛时会卡死
+**影响**: Windows 和 Linux 平台上使用 `parallelism="parallel"` 运行 SCML 锦标赛时会挂起
+
+---
+
+## 0. SCML 2025 Standard Track 背景知识
+
+### 0.1 什么是 SCML？
+
+**SCML (Supply Chain Management League)** 是 ANAC (Automated Negotiating Agents Competition) 国际竞赛的一部分，自2019年起每年举办。该竞赛模拟一个供应链管理场景，参赛者需要设计自主代理（Agent）来管理工厂、与其他代理进行谈判以采购原材料和销售产品，目标是最大化利润。
+
+**官方网站**: https://scml.cs.brown.edu/  
+**文档**: https://scml.readthedocs.io/  
+**源码**: https://github.com/yasserfarouk/scml
+
+### 0.2 SCML 2025 与 SCML 2024 的关系
+
+> ⚠️ **重要说明**: SCML 2025 **沿用了 SCML 2024 的规则和 API**。
+> 
+> 官方PDF文档（scml2025.pdf, overview2025.pdf）发布于2025年3月，但规则内容仍标注为"SCML 2024"。文档中明确说：*"There are two tracks in SCML 2024. This document pertains only to the Standard track."*
+
+因此：
+- **运行比赛**: 使用 `anac2024_std()` 函数（没有 `anac2025_std`）
+- **World 类**: 使用 `SCML2024StdWorld`（没有 `SCML2025StdWorld`）
+- **Agent 基类**: 使用 `StdAgent` / `StdSyncAgent`
+- **2025年参赛Agents**: 存在于 `scml_agents.scml2025.standard.*`，但运行在 `SCML2024StdWorld` 上
+
+### 0.3 SCML 的两个赛道
+
+| 赛道 | 说明 | World 类 | Agent 基类 |
+|------|------|----------|------------|
+| **Standard** | 完整游戏，代理需要考虑长期规划、生产调度和多日谈判 | `SCML2024StdWorld` | `StdAgent` / `StdSyncAgent` |
+| **OneShot** | 简化游戏，专注于单日内的多对多并发谈判 | `SCML2024OneShotWorld` | `OneShotAgent` |
+
+### 0.4 SCML 2025 Standard Track 规则要点
+
+基于官方文档 (scml2025.pdf)：
+
+1. **产品与生产图**: 
+   - n 种产品类型：原材料(product 0) → 中间产品(products 1:n-2) → 最终产品(product n-1)
+   - n-1 个制造过程，每个将 product i 转换为 product i+1
+   - 工厂组织在 n-1 层 (L₀ 到 Lₙ₋₂)
+
+2. **外生合约 (Exogenous Contracts)**:
+   - L₀ 工厂收到外生**买入**合约（原材料供应）
+   - Lₙ₋₁ 工厂收到外生**卖出**合约（最终产品需求）
+
+3. **谈判议题**:
+   - **数量 (Quantity)**: 1 到 σ×λₐ（σ是配置参数，λₐ是生产线数量）
+   - **交付日期 (Delivery Day)**: 0（当天）到 H-1（H是谈判地平线）
+   - **单价 (Unit Price)**: 基于交易价格 tp(s) 的 ±κ 范围内
+
+4. **Standard vs OneShot 的主要区别**:
+   - 产品**不易腐**：可以累积库存（支付存储成本而非丢弃）
+   - 可以谈判**未来合约**：不仅限当天交付
+   - **价格范围更大**：需要认真考虑价格策略
+   - **生产图可以更深**：代理可能同时与供应商和消费者谈判
+
+5. **评估标准**: 使用 truncated mean（截断均值）进行排名
+
+### 0.5 如何运行一场 SCML 比赛
+
+#### 方法一：使用 `anac2024_std` 函数运行锦标赛
+
+```python
+from scml.utils import anac2024_std
+from scml.std import RandomStdAgent, GreedyStdAgent, SyncRandomStdAgent
+
+results = anac2024_std(
+    competitors=[RandomStdAgent, GreedyStdAgent, SyncRandomStdAgent],
+    n_configs=5,            # 生成的世界配置数量
+    n_runs_per_world=1,     # 每个配置重复运行的次数
+    n_steps=50,             # 每场模拟的步数（天数）
+    parallelism="parallel", # 并行模式: "parallel", "serial", "dask"
+    print_exceptions=True,
+)
+
+# 查看结果
+print(f"Winners: {results.winners}")
+print(results.total_scores)
+```
+
+#### 方法二：运行单个 World
+
+```python
+from scml.std import SCML2024StdWorld, RandomStdAgent, GreedyStdAgent
+
+agent_types = [RandomStdAgent, GreedyStdAgent]
+world = SCML2024StdWorld(
+    **SCML2024StdWorld.generate(agent_types=agent_types, n_steps=50),
+    construct_graphs=True,
+)
+world.run()
+
+# 查看统计信息
+world.plot_stats()
+```
+
+### 0.6 SCML 2025 Standard Track 获胜者
+
+| 名次 | Agent 名称 | 开发者 | 所属机构 |
+|------|-----------|--------|----------|
+| 🥇 1st | AS0 | Atsunaga Sadahiro | TUAT (东京农工大学) |
+| 🥈 2nd | XenoSotaAgent | Sota Sakaguchi, Takanobu Otsuka | NIT (名古屋工业大学) |
+| 🥉 3rd | UltraSuperMiracleSoraFinalAgentZ | Sora Nishizaki, Takanobu Otsuka | NIT |
+
+**获取2025年参赛Agents**:
+```python
+from scml_agents import get_agents
+
+# 获取2025年Standard赛道前5名
+top_agents = get_agents(2025, track="std", top_only=5, as_class=True)
+# 返回: [XenoSotaAgent, UltraSuperMiracleSoraFinalAgentZ, PonponAgent, ...]
+
+# 获取2025年获胜者
+winners = get_agents(2025, track="std", winners_only=True, as_class=True)
+```
+
+### 0.7 相关软件包
+
+| 包名 | 当前版本 | 用途 | 安装命令 |
+|------|----------|------|----------|
+| `scml` | 0.7.7 | SCML 核心库 | `pip install scml` |
+| `negmas` | 0.10.21 | 多代理谈判系统底层库 | `pip install negmas` |
+| `scml-agents` | 0.4.13 | 历届参赛 Agent 集合 | `pip install scml-agents` |
+| `scml-vis` | - | 可视化工具 | `pip install scml-vis` |
+
+**注意**: 官方推荐 Python 3.10 或 3.11，因为 stable_baselines3 尚不完全支持 Python 3.12。
 
 ---
 
@@ -10,7 +136,7 @@
 
 ### 1.1 现象
 
-在 Windows 平台上运行 SCML 2024/2025 锦标赛时，使用 `parallel` 模式会导致程序卡死：
+在运行 SCML 锦标赛时，使用 `parallel` 模式会导致程序挂起（Windows 和 Linux 均受影响）：
 
 - **CPU 使用率降到 0%** - 不是计算慢，而是真正的死锁/等待状态
 - **进度条停止在固定位置** - 相同配置下，每次都在相同进度卡死
@@ -391,13 +517,6 @@ for i, future in track(enumerate(as_completed(future_results)), ...):
 - NegMas 源码: `.venv/Lib/site-packages/negmas/tournaments/tournaments.py`
 - SCML 源码: `.venv/Lib/site-packages/scml/utils.py`
 
----
-
-**文档维护者**: GitHub Copilot  
-**最后更新**: 2025年12月1日
-
----
-
 ## 9. 第二阶段调查：Linux 环境复现 (2025-11-29)
 
 ### 9.1 环境信息
@@ -563,3 +682,40 @@ for i, future in track(
 | `test_clean_run.py` | 不加载 scml_analyzer 的干净测试 |
 | `test_clean_run_large.py` | 大规模干净测试脚本 |
 | `diagnose_logs/` | 监控日志输出目录 |
+
+
+## 12. 最新排查（2025-12-01）
+
+### 12.1 干净运行大规模测试（无 scml_analyzer）
+- **脚本**: `diagnose_deep.py`（新增 `tournament_path` → `results/clean_run_<timestamp>`，Top Agents 使用 `get_agents(2025, top_only=5, track='std')`）
+- **配置**: 13 Agents（5 Lita + 2025 Top5 + Random/Greedy/SyncRandom），`n_configs=3`，`n_steps=50`，`parallelism='parallel'`，不加载 scml_analyzer
+- **运行命令**: `PYTHONUNBUFFERED=1 ./venv/bin/python diagnose_deep.py > diagnose_logs/clean_run.out 2>&1`
+- **现象**: 运行约 16 分钟后卡死。`ps --ppid <主进程>` 仅剩 `resource_tracker`，所有 worker 退出，主进程 CPU≈0。
+- **日志**:
+  - 监控: `diagnose_logs/monitor_20251201_112232.log`
+  - 主日志: `diagnose_logs/main_20251201_112232.log`
+  - 输出目录: `results/clean_run_20251201_112232/20251201H112236910233Kqg-stage-0001/`
+
+### 12.2 gdb/strace 定位
+- 安装了 `gdb`、`python3.12-dbg`，在 full access 环境下调试。
+- **gdb (py-bt) 主线程栈**：
+  ```
+  diagnose_deep.py:243 main
+  → scml.utils.anac2024_std
+  → negmas.tournaments.tournament/_run_eval/run_tournament/_run_parallel
+  → rich.progress.track
+  → concurrent.futures.as_completed
+  → threading.Event.wait  ← 卡住
+  ```
+- **关键发现**: `as_completed()` 在等待 futures，worker 全部退出后未标记完成，导致无限等待（无全局超时）。
+- 线程概况：
+  - 大量 OpenBLAS/Scipy 线程在 `pthread_cond_wait`（空闲）。
+  - 两个 `rich` 进度线程在 futex 等待。
+  - CUDA 线程在 poll 等待。
+- strace (`/home/ecs-user/strace_10914.log`) 也显示主线程和等待线程长期 futex，未有子进程活动。
+
+### 12.3 结论
+- **确认挂点**: negmas `_run_parallel` 内 `as_completed()` 无超时，worker 意外退出后主进程永远等待。
+- **已排除**: scml_analyzer 影响；纯干净运行也会挂死。
+- **下一步建议**（对应 10.4）：
+  1) 尝试 Python 3.11 复现；2) 尝试 `parallelism='dask'` 或 joblib/loky；3) 在 negmas `_run_parallel` 增加超时/日志，定位崩溃的 worker。

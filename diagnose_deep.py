@@ -31,10 +31,16 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 LOG_DIR = PROJECT_ROOT / "diagnose_logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+# 结果目录（确保在沙箱内写入）
+RESULTS_ROOT = PROJECT_ROOT / "results"
+RESULTS_ROOT.mkdir(exist_ok=True)
+
 # 日志文件
 TIMESTAMP = datetime.now().strftime('%Y%m%d_%H%M%S')
 MONITOR_LOG = LOG_DIR / f"monitor_{TIMESTAMP}.log"
 MAIN_LOG = LOG_DIR / f"main_{TIMESTAMP}.log"
+TOURNAMENT_DIR = RESULTS_ROOT / f"clean_run_{TIMESTAMP}"
+TOURNAMENT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def log_to_file(filepath, message):
@@ -178,8 +184,8 @@ def main():
     
     try:
         from scml_agents import get_agents
-        TOP_AGENTS = get_agents(2025, as_class=True, top_only=True, track='std')
-        print(f"✓ 加载 Top Agents: {[a.__name__ for a in TOP_AGENTS]}")
+        TOP_AGENTS = get_agents(2025, as_class=True, top_only=5, track='std')
+        print(f"✓ 加载 Top Agents ({len(TOP_AGENTS)}): {[a.__name__ for a in TOP_AGENTS]}")
     except Exception as e:
         print(f"⚠️ 无法加载 Top Agents: {e}")
         TOP_AGENTS = []
@@ -200,6 +206,7 @@ def main():
     print(f"主进程 PID: {os.getpid()}")
     print(f"监控日志: {MONITOR_LOG}")
     print(f"主日志: {MAIN_LOG}")
+    print(f"Negmas 输出目录: {TOURNAMENT_DIR}")
     print()
     
     # 记录到主日志
@@ -242,6 +249,7 @@ def main():
             print_exceptions=True,
             verbose=False,
             parallelism='parallel',
+            tournament_path=TOURNAMENT_DIR,
             # 不设置 total_timeout
         )
         
