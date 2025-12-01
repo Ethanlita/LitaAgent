@@ -1,9 +1,8 @@
 # SCML Parallel 模式死锁问题调查报告
 
 **日期**: 2025年11月29日  
-**状态**: 🔴 调查中（第二阶段）  
-**环境**: Linux (Ubuntu) 和 Windows（均有复现，非系统环境问题）  
-**影响**: 在使用 `parallelism="parallel"` 运行 SCML 锦标赛时，程序会在运行一段时间后挂起 (Hang)。
+**状态**: 调查中  
+**影响**: Windows 平台上使用 `parallelism="parallel"` 运行 SCML 锦标赛时会卡死
 
 ---
 
@@ -11,23 +10,408 @@
 
 ### 1.1 现象
 
-在运行 SCML 2025 锦标赛时，程序会在运行一段时间后挂起：
+在 Windows 平台上运行 SCML 2024/2025 锦标赛时，使用 `parallel` 模式会导致程序卡死：
 
-**第一阶段问题（已解决）**：
-- **原因**: `verbose=True` 导致 stdout buffer 溢出
-- **解决**: 设置 `verbose=False`
+- **CPU 使用率降到 0%** - 不是计算慢，而是真正的死锁/等待状态
+- **进度条停止在固定位置** - 相同配置下，每次都在相同进度卡死
+- **Serial 模式完全正常** - 只有 Parallel 模式有问题
 
-**第二阶段问题（当前调查中）**：
-即使设置了 `verbose=False`，程序仍然会挂起。具体表现为：
+### 1.2 卡死位置的规律
 
-1. **进度条停止更新** - `rich` 的进度条停在某个百分比不再前进
-2. **所有工作子进程消失** - 通过 `top` 或 `ps` 查看，只剩下1个 Python 进程（主进程 + `multiprocessing.resource_tracker`）
-3. **CPU 使用率接近 0** - 系统负载从运行时的 10+ 下降到接近 0
-4. **主进程空等** - 主进程持续运行但不做任何有意义的工作
+| 测试配置 | 卡死进度 |
+|---------|---------|
+| 4 agents, n_configs=1 | 40% |
+| 10 agents (非Tracked), n_configs=2 | 17% |
+| 12 agents (Tracked), n_configs=2 | 4-12% |
+| 9 agents | 63% |
 
-### 1.2 详细监控数据
+**关键发现**: 卡死位置是**确定性的**，相同配置每次都在相同位置卡死。
 
-通过 `diagnose_deep.py` 脚本进行深入监控，记录了以下关键数据：
+### 1.3 环境信息
+
+- **操作系统**: Windows 11
+- **Python**: 3.12
+- **CPU**: 16 核
+- **SCML 版本**: 最新版（使用 `anac2024_std` API）
+- **NegMas 版本**: 最新版
+
+---
+
+## 2. 调查过程
+
+### 2.1 测试 1: 基础 Multiprocessing 机制
+
+**测试文件**: `test_mp_minimal.py`
+
+**测试方法**:
+```python
+from multiprocessing import Pool
+from scml.std import SCML2024StdWorld
+
+def run_single_world(config):
+    world = SCML2024StdWorld(**config, construct_graphs=False)
+    world.run()
+    return ("success", world.current_step, world.name)
+
+# 测试 Pool(4) 运行 4 个 worlds
+with Pool(4) as pool:
+    results = pool.map(run_single_world, configs)
+```
+
+**结果**: ✅ **完全正常**
+- Pool(1): 成功，11.3秒
+- Pool(2): 成功，14.2秒
+- Pool(4): 成功，14.8秒
+
+**结论**: 基础的 `multiprocessing.Pool` 没有问题。
+
+---
+
+### 2.2 测试 2: ProcessPoolExecutor
+
+**测试文件**: `test_executor.py`
+
+**测试方法**:
+```python
+from concurrent import futures
+
+with futures.ProcessPoolExecutor(max_workers=4) as executor:
+    future_results = [executor.submit(run_single_world, cfg) for cfg in configs]
+    for future in futures.as_completed(future_results):
+        result = future.result(timeout=60)
+```
+
+**结果**: ✅ **完全正常**
+- 4 workers, 4 tasks: 成功，16.6秒
+- 4 workers, 8 tasks: 成功，18.5秒
+
+**结论**: `ProcessPoolExecutor` + `as_completed` 本身没有问题。
+
+---
+
+### 2.3 测试 3: Agent 类的 Pickle 序列化
+
+**测试文件**: `test_pickle.py`
+
+**测试方法**:
+```python
+import pickle
+
+# 测试每个 Agent 类是否可以 pickle
+for agent_class in all_agents:
+    data = pickle.dumps(agent_class)
+    pickle.loads(data)
+```
+
+**结果**: ✅ **所有 Agent 类都可以正常 pickle**
+- LitaAgentY: 55 bytes
+- LitaAgentYTracked: 62 bytes
+- AX, CautiousStdAgent, DogAgent 等: 全部成功
+
+**结论**: Agent 类的序列化没有问题。
+
+---
+
+### 2.4 测试 4: NegMas 传递给子进程的对象
+
+**测试文件**: `test_pickle_negmas.py`
+
+**测试方法**:
+```python
+# 测试 World 配置和 Generator 函数
+config = SCML2024StdWorld.generate(agent_types=agents, n_steps=10)
+pickle.dumps(config)  # 测试配置
+pickle.dumps(anac2024_std_world_generator)  # 测试函数
+```
+
+**结果**: ✅ **全部正常**
+- config (整个配置): 10,622 bytes
+- anac2024_std_world_generator: 103 bytes
+- balance_calculator_std: 56 bytes
+
+**结论**: NegMas 传递给子进程的对象都可以正确序列化。
+
+---
+
+### 2.5 测试 5: Agent 实例的 Pickle
+
+**测试文件**: `test_pickle_instance.py`
+
+**测试方法**:
+```python
+world = SCML2024StdWorld(**config)
+for agent in world.agents.values():
+    pickle.dumps(agent)  # 测试实例
+```
+
+**结果**: ❌ **失败 - RecursionError**
+```
+RecursionError: maximum recursion depth exceeded
+```
+
+**发现**: Agent 实例包含循环引用（agent → world → agent），无法直接 pickle。
+
+**但这不是问题原因**: NegMas 传递的是配置字典，不是 Agent 实例。Agent 实例在子进程中重新创建。
+
+---
+
+### 2.6 测试 6: 子进程中 Import Agents
+
+**测试文件**: `diagnose_spawn.py`
+
+**测试方法**:
+```python
+from multiprocessing import Process, Queue
+
+def worker_import_test(queue, agent_module, agent_name):
+    module = __import__(agent_module, fromlist=[agent_name])
+    agent_class = getattr(module, agent_name)
+    queue.put(("success", agent_name))
+
+# 在子进程中测试 import
+p = Process(target=worker_import_test, args=(queue, module, name))
+p.start()
+p.join(timeout=30)
+```
+
+**结果**: ✅ **所有 Agent 都可以在子进程中正常 import**
+- LitaAgentYTracked: 2.08秒
+- LitaAgentNTracked: 9.17秒（较慢但成功）
+- AX, CautiousStdAgent 等: 全部成功
+
+**结论**: 子进程中的模块导入没有问题。
+
+---
+
+### 2.7 测试 7: 隔离测试每对 Agents
+
+**测试文件**: `diagnose_deep.py` (测试 4)
+
+**测试方法**:
+```python
+# 逐一测试每个 agent 与基准 agent 的组合
+for agent in test_agents:
+    results = anac2024_std(
+        competitors=[base, agent],
+        n_configs=2,
+        parallelism="parallel",
+    )
+```
+
+**结果**: ✅ **所有单独的 agent 对都正常完成**
+
+**结论**: 问题不是某个特定 Agent 导致的。
+
+---
+
+### 2.8 测试 8: 非 Tracked 版本的 Agents
+
+**测试文件**: `test_non_tracked_large.py`
+
+**测试方法**:
+```python
+# 使用不带 TrackerMixin 的原始 Agent
+all_agents = [
+    LitaAgentY,  # 不是 LitaAgentYTracked
+    LitaAgentYR,
+    LitaAgentN,
+    ...
+]
+
+results = anac2024_std(
+    competitors=all_agents,
+    n_configs=2,
+    parallelism="parallel:0.75",
+)
+```
+
+**结果**: ❌ **仍然卡死（在 17% 位置）**
+
+**结论**: **问题不在 TrackerMixin 的线程锁序列化上**。
+
+---
+
+### 2.9 测试 9: Dask Distributed 模式
+
+**测试文件**: `test_alternatives.py`, `test_dask_full.py`
+
+**测试方法**:
+```python
+from dask.distributed import Client
+
+client = Client(n_workers=4)
+results = anac2024_std(
+    competitors=agents,
+    parallelism="distributed",
+)
+```
+
+**结果**: 
+- 4 agents: ✅ 成功，17.37秒
+- 12 agents: ❌ 出现内存错误
+  ```
+  Unable to allocate 3.84 EiB for an array with shape (4428796755203867975,)
+  ```
+
+**发现**: Dask 模式出现数据损坏，尝试分配不可能的内存大小，说明序列化/反序列化过程中有问题。
+
+---
+
+### 2.10 测试 10: 渐进式增加 Agents 数量
+
+**测试文件**: `test_progressive.py`, `test_progressive2.py`
+
+**测试方法**:
+```python
+# 从 2 个 agents 开始，逐步增加到 12 个
+for n in range(2, 13):
+    agents = ALL_AGENTS[:n]
+    results = anac2024_std(competitors=agents, ...)
+```
+
+**结果**:
+| Agents 数量 | 结果 | 耗时 |
+|------------|------|------|
+| 2 | ✅ 成功 | 15.7s |
+| 3 | ✅ 成功 | 15.9s |
+| 4 | ✅ 成功 | 24.2s |
+| 5 | ✅ 成功 | 38.5s |
+| 6 | ✅ 成功 | 53.4s |
+| 7 | ✅ 成功 | 80.4s |
+| 8 | ✅ 成功 | 66.7s |
+| 9 | ❌ 卡死 | - |
+
+**发现**: 问题在 9 个 agents 时开始出现，但这可能与 world 组合数量有关，而不是 agent 数量本身。
+
+---
+
+## 3. 已排除的问题
+
+| 可能原因 | 状态 | 证据 |
+|---------|------|------|
+| multiprocessing.Pool 问题 | ❌ 已排除 | 测试 1 完全正常 |
+| ProcessPoolExecutor 问题 | ❌ 已排除 | 测试 2 完全正常 |
+| Agent 类 pickle 问题 | ❌ 已排除 | 测试 3 全部成功 |
+| NegMas 参数 pickle 问题 | ❌ 已排除 | 测试 4 全部成功 |
+| 子进程 import 问题 | ❌ 已排除 | 测试 6 全部成功 |
+| 特定 Agent 的 bug | ❌ 已排除 | 测试 7 所有组合正常 |
+| TrackerMixin 线程锁问题 | ❌ 已排除 | 测试 8 非 Tracked 版本也卡死 |
+| Worker 数量太多 | ❌ 已排除 | 0.25 和 0.75 都会卡死 |
+
+---
+
+## 4. 关键发现
+
+### 4.1 确定性死锁
+
+死锁位置是**确定性的** - 相同配置每次都在相同进度卡死。这意味着：
+- 不是随机的竞态条件
+- 不是 Agent 的随机行为导致
+- 很可能是 NegMas/SCML 内部的某个确定性逻辑问题
+
+### 4.2 问题层级
+
+```
+✅ multiprocessing (底层) - 正常
+✅ ProcessPoolExecutor (中层) - 正常  
+✅ 我们的代码 (Agent/Tracker) - 正常
+❌ NegMas tournament() (上层) - 有问题
+```
+
+问题出在 **NegMas 的 `tournament()` 函数** 或其调用的内部函数中。
+
+### 4.3 Serial vs Parallel
+
+- **Serial 模式**: 永远正常，任何配置都能完成
+- **Parallel 模式**: 在足够多的 world 组合时会死锁
+
+---
+
+## 5. 可能的根本原因（待验证）
+
+### 5.1 NegMas 的 `_run_parallel` 函数
+
+位置: `negmas/tournaments/tournaments.py`
+
+```python
+for i, future in track(enumerate(as_completed(future_results)), ...):
+    result = future.result(timeout=timeout)
+```
+
+`futures.as_completed()` 本身没有全局超时机制。如果某个子进程卡死，整个循环会无限等待。
+
+### 5.2 可能的死锁点
+
+1. **World 运行中的某个步骤** - 特定的 world 配置在特定步骤卡住
+2. **谈判机制** - NegMas 的谈判可能在某些条件下无限等待
+3. **资源竞争** - 多个 world 同时访问某些共享资源
+
+---
+
+## 6. 下一步计划
+
+### 6.1 短期方案
+
+1. **使用 Serial 模式** - 虽然慢但可靠
+2. **减少 n_configs** - 减少 world 组合数量
+
+### 6.2 进一步调查
+
+1. **在 NegMas 代码中加日志** - 确定具体是哪个 world/step 导致卡死
+2. **检查 NegMas GitHub issues** - 搜索类似的 Windows parallel 问题
+3. **向 NegMas 提交 issue** - 报告这个 bug
+
+### 6.3 长期方案
+
+1. **等待 NegMas 修复**
+2. **实现自己的并行执行逻辑** - 绕过 NegMas 的 tournament 函数
+
+---
+
+## 7. 相关文件
+
+| 文件 | 用途 |
+|------|------|
+| `test_mp_minimal.py` | 测试基础 multiprocessing |
+| `test_executor.py` | 测试 ProcessPoolExecutor |
+| `test_pickle.py` | 测试 Agent 类 pickle |
+| `test_pickle_instance.py` | 测试 Agent 实例 pickle |
+| `test_pickle_negmas.py` | 测试 NegMas 参数 pickle |
+| `diagnose_spawn.py` | 测试子进程 import |
+| `diagnose_deep.py` | 综合诊断测试 |
+| `test_non_tracked_large.py` | 测试非 Tracked agents |
+| `test_progressive.py` | 渐进式增加 agents |
+| `test_alternatives.py` | 测试 Dask 替代方案 |
+
+---
+
+## 8. 参考资料
+
+- SCML 2025 官方文档: `scml2025.pdf`, `overview2025.pdf`
+- NegMas 源码: `.venv/Lib/site-packages/negmas/tournaments/tournaments.py`
+- SCML 源码: `.venv/Lib/site-packages/scml/utils.py`
+
+---
+
+**文档维护者**: GitHub Copilot  
+**最后更新**: 2025年12月1日
+
+---
+
+## 9. 第二阶段调查：Linux 环境复现 (2025-11-29)
+
+### 9.1 环境信息
+
+问题在 Linux (Ubuntu) 环境下同样复现，证明**不是 Windows 特有问题**。
+
+- **操作系统**: Linux (Ubuntu)
+- **Python**: 3.12
+- **SCML 版本**: 0.7.3
+- **NegMas 版本**: 0.10.21
+
+### 9.2 详细监控数据
+
+通过 `diagnose_deep.py` 脚本进行深入监控：
 
 **配置**：
 - 9 个 Agents (5 LitaAgent + 1 TopAgent + 3 内置Agent)
@@ -43,145 +427,22 @@
 21:02:26 - 21:41:xx  主进程空等，CPU使用率接近0，系统负载降到接近0
 ```
 
-**进程状态监控（摘录）**：
-```
-[1015s] Load: 13.93 12.42 7.50 | Children: 34
-[1026s] Load: 13.64 12.41 7.55 | Children: 34
-...
-[1708s] Load: 2.23 5.32 6.08 | Children: 2   # 工作进程开始消失
-[1719s] Load: 1.82 5.06 5.97 | Children: 2
-...
-[3344s] Load: 0.00 0.00 1.27 | Children: 2   # 系统完全空闲
-[3355s] Load: 0.00 0.00 1.18 | Children: 2   # 只剩 resource_tracker
-```
+### 9.3 Future 状态追踪
 
-### 1.3 关键发现
-
-1. **所有 futures 已提交，所有工作进程已退出**：
-   - 756 个 worlds 的任务被提交到 ProcessPoolExecutor
-   - 32个工作进程在某个时间点全部正常退出
-   - 但主进程中的 `as_completed()` 迭代器没有返回所有结果
-
-2. **主进程卡在 `as_completed()` 循环中**：
-   - negmas 的 `tournaments.py` 使用 `for future in as_completed(future_results)` 收集结果
-   - 当某些 futures 的结果通知丢失时，`as_completed()` 会无限等待
-
-3. **跨平台复现**：
-   - 此问题在 Ubuntu 和 Windows 下均有复现
-   - 排除了操作系统特定问题的可能性
-
-### 1.4 原因分析
-
-#### A. Stdout Buffer Overflow (第一阶段，已解决)
-当 `anac2024_std` 设置为 `verbose=True` 时，大量日志导致管道缓冲区溢出。
-
-#### B. Multiprocessing Safety (已加固)
-`threading.Lock` 的 pickle 和 fork 安全问题已通过 `__getstate__`/`__setstate__` 解决。
-
-#### C. Future 结果丢失 (第二阶段，调查中)
-疑似问题：
-- `ProcessPoolExecutor` 的某些 worker 可能异常退出但未正确报告错误
-- `as_completed()` 等待的某些 futures 永远不会收到完成通知
-- 可能与 negmas 内部的异常处理或进程间通信有关
-
----
-
-## 2. 已实施的解决方案（第一阶段）
-
-### 2.1 禁用详细日志 (关键修复)
-
-在所有并行运行的脚本中，将 `anac2024_std` 或 `anac2024_oneshot` 的 `verbose` 参数设置为 `False`。
-
-```python
-results = anac2024_std(
-    # ...
-    verbose=False,  # 关键：防止 stdout buffer 溢出
-    # ...
-)
-```
-
-已更新的文件：
-- `runners/run_std_full.py`
-- `runners/run_std_quick.py`
-- `runners/run_oneshot_full.py`
-- `runners/run_oneshot_quick.py`
-- `reproduce_deadlock.py`
-
-### 2.2 代码加固 (Code Hardening)
-
-为了防止未来的死锁和兼容 Spawn 模式，我们对 `scml_analyzer/auto_tracker.py` 进行了以下修复：
-
-#### 修复 1: Pickle 支持 (针对 Spawn 模式)
-在 `AgentLogger` 类中实现了 `__getstate__` 和 `__setstate__`，在序列化时排除 `_lock` 对象，在反序列化时重新创建锁。
-
-```python
-def __getstate__(self):
-    state = self.__dict__.copy()
-    if '_lock' in state:
-        del state['_lock']  # 锁不能被 pickle
-    return state
-
-def __setstate__(self, state):
-    self.__dict__.update(state)
-    self._lock = threading.Lock()  # 重建锁
-```
-
-#### 修复 2: Fork 安全 (针对 Linux Fork 模式)
-在 `TrackerManager` 中引入了 PID 检查机制。每次获取锁或 Logger 时，检查当前 PID 是否与创建时的 PID 一致。如果不一致（说明发生了 fork），则重置锁和 Logger，确保子进程拥有干净的状态。
-
-```python
-@classmethod
-def _get_lock(cls):
-    # 检测 fork：如果 PID 变化，重置锁
-    if os.getpid() != cls._pid:
-        cls._reset_for_new_process()
-    return cls._lock
-```
-
----
-
-## 3. 第一阶段验证结果
-
-使用 `reproduce_deadlock.py` 进行验证（小规模测试）：
-
-- **配置**: 2 configs, 50 steps, `verbose=False`
-- **结果**: ✅ 成功完成
-- **耗时**: 约 40-50 秒
-
-**但是**：在更大规模的测试中（如 `run_std_quick.py` 默认配置，756 个 worlds），问题仍然存在。
-
----
-
-## 4. 第二阶段调查（进行中）
-
-### 4.1 调查工具
-
-1. **`diagnose_deep.py`** - 深度监控脚本
-   - 每10秒记录子进程状态到日志文件
-   - 记录系统负载、进程数量、进程状态
-   - 将stdout和监控日志分别输出到不同文件
-
-2. **`diagnose_futures.py`** - Future 状态追踪脚本
-   - Monkey-patch `concurrent.futures.as_completed()` 监控每个 future 的状态
-   - 每10秒报告 `Done/Running/Pending/Cancelled` 统计
-   - 支持 `SIGUSR1` 信号打印所有线程的堆栈跟踪
-
-### 4.2 关键实验结果 (2025-11-29 22:17)
-
-使用 `diagnose_futures.py` 进行监控，在程序挂起时获得了以下数据：
+使用 `diagnose_futures.py` 脚本 Monkey-patch `as_completed()` 进行监控：
 
 **Future 状态监控**：
 ```
 [22:13:18] as_completed yielded future 320/756 after 910.9s, status=success
 [22:13:27] [Monitor 920s] Total=756 Done=320 Running=33 Pending=436 Cancelled=0
-... (状态停止变化，持续2分钟以上)
-[22:15:17] [Monitor 1030s] Total=756 Done=320 Running=33 Pending=436 Cancelled=0
+... (状态停止变化，持续8分钟以上)
+[22:21:37] [Monitor 1410s] Total=756 Done=320 Running=33 Pending=436 Cancelled=0
 ```
 
-**进程状态**：
+**进程状态** (挂起时)：
 ```bash
 $ ps -ef | grep python
-# 只有主进程 (105310) 和 resource_tracker (105566)
+# 只有主进程和 resource_tracker
 # 没有任何工作子进程
 
 $ pstree -p 105310
@@ -190,83 +451,41 @@ python(105310)─┬─python(105566)    # resource_tracker
                └─...
 ```
 
-**堆栈跟踪** (通过 `kill -USR1 105310` 获取)：
+### 9.4 堆栈跟踪分析
+
+通过 `kill -USR1` 获取的堆栈跟踪：
+
 ```
-Thread 135753438852800 (QueueFeederThread):
-  File 'multiprocessing/queues.py', line 270, in _feed
-    send_bytes(obj)
+Thread QueueFeederThread:
   File 'multiprocessing/connection.py', line 384, in _send
     n = write(self._handle, buf)
-  # ⚠️ QueueFeederThread 卡在 write() 调用！
+  # ⚠️ 卡在 write() - 管道另一端已关闭
 
-Thread 135753452484288 (Thread-1):  # ProcessPoolExecutor 的管理线程
-  File 'concurrent/futures/process.py', line 353, in run
-    result_item, is_broken, cause = self.wait_result_broken_or_wakeup()
+Thread Thread-1 (ProcessPoolExecutor 管理线程):
   File 'concurrent/futures/process.py', line 426, in wait_result_broken_or_wakeup
     ready = mp.connection.wait(readers + worker_sentinels)
-  File 'selectors.py', line 415, in select
-    fd_event_list = self._selector.poll(timeout)
-  # ⚠️ 在等待 worker 结果，但 worker 已全部退出
+  # ⚠️ 等待已退出的 worker
 
-Thread 135762625311488 (MainThread):
+Thread MainThread:
   File 'negmas/tournaments/tournaments.py', line 1395, in _run_parallel
-    for i, future in track(
+    for i, future in track(enumerate(as_completed(future_results)), ...)
   File 'concurrent/futures/_base.py', line 243, in as_completed
     waiter.event.wait(wait_timeout)
-  # ⚠️ 主线程卡在 as_completed()
+  # ⚠️ 卡在 as_completed() - 等待永远不会完成的 futures
 ```
 
-### 4.3 问题根因分析
-
-**核心问题：Worker 进程死亡但 Future 状态未更新**
-
-1. **现象**：
-   - 756 个任务，完成了 320 个 (42%)
-   - 33 个 futures 标记为 `Running`，436 个标记为 `Pending`
-   - 但实际上 **没有任何 worker 进程在运行**
-
-2. **根因**：
-   - ProcessPoolExecutor 的 worker 进程在某个时刻全部退出
-   - 但 executor 内部没有检测到这些进程的异常退出
-   - 导致对应的 futures 永远保持在 `Running` 状态
-   - `as_completed()` 永远等待这些 "running" 的 futures
-
-3. **QueueFeederThread 阻塞**：
-   - `QueueFeederThread` 卡在 `write()` 调用
-   - 可能是因为管道的另一端（worker）已关闭，但 feeder 线程没有收到通知
-   - 这是一个典型的 **管道破裂 (Broken Pipe)** 场景，但信号被忽略了
-
-4. **系统日志检查结果**：
-   - ❌ 没有发现 OOM (Out of Memory) killer 记录
-   - ❌ 没有发现 segfault 或其他内核级别的进程终止记录
-   - Worker 进程可能是"正常退出"但未正确通知 executor
-
-5. **状态冻结确认**：
-   - 从 22:13:18 最后一个任务完成到 22:21:37（8分钟+）
-   - `Done=320 Running=33 Pending=436` 完全没有变化
-   - 主进程线程数：69个（主要是 ProcessPoolExecutor 的线程池）
-   - 子进程：只剩 resource_tracker
-
-### 4.4 回答最初的四个问题
+### 9.5 根因确认
 
 | 问题 | 答案 |
 |------|------|
-| 1. 真的有未完成的 future 吗？ | ✅ 是的，436 个 Pending + 33 个 Running = 469 个未完成 |
-| 2. 子进程都结束了，为什么 future 未完成？ | ⚠️ ProcessPoolExecutor 没有正确检测到 worker 退出，导致 futures 状态未更新 |
-| 3. 主进程真的卡在等待 Future 的循环吗？ | ✅ 是的，堆栈跟踪确认主线程在 `as_completed()` 的 `waiter.event.wait()` |
-| 4. 即使加入了 timeout，为什么没有解决问题？ | ⚠️ negmas 的 `_run_parallel` 中 `as_completed()` 没有传入 timeout 参数，total_timeout 只在循环体内检查，但循环根本进不去 |
+| 1. 真的有未完成的 future 吗？ | ✅ 是的，469 个未完成 (436 Pending + 33 Running) |
+| 2. 子进程都结束了，为什么 future 未完成？ | ProcessPoolExecutor 没有正确检测到 worker 退出 |
+| 3. 主进程真的卡在等待 Future 吗？ | ✅ 是的，堆栈确认卡在 `as_completed()` |
+| 4. timeout 为什么没效果？ | negmas 没有给 `as_completed()` 传 timeout 参数 |
 
-### 4.5 下一步调查方向
+### 9.6 negmas 源码问题
 
-1. **检查 worker 退出原因**：修改 negmas 或使用 `loky` 替代 `multiprocessing`
-2. **添加 BrokenProcessPool 检测**：在 as_completed 循环中添加 executor 状态检查
-3. **减少并发度**：使用 `parallelism='parallel:0.5'` 减少同时运行的 worker 数量
-4. **使用 `dask` 替代**：`parallelism='dask'` 使用更健壮的分布式执行框架
-5. **给 as_completed 添加 timeout**：修改 negmas 源码，让 as_completed 有超时机制
-
-### 4.6 negmas 源码分析
-
-问题代码位于 `/venv/lib/python3.12/site-packages/negmas/tournaments/tournaments.py`:
+问题代码位于 `negmas/tournaments/tournaments.py`:
 
 ```python
 # Line 1395 - _run_parallel 函数
@@ -279,30 +498,62 @@ for i, future in track(
         break  # ⚠️ 这行永远执行不到，因为 as_completed 已经阻塞了
 ```
 
-`as_completed()` 支持 `timeout` 参数，但 negmas 没有使用它。这是导致主进程无法退出的直接原因。
+---
+
+## 10. 第三阶段调查：排除 scml_analyzer 影响 (2025-12-01)
+
+### 10.1 环境版本检查
+
+**SCML 官方要求** (来自 scml2025.web.app)：
+> "We only support python 3.10 and 3.11. The reason python 3.12 is not yet supported is that stable_baselines3 is not supporting it yet."
+
+**当前环境**：
+- Python 版本：3.12 ⚠️ (官方不推荐)
+- scml 版本：0.7.3
+- negmas 版本：0.10.21
+
+### 10.2 干净运行测试
+
+为排除 `scml_analyzer` 模块导致问题的可能性，创建了不加载任何自定义代码的测试脚本。
+
+**测试脚本**: `test_clean_run.py`
+- 只使用 scml 内置 agents (RandomStdAgent, GreedyStdAgent, SyncRandomStdAgent)
+- 不导入任何 LitaAgent 或 scml_analyzer 代码
+
+**小规模测试结果** (27-54 worlds)：
+```
+✓ 测试成功完成
+✓ 没有发生挂起
+⚠️ 但观察到 worker 进程异常终止的警告
+```
+
+### 10.3 待验证测试
+
+需要进行大规模测试（756 worlds）来确认问题来源：
+
+| 测试 | 配置 | 目的 |
+|------|------|------|
+| 纯内置 agents 大规模测试 | 756 worlds, 无 scml_analyzer | 确认是否是 scml_analyzer 的问题 |
+
+### 10.4 后续排查计划
+
+**如果纯内置 agents 大规模测试不会挂起**：
+- 问题在 scml_analyzer，需要检查其多进程安全性
+
+**如果纯内置 agents 大规模测试仍然挂起**：
+1. **考虑将 Python 版本切换到 3.11** - 官方推荐版本
+2. **尝试使用 `dask` 作为并行后端** - `parallelism='dask'`
+3. **尝试使用 `loky` 替代 `multiprocessing`** - 更健壮的进程池实现
+4. **检查 scml/negmas 是否提供配置选项** - 在不修改源码的情况下设置 `as_completed()` 的 timeout
 
 ---
 
-## 5. 最佳实践建议
+## 11. 相关文件（更新）
 
-1. **并行运行时务必设置 `verbose=False`**。如果需要调试，请减少并发数或使用 `serial` 模式。
-2. **避免在全局对象中持有锁**。如果必须持有，请处理好 pickle 和 fork 的情况。
-3. **使用文件日志代替 stdout**。`TrackerManager` 已经配置为将日志写入文件，这比打印到控制台更安全且性能更好。
-4. **限制 world 数量**：使用 `max_worlds_per_config` 参数限制每个配置的 world 数量，减少出问题的概率。
-
----
-
-## 6. 相关文件
-
-- `diagnose_deep.py` - 深度监控脚本
-- `diagnose_futures.py` - Future 状态追踪脚本
-- `diagnose_progressive.py` - 渐进式测试脚本
-- `diagnose_parallel_hang.py` - 并行挂起诊断脚本
-- `diagnose_logs/` - 监控日志输出目录
-  - `futures_trace.log` - Future 状态追踪日志
-  - `futures_run.log` - 完整运行输出
-
----
-
-**文档维护者**: GitHub Copilot  
-**最后更新**: 2025年11月29日 22:25
+| 文件 | 用途 |
+|------|------|
+| `diagnose_deep.py` | 深度监控脚本 |
+| `diagnose_futures.py` | Future 状态追踪脚本 |
+| `test_clean_run.py` | 不加载 scml_analyzer 的干净测试 |
+| `test_clean_run_large.py` | 大规模干净测试脚本 |
+| `diagnose_logs/` | 监控日志输出目录 |
