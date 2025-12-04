@@ -165,7 +165,7 @@ def run_tournament(output_dir: str = None, port: int = 8080, no_server: bool = F
         n_runs_per_world=TOURNAMENT_CONFIG['n_runs_per_world'],
         n_steps=TOURNAMENT_CONFIG['n_steps'],
         print_exceptions=True,
-        verbose=False,
+        verbose=True,  # 打开 verbose 以显示进度条/完成率
         # 使用 parallel 模式以启用进度条，并利用 TrackedAgent 的自动保存功能
         parallelism='parallel',
     )
