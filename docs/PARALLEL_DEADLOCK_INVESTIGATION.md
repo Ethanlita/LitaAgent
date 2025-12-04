@@ -718,4 +718,66 @@ for i, future in track(
 - **确认挂点**: negmas `_run_parallel` 内 `as_completed()` 无超时，worker 意外退出后主进程永远等待。
 - **已排除**: scml_analyzer 影响；纯干净运行也会挂死。
 - **下一步建议**（对应 10.4）：
-  1) 尝试 Python 3.11 复现；2) 尝试 `parallelism='dask'` 或 joblib/loky；3) 在 negmas `_run_parallel` 增加超时/日志，定位崩溃的 worker。
+ 1) 尝试 Python 3.11 复现；
+ 2) 尝试 `parallelism='dask'` 或 joblib/loky；
+ 3) 在 negmas `_run_parallel` 增加超时/日志，定位崩溃的 worker。
+
+## 13. 最新排查（二次 Hung，worker 追踪）
+
+### 13.1 新增追踪机制
+- 在 `diagnose_deep.py` 对 negmas `_run_worlds` 做 monkeypatch，记录子进程的 `worker_start/worker_done/worker_error/worker_exit` 到 `diagnose_logs/worker_trace_<timestamp>.log`，包含 run_id 与 world 名称（config_id/name）。使用 `spawn` 保持与官方行为一致，追踪函数定义在顶层以便 pickle。
+
+### 13.2 本次运行（clean_run_20251201_121933，已 Hung）
+- 配置同前：13 agents，n_configs=3，n_steps=50，parallelism='parallel'，无 tracker。
+- 运行约 16 分钟后再次挂起。监控：`diagnose_logs/monitor_20251201_121933.log`，子进程仅剩 `resource_tracker`，CPU≈0，进度停在检查 #199。
+- worker 追踪：`diagnose_logs/worker_trace_20251201_121933.log`
+  - 记录 320 个 world：`start=320, done=320, err=0, exit=320`，无遗漏的 stuck run_id。
+  - 说明所有 `_run_worlds` 都正常返回/退出后才进入 hung。
+
+### 13.3 调试采样
+- **strace** (PID 35849): futex ~56%、wait4 ~28%，主线程处于 futex 等待。
+- **gdb py-bt** (PID 35849): 主线程仍卡在 `concurrent.futures.as_completed()` 的 `waiter.event.wait()`，链路：
+  ```
+  diagnose_deep.py -> scml.utils.anac2024_std -> negmas._run_parallel
+  -> rich.progress.track -> concurrent.futures.as_completed -> threading.Event.wait
+  ```
+- 子进程状态：仅 resource_tracker 存活，所有 worker 已退出。
+
+### 13.4 结论更新
+- Hung 不是单个 world 崩溃：所有 `_run_worlds` 已完成且记录 `worker_done/exit`，但主线程仍阻塞在 as_completed，推测 executor/future 完成信号丢失或队列异常。
+- 如需继续定位且不改 negmas，可在父进程对 futures 增加 done 回调或用 `wait(..., timeout)` 包裹；或自建 executor 替换，观察信号是否正常。
+
+### 13.5 可能的信号缺失原因
+- ProcessPoolExecutor 管道/队列异常（序列化失败、BrokenPipe、队列关闭），导致 future 不完成。
+- futures 集合不为空但 executor 已回收/崩溃，as_completed 没收到完成事件。
+- 结果对象无法 pickle（曾见过 “Can’t pickle local object ...”），使 `_feed` 中断。
+- executor 清理顺序异常，worker 全退出但 future 状态未标记异常。
+- 外部信号/OOM 杀掉 worker，完成信号未送达。
+
+### 13.6 后续方案评估
+1) 捕捉 executor/future 状态  
+   - 在父进程拿到 futures 后加 `add_done_callback` 记录 result/exception，或监控 executor 队列；可判断是未完成还是完成信号丢失。需获取 negmas 内部 futures，可通过自建 executor/包装 `_run_parallel` 实现。
+   - **已完成**：参见13.7和13.8
+2) 自建 executor（可选 loky），设置 max_workers/mp_context=spawn，替换 negmas 内置  
+   - 好处：可控的 futures + 回调，绕过默认 executor 的潜在 bug，并可启用 maxtasksperchild。需 monkeypatch `_get_executor` 或直接改 `_run_parallel`。
+3) 切换 Python 3.11  
+   - **已完成**：Python 3.11.14（deadsnakes）新环境复测，仍然 Hung（进度停在 #274，worker_trace 320/320 完成）。strace（`strace_45756_py311.log`）与 gdb（futex 等待）显示与 3.12 相同症状，未解决问题。
+4) 使用 dask 并行后端  
+   - 作为旁路方案再试，需控制序列化体积；此前大规模有反序列化超大数组的异常，可靠性存疑。
+5) 使用 loky 替代 multiprocessing  
+   - 更健壮的进程池，可与方案 2 结合：自建基于 loky 的 executor 替换 negmas 内置，监控 futures 完成信号。
+
+### 13.7 追加采样与追踪
+- Python 3.11 Hung 时 strace/gdb：`/home/ecs-user/strace_45756_py311.log`（futex/ wait4 主导），gdb 栈顶在 futex 等待（py-bt 读不到 Python 行号，但症状同前）。
+- 为捕捉 future 状态，已在 `diagnose_deep.py` monkeypatch `negmas._submit_all`，在提交时记录 `future_submitted`，并通过回调记录 `future_done/cancelled/error` 到 `diagnose_logs/future_trace_<timestamp>.log`（当前运行示例：`future_trace_20251201_134500.log`）。worker 事件仍写入 `worker_trace_<timestamp>.log`。
+
+### 13.8 Python 3.11 + Future 追踪的最新发现（clean_run_20251201_134500，已 Hung）
+- 监控：`monitor_20251201_134500.log` 停在检查 #218，子进程仅 `resource_tracker`，CPU≈0。
+- worker_trace：320 个 world 全部完成/退出（start=320, done=320, err=0, exit=320）。
+- future_trace：`future_submitted=2574`，`future_done=320`，无 error/cancel，剩余 2254 个 futures 未完成，直接导致 `as_completed` 永久等待。说明完成信号在 executor/future 层丢失，而不是 `_run_worlds` 崩溃。
+
+## 14. loky 替换与运行注意事项（2025-12-04）
+- 所有 `runners/` 脚本已在开头调用 `runners.loky_patch.enable_loky_executor()`，默认改用 loky 的 `ProcessPoolExecutor`，不用调整传入 negmas 的 `parallelism`（仍用 `parallel` 即可）。
+- 通过环境变量 `SCML_PARALLELISM` 控制：`loky`（默认）或 `loky:<fraction>`（按 CPU 比例限制并发，至少 1）。未设置时默认启用 loky。
+- 在自定义脚本里，如果需要 loky，同样在调用比赛前 `from runners.loky_patch import enable_loky_executor; enable_loky_executor()`。
+- 比赛完成后，Agent/脚本应告知用户结果路径并等待用户查看或确认下一步（见 Agents.md 注意事项）。

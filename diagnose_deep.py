@@ -17,12 +17,20 @@ import sys
 import time
 import atexit
 import signal
+import json
 import threading
 from pathlib import Path
 from datetime import datetime
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# 使用 spawn 保持与默认 ProcessPoolExecutor 行为一致
+import multiprocessing as mp
+try:
+    mp.set_start_method("spawn")
+except RuntimeError:
+    pass
 
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -41,6 +49,9 @@ MONITOR_LOG = LOG_DIR / f"monitor_{TIMESTAMP}.log"
 MAIN_LOG = LOG_DIR / f"main_{TIMESTAMP}.log"
 TOURNAMENT_DIR = RESULTS_ROOT / f"clean_run_{TIMESTAMP}"
 TOURNAMENT_DIR.mkdir(parents=True, exist_ok=True)
+WORKER_TRACE = LOG_DIR / f"worker_trace_{TIMESTAMP}.log"
+FUTURE_TRACE = LOG_DIR / f"future_trace_{TIMESTAMP}.log"
+MONITOR_TRACE = LOG_DIR / f"executor_monitor_{TIMESTAMP}.log"
 
 
 def log_to_file(filepath, message):
@@ -49,6 +60,84 @@ def log_to_file(filepath, message):
     with open(filepath, 'a', encoding='utf-8') as f:
         f.write(f"[{timestamp}] {message}\n")
         f.flush()
+
+
+def log_trace(event: str, **data):
+    """记录 worker 级别的关键事件"""
+    payload = {"event": event, "pid": os.getpid(), "ts": time.time()}
+    payload.update(data)
+    with open(WORKER_TRACE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        f.flush()
+
+
+def log_future(event: str, **data):
+    """记录 future 状态"""
+    payload = {"event": event, "pid": os.getpid(), "ts": time.time()}
+    payload.update(data)
+    with open(FUTURE_TRACE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        f.flush()
+
+
+_ORIGINAL_RUN_WORLDS = None
+_REQUESTED_PARALLELISM = None
+
+
+def traced_run_worlds(
+    worlds_params,
+    world_generator,
+    score_calculator,
+    world_progress_callback,
+    dry_run,
+    save_world_stats,
+    override_ran_worlds,
+    save_progress_every,
+    attempts_path,
+    max_attempts,
+    verbose,
+):
+    """顶层定义以支持 spawn pickling"""
+    global _ORIGINAL_RUN_WORLDS
+    try:
+        import negmas.tournaments.tournaments as nt  # 延迟 import 便于 pickling
+        run_id = nt._hash(worlds_params)
+    except Exception:
+        run_id = None
+    names = []
+    try:
+        for wp in worlds_params:
+            name = None
+            if isinstance(wp, dict):
+                wp_info = wp.get("world_params") or {}
+                name = wp_info.get("name") or wp_info.get("config_id")
+            names.append(name)
+    except Exception:
+        pass
+    log_trace("worker_start", run_id=run_id, names=names)
+    atexit.register(lambda: log_trace("worker_exit", run_id=run_id))
+    try:
+        if _ORIGINAL_RUN_WORLDS is None:
+            import negmas.tournaments.tournaments as nt  # type: ignore
+            _ORIGINAL_RUN_WORLDS = nt.__dict__.get("_run_worlds")
+        result = _ORIGINAL_RUN_WORLDS(
+            worlds_params,
+            world_generator,
+            score_calculator,
+            world_progress_callback,
+            dry_run,
+            save_world_stats,
+            override_ran_worlds,
+            save_progress_every,
+            attempts_path,
+            max_attempts,
+            verbose,
+        )
+        log_trace("worker_done", run_id=run_id)
+        return result
+    except Exception as e:
+        log_trace("worker_error", run_id=run_id, error=str(e))
+        raise
 
 
 def get_child_processes_detailed():
@@ -174,6 +263,167 @@ def main():
     import matplotlib
     matplotlib.use('Agg')
     
+    # 给子进程传递环境变量，触发 sitecustomize.py 中的 worker 追踪补丁
+    os.environ["SCML_PATCH_WORKER_TRACE"] = "1"
+    os.environ["SCML_WORKER_TRACE_FILE"] = str(WORKER_TRACE)
+    os.environ["PYTHONFAULTHANDLER"] = "1"
+    os.environ["PYTHONPATH"] = f"{PROJECT_ROOT}{os.pathsep}" + os.environ.get("PYTHONPATH", "")
+
+    # 直接在父进程中 monkeypatch negmas._run_worlds（fork 模式会继承，spawn 也可 pickling）
+    import negmas.tournaments.tournaments as nt
+    global _ORIGINAL_RUN_WORLDS
+    _ORIGINAL_RUN_WORLDS = nt._run_worlds
+    nt._run_worlds = traced_run_worlds
+    # 监控 futures 状态：monkeypatch _submit_all 以在提交时挂回调
+    _ORIGINAL_SUBMIT_ALL = nt._submit_all
+
+    def traced_submit_all(
+        executor,
+        assigned,
+        run_ids,
+        world_generator,
+        score_calculator,
+        world_progress_callback,
+        override_ran_worlds,
+        attempts_path,
+        verbose,
+        max_attempts,
+    ):
+        # 先构建 run_id/name 列表，与 future 列表顺序对应
+        mapped_run_ids = []
+        mapped_names = []
+        for worlds_params in assigned:
+            rid = nt._hash(worlds_params)
+            if rid in run_ids:
+                continue
+            mapped_run_ids.append(rid)
+            names = []
+            try:
+                for wp in worlds_params:
+                    if isinstance(wp, dict):
+                        info = wp.get("world_params") or {}
+                        names.append(info.get("name") or info.get("config_id"))
+            except Exception:
+                pass
+            mapped_names.append(names)
+
+        future_results, timeout = _ORIGINAL_SUBMIT_ALL(
+            executor,
+            assigned,
+            run_ids,
+            world_generator,
+            score_calculator,
+            world_progress_callback,
+            override_ran_worlds,
+            attempts_path,
+            verbose,
+            max_attempts,
+        )
+
+        for idx, fut in enumerate(future_results):
+            rid = mapped_run_ids[idx] if idx < len(mapped_run_ids) else None
+            nm = mapped_names[idx] if idx < len(mapped_names) else None
+            log_future("future_submitted", run_id=rid, names=nm)
+            # 便于监控时关联
+            fut._run_id = rid
+            fut._names = nm
+
+            def _cb(f, rid=rid, nm=nm):
+                info = {"run_id": rid, "names": nm}
+                if f.cancelled():
+                    info["state"] = "cancelled"
+                else:
+                    exc = f.exception()
+                    if exc is None:
+                        info["state"] = "done"
+                    else:
+                        info["state"] = "error"
+                        info["error"] = repr(exc)
+                log_future("future_done", **info)
+
+            fut.add_done_callback(_cb)
+
+        # 记录所有 future 引用，启动一个监控线程（每个 executor 只启动一次）
+        monitored = getattr(executor, "_scml_monitored_futures", None)
+        if monitored is None:
+            monitored = []
+            executor._scml_monitored_futures = monitored
+        monitored.extend(future_results)
+
+        if not getattr(executor, "_scml_monitor_started", False):
+            try:
+                t = threading.Thread(
+                    target=monitor_executor, args=(executor, monitored), daemon=True
+                )
+                t.start()
+                executor._scml_monitor_started = True
+                log_future("monitor_started", max_workers=getattr(executor, "_max_workers", None))
+            except Exception as e:
+                log_future("monitor_start_error", error=str(e))
+
+        return future_results, timeout
+
+    nt._submit_all = traced_submit_all
+
+    # 替换 executor：提供 loky 后端（parallelism='loky' 或 'loky:<fraction>'）
+    import concurrent.futures as cf
+    from joblib.externals.loky import ProcessPoolExecutor as LokyExecutor
+    _ORIGINAL_GET_EXECUTOR = nt._get_executor
+
+    def _parse_max_workers(parallelism):
+        if not isinstance(parallelism, str):
+            return None
+        if ":" in parallelism:
+            try:
+                frac = float(parallelism.split(":")[1])
+                if 0 < frac <= 1:
+                    return max(1, int(os.cpu_count() * frac))
+            except Exception:
+                return None
+        return None
+
+    def traced_get_executor(parallelism, verbose, total_timeout=None, scheduler_ip=None, scheduler_port=None):
+        effective = parallelism
+        requested = _REQUESTED_PARALLELISM
+        if isinstance(requested, str) and requested.startswith("loky"):
+            effective = requested
+        if isinstance(effective, str) and effective.startswith("loky"):
+            max_workers = _parse_max_workers(parallelism)
+            exec_kwargs = {}
+            if max_workers:
+                exec_kwargs["max_workers"] = max_workers
+            executor = LokyExecutor(**exec_kwargs)
+            return executor, cf.as_completed
+        return _ORIGINAL_GET_EXECUTOR(parallelism, verbose, total_timeout, scheduler_ip, scheduler_port)
+
+    nt._get_executor = traced_get_executor
+
+    # 监控线程：定期检查进程存活与 pending futures
+    def monitor_executor(executor, futures, interval=10):
+        while True:
+            time.sleep(interval)
+            try:
+                procs = getattr(executor, "_processes", {}) or {}
+                alive = [pid for pid, p in procs.items() if p.is_alive()]
+                pending = [f for f in futures if not f.done()]
+                log_future(
+                    "executor_monitor",
+                    n_processes=len(alive),
+                    pids=alive,
+                    pending=len(pending),
+                )
+                # 如果无活跃进程但仍有 pending，记录详细 run_id/名称，必要时可取消（暂不取消，仅日志）
+                if len(alive) == 0 and pending:
+                    pending_info = []
+                    for f in pending:
+                        rid = getattr(f, "_run_id", None)
+                        nm = getattr(f, "_names", None)
+                        pending_info.append({"run_id": rid, "names": nm})
+                    log_future("executor_stall", pending=len(pending), info=pending_info)
+            except Exception as e:
+                log_future("monitor_error", error=str(e))
+                break
+
     from scml.utils import anac2024_std
     from scml.std.agents import RandomStdAgent, GreedyStdAgent, SyncRandomStdAgent
     from litaagent_std.litaagent_y import LitaAgentY
@@ -189,7 +439,7 @@ def main():
     except Exception as e:
         print(f"⚠️ 无法加载 Top Agents: {e}")
         TOP_AGENTS = []
-    
+
     # 与 run_std_quick 相同的 agents
     competitors = [
         LitaAgentY, LitaAgentYR, LitaAgentCIR, LitaAgentN, LitaAgentP,
@@ -202,11 +452,19 @@ def main():
     print("=" * 70)
     print(f"参赛者数量: {len(competitors)}")
     print(f"参赛者: {[c.__name__ for c in competitors]}")
+    global _REQUESTED_PARALLELISM
+    parallelism = os.environ.get("SCML_PARALLELISM", "loky")
+    _REQUESTED_PARALLELISM = parallelism
+    negmas_parallelism = (
+        "parallel" if isinstance(parallelism, str) and parallelism.startswith("loky") else parallelism
+    )
     print(f"配置: n_configs=3, n_steps=50, max_worlds_per_config=None")
+    print(f"并行模式: {parallelism}（传给 negmas: {negmas_parallelism}）")
     print(f"主进程 PID: {os.getpid()}")
     print(f"监控日志: {MONITOR_LOG}")
     print(f"主日志: {MAIN_LOG}")
     print(f"Negmas 输出目录: {TOURNAMENT_DIR}")
+    print(f"Future 追踪: {FUTURE_TRACE}")
     print()
     
     # 记录到主日志
@@ -214,6 +472,7 @@ def main():
     log_to_file(MAIN_LOG, "深度诊断启动")
     log_to_file(MAIN_LOG, f"参赛者: {[c.__name__ for c in competitors]}")
     log_to_file(MAIN_LOG, f"PID: {os.getpid()}")
+    log_to_file(MAIN_LOG, f"并行模式: {parallelism}（negmas: {negmas_parallelism}）")
     log_to_file(MAIN_LOG, "=" * 80)
     
     # 启动监控
@@ -248,7 +507,7 @@ def main():
             # 不设置 max_worlds_per_config，生成所有组合
             print_exceptions=True,
             verbose=False,
-            parallelism='parallel',
+            parallelism=negmas_parallelism,
             tournament_path=TOURNAMENT_DIR,
             # 不设置 total_timeout
         )
@@ -265,7 +524,12 @@ def main():
             print(f"🏆 冠军: {winners}")
             log_to_file(MAIN_LOG, f"冠军: {winners}")
         
-        if hasattr(results, 'total_scores') and results.total_scores is not None:
+        if (
+            hasattr(results, 'total_scores')
+            and results.total_scores is not None
+            and not results.total_scores.empty
+            and "score" in results.total_scores
+        ):
             print("\n📊 排名:")
             sorted_scores = results.total_scores.sort_values("score", ascending=False)
             for rank, (idx, row) in enumerate(sorted_scores.iterrows(), 1):
@@ -273,6 +537,9 @@ def main():
                 score = row['score']
                 print(f"  {rank}. {agent_name}: {score:.4f}")
                 log_to_file(MAIN_LOG, f"排名 {rank}: {agent_name} = {score:.4f}")
+        else:
+            print("\n📊 排名信息不可用（total_scores 为空或缺少 score 列）")
+            log_to_file(MAIN_LOG, "total_scores 为空或缺少 score 列，跳过排名输出")
                 
     except KeyboardInterrupt:
         elapsed = time.time() - start_time

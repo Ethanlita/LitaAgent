@@ -31,6 +31,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+from runners.loky_patch import enable_loky_executor
+enable_loky_executor()
+
 # 使用 spawn 启动方法，避免 fork 导致的死锁问题
 # 必须在导入其他模块之前设置
 try:

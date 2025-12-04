@@ -30,6 +30,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+from runners.loky_patch import enable_loky_executor
+enable_loky_executor()
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt

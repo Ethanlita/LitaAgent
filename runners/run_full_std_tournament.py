@@ -19,6 +19,9 @@ from collections import Counter
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 抑制 TensorFlow 警告
 
+from runners.loky_patch import enable_loky_executor
+enable_loky_executor()
+
 import matplotlib
 matplotlib.use('Agg')  # 非交互式后端，避免显示问题
 import matplotlib.pyplot as plt

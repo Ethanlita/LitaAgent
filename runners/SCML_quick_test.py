@@ -16,6 +16,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+from runners.loky_patch import enable_loky_executor
+enable_loky_executor()
+
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 

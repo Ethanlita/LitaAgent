@@ -30,6 +30,9 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 
+from runners.loky_patch import enable_loky_executor
+enable_loky_executor()
+
 # 检查是否是静默模式 (在导入之前检查)
 _SILENT_MODE = '--silent' in sys.argv
 
