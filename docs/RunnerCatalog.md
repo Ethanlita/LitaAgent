@@ -55,6 +55,8 @@
 | `litaagent_std/inventory_manager_cir.py` / `_cirs.py` | 库存管理组件，内含 main 用于快速验证 | 非大规模比赛 |
 | `litaagent_std/litaagent_*.py`（Y/YR/N/P/CIR/YS/CIRS） | Agent 定义，main 可做简单自检 | 仅单 Agent 检验 |
 | `litaagent_std/team_miyajima_oneshot/*.py`（cautious/myagent/sampleagents） | OneShot Agent 示例/自测 | 小型仿真 |
+| `Agent_tester_.py` / `Agent_tester_1.py` | 手动选择 agent 运行单个 Standard world（带图表/Pareto 分析） | 单局、步数可配置 |
+| `P_tester_vary_ptoday.py` | 迭代不同 `_ptoday` 配置运行 SCML2024StdWorld | 多次单局仿真 |
 
 ## Analyzer/可视化工具（Analyzer & Visualization）
 | 文件 (File) | 作用 (Purpose) |
@@ -63,3 +65,10 @@
 | `scml_analyzer/browser.py` | 浏览比赛结果 |
 | `scml_analyzer/history.py` | 操作历史记录 |
 | `scml_analyzer/visualizer.py` | 启动/操作可视化界面 |
+
+## 其它仿真/最小复现脚本（Misc simulations & minimal repro）
+| 文件 (File) | 作用 (Purpose) | 说明 (Notes) |
+|-------------|----------------|--------------|
+| `test_mp_minimal.py` | 使用 multiprocessing 直接跑 SCML2024StdWorld（spawn） | 最小并行复现 |
+| `test_executor.py` | 用 ProcessPoolExecutor 运行多个 std world，验证 as_completed 行为 | 4 个 world，10 步，进程池 |
+| `test_tracker_debug.py` | 启用 tracker 的 OneShot 小型仿真，验证日志 | SCML2024OneShotWorld，n_steps=3 |
