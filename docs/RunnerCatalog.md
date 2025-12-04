@@ -42,3 +42,24 @@
 | `test_tournament_direct.py` | 直接调用生成器/分配器的 tournament 测试 | Standard |
 | `litaagent_std/helpers/runner.py` | std/oneshot 通用封装 | Standard/OneShot |
 | `litaagent_std/team_miyajima_oneshot/helpers/runner.py` | OneShot/Standard helper | Standard/OneShot |
+
+## 示例与 Agent 自检（Examples & Agent Self-tests）
+这些脚本通常运行小规模示例或 agent 行为测试，可能启动简化比赛或单局模拟。
+
+| 文件 (File) | 作用 (Purpose) | 说明 (Notes) |
+|-------------|----------------|--------------|
+| `examples/run_std_example.py` | Standard 示例比赛 | 官方 demo 规模 |
+| `examples/run_oneshot_example.py` | OneShot 示例比赛 | 官方 demo 规模 |
+| `litaagent_std/agent_logger.py` | Agent 日志示例 | 可能运行小型交互 |
+| `litaagent_std/test_im_full.py` / `test_im_material_only.py` / `test_inventory_manager_cir.py` / `unit_test_agent_im_cir.py` | 库存管理/产线 Agent 自测 | 小规模仿真/单元测试 |
+| `litaagent_std/inventory_manager_cir.py` / `_cirs.py` | 库存管理组件，内含 main 用于快速验证 | 非大规模比赛 |
+| `litaagent_std/litaagent_*.py`（Y/YR/N/P/CIR/YS/CIRS） | Agent 定义，main 可做简单自检 | 仅单 Agent 检验 |
+| `litaagent_std/team_miyajima_oneshot/*.py`（cautious/myagent/sampleagents） | OneShot Agent 示例/自测 | 小型仿真 |
+
+## Analyzer/可视化工具（Analyzer & Visualization）
+| 文件 (File) | 作用 (Purpose) |
+|-------------|----------------|
+| `scml_analyzer/analyze_failures.py` | 分析比赛失败/异常 |
+| `scml_analyzer/browser.py` | 浏览比赛结果 |
+| `scml_analyzer/history.py` | 操作历史记录 |
+| `scml_analyzer/visualizer.py` | 启动/操作可视化界面 |
