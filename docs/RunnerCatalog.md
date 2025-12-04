@@ -2,16 +2,16 @@
 
 | 文件 (File) | 作用 (Purpose) | 赛道/规模 (Track & Size) | 备注 (Notes) |
 |-------------|----------------|--------------------------|--------------|
-| `runners/run_std_full.py` | 完整 SCML 2025 Standard 比赛 / Full Standard tournament | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | 默认使用 loky 并行，现已开启 verbose 进度条 |
-| `runners/run_std_quick.py` | 快速 Standard 试跑 / Quick Standard smoke test | `track=std`, `n_configs=3`, `n_runs_per_world=1`, `n_steps=50`, `max_worlds_per_config=10` | loky 并行，较小规模 |
-| `runners/run_full_std_tournament.py` | 包含多年份 Top Agents 的完整 Standard / Full Standard with Top Agents | `track=std`, 参数可调 | loky 并行 |
-| `runners/run_full_tournament.py` | 综合 Standard + OneShot 混合入口 / Mixed (std + oneshot) driver | 依内部参数 | loky 并行 |
-| `runners/run_oneshot_full.py` | 完整 OneShot 比赛 / Full OneShot tournament | `track=oneshot`, `n_configs=10`, `n_runs_per_world=2`, `n_steps=50` | loky 并行 |
-| `runners/run_oneshot_quick.py` | 快速 OneShot 试跑 / Quick OneShot smoke test | `track=oneshot`, `n_configs=3`, `n_runs_per_world=1`, `n_steps=50`, `max_worlds_per_config=10` | loky 并行 |
-| `runners/run_scml_analyzer.py` | 带 tracker/可视化的多模式入口 / Analyzer entry with tracker & visualizer | 根据 `--mode` (standard/full/oneshot) | loky 并行 |
-| `runners/SCML_quick_test.py` | 小规模快速验证 / Small quick test | 预置少量 agents | loky 并行 |
-| `runners/SCML_small_test_tournament.py` | 小规模对比测试 / Small comparison tournament | 预置少量 agents | loky 并行 |
-| `SCML_2025_tourment_runner.py` | 官方示例式运行器 / Legacy tournament runner | 按内部配置 | 适用于手工触发 |
+| `runners/run_std_full.py` | 官方尺度 std 锦标赛，覆盖 Lita+Top5；验证 loky 稳定性并保留 tracker/可视化后处理 | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | loky 并行，verbose 进度条 |
+| `runners/run_std_quick.py` | 快速 smoke，最少配置验证环境/依赖是否正常，观测 loky 是否能跑完一轮 | `track=std`, `n_configs=3`, `n_runs_per_world=1`, `n_steps=50`, `max_worlds_per_config=10` | loky 并行，小规模 |
+| `runners/run_full_std_tournament.py` | 含历届 Top Agents 的完整 std 赛，验证多版本 agent 共存及 tracker 输出 | `track=std`, 参数可调 | loky 并行 |
+| `runners/run_full_tournament.py` | 同时支持 std/oneshot 混合运行的入口，用于一次性生成全套结果 | 依内部参数 | loky 并行 |
+| `runners/run_oneshot_full.py` | 完整 oneshot 锦标赛，测试 Lita 变体与 Top5 的对局稳定性 | `track=oneshot`, `n_configs=10`, `n_runs_per_world=2`, `n_steps=50` | loky 并行 |
+| `runners/run_oneshot_quick.py` | oneshot 快速自检，确保最小配置也能跑通并输出日志 | `track=oneshot`, `n_configs=3`, `n_runs_per_world=1`, `n_steps=50`, `max_worlds_per_config=10` | loky 并行 |
+| `runners/run_scml_analyzer.py` | 集成 tracker + postprocess + visualizer 的多模式入口，适合日常分析 | 根据 `--mode` (standard/full/oneshot) | loky 并行 |
+| `runners/SCML_quick_test.py` | 排除噪声 agent 的快速对比，检查得分/日志链路 | 预置少量 agents | loky 并行 |
+| `runners/SCML_small_test_tournament.py` | 小规模对比赛，验证 Lita 与获奖代理的相对表现 | 预置少量 agents | loky 并行 |
+| `SCML_2025_tourment_runner.py` | 官方示例式运行器，保留原有参数，便于对标官方行为 | 按内部配置 | 手工触发 |
 
 说明 (Notes):
 - 所有 runner 已默认启用 `loky` 执行器（通过 `runners.loky_patch.enable_loky_executor()`），可用环境变量 `SCML_PARALLELISM=loky[:fraction]` 调节并发。
@@ -22,24 +22,24 @@
 
 | 文件 (File) | 作用 (Purpose) | 赛道/规模 (Track & Size) |
 |-------------|----------------|--------------------------|
-| `diagnose_deep.py` | 深度监控并行，记录 worker/future 追踪 | Standard，n_configs=3，n_steps=50 |
-| `diagnose_exact.py` | 精确复现特定卡死场景 | Standard |
-| `diagnose_futures.py` | future 状态回调/监控 | Standard |
-| `diagnose_isolate.py` | 单 world 隔离调试 | Standard |
-| `diagnose_parallel.py` / `_full.py` / `_hang.py` | 并行行为/挂起复现 | Standard |
-| `diagnose_progressive.py` | 渐进规模并行测试 | Standard |
-| `diagnose_reproduce.py` | 快速复现挂起 | Standard |
-| `diagnose_workers.py` | Worker 级监控与日志 | Standard |
+| `diagnose_deep.py` | 全量追踪（worker/future/进程监控）复现挂死，用于收集日志/栈 | Standard，n_configs=3，n_steps=50 |
+| `diagnose_exact.py` | 复现特定挂死点，聚焦单一配置，便于 gdb/strace | Standard |
+| `diagnose_futures.py` | 在父进程记录 futures 完成/异常，定位丢信号问题 | Standard |
+| `diagnose_isolate.py` | 只跑单个 world，剥离并行因素，定位单局异常 | Standard |
+| `diagnose_parallel.py` / `_full.py` / `_hang.py` | 分别测试并行、全量并行及特定挂起路径 | Standard |
+| `diagnose_progressive.py` | 逐步放大规模观察并行饱和与崩溃点 | Standard |
+| `diagnose_reproduce.py` | 最小步骤快速复现挂起，便于反复采样 | Standard |
+| `diagnose_workers.py` | 记录子进程生命周期与输出，核对 worker 是否正常退出 | Standard |
 | `reproduce_deadlock.py` | 最小复现挂死用例 | Standard |
-| `test_non_tracked.py` / `_large.py` | 不使用 tracker 的基准运行 | Standard |
-| `test_dask_full.py` | Dask 后端并行测试 | Standard |
-| `test_parallel_quick.py` / `_injected.py` | 并行快速/注入测试 | Standard |
-| `test_parallel_step.py` | OneShot 并行 step 测试 | OneShot |
-| `test_progressive.py` / `test_progressive2.py` | 渐进规模 std 测试 | Standard |
-| `test_alternatives.py` | 并行后端/参数替代实验 | Standard |
-| `test_isolate_p.py` | 进程隔离测试 | Standard |
-| `test_std_with_top_agents.py` | Top Agents 标准赛测试 | Standard |
-| `test_tournament_direct.py` | 直接调用生成器/分配器的 tournament 测试 | Standard |
+| `test_non_tracked.py` / `_large.py` | 去除 tracker 的 std 基准，确认问题是否由追踪器引入 | Standard |
+| `test_dask_full.py` | 换 Dask 后端的大规模并行验证，观察分布式序列化问题 | Standard |
+| `test_parallel_quick.py` / `_injected.py` | 小规模并行与故障注入测试，验证 as_completed 行为 | Standard |
+| `test_parallel_step.py` | OneShot 并行 step 执行测试 | OneShot |
+| `test_progressive.py` / `test_progressive2.py` | 渐进放大 std 规模，观察资源/稳定性拐点 | Standard |
+| `test_alternatives.py` | 评估不同并行后端/参数的效果与稳定性 | Standard |
+| `test_isolate_p.py` | 进程隔离/启动方式测试，排查 spawn/fork 差异 | Standard |
+| `test_std_with_top_agents.py` | 含 Top Agents 的标准赛基准，验证兼容性和分数 | Standard |
+| `test_tournament_direct.py` | 直接调用 config/generator 的 tournament，验证管线完整性 | Standard |
 | `litaagent_std/helpers/runner.py` | std/oneshot 通用封装 | Standard/OneShot |
 | `litaagent_std/team_miyajima_oneshot/helpers/runner.py` | OneShot/Standard helper | Standard/OneShot |
 
@@ -50,7 +50,7 @@
 |-------------|----------------|--------------|
 | `examples/run_std_example.py` | Standard 示例比赛 | 官方 demo 规模 |
 | `examples/run_oneshot_example.py` | OneShot 示例比赛 | 官方 demo 规模 |
-| `litaagent_std/agent_logger.py` | Agent 日志示例 | 可能运行小型交互 |
+| `litaagent_std/agent_logger.py` | Agent 日志示例，演示如何记录交互，可能触发小型仿真 | 可能运行小型交互 |
 | `litaagent_std/test_im_full.py` / `test_im_material_only.py` / `test_inventory_manager_cir.py` / `unit_test_agent_im_cir.py` | 库存管理/产线 Agent 自测 | 小规模仿真/单元测试 |
 | `litaagent_std/inventory_manager_cir.py` / `_cirs.py` | 库存管理组件，内含 main 用于快速验证 | 非大规模比赛 |
 | `litaagent_std/litaagent_*.py`（Y/YR/N/P/CIR/YS/CIRS） | Agent 定义，main 可做简单自检 | 仅单 Agent 检验 |
