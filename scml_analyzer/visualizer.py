@@ -2959,7 +2959,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         pass
 
 
-def start_server(port: int = 8080, open_browser: bool = True):
+def start_server(port: int = 8080, open_browser: bool = True, host: str = "0.0.0.0"):
     """
     启动可视化服务器 - 无参数模式
     
@@ -2969,6 +2969,7 @@ def start_server(port: int = 8080, open_browser: bool = True):
     Args:
         port: 服务器端口
         open_browser: 是否自动打开浏览器
+        host: 监听地址（默认 0.0.0.0 以便远程访问）
     """
     # 确保 tournament_history 目录存在
     history_dir = history.get_history_dir()
@@ -2978,9 +2979,9 @@ def start_server(port: int = 8080, open_browser: bool = True):
     tournaments = history.list_tournaments()
     
     # 启动服务器
-    server = HTTPServer(('localhost', port), VisualizerHandler)
+    server = HTTPServer((host, port), VisualizerHandler)
     
-    url = f"http://localhost:{port}"
+    url = f"http://{host if host!='0.0.0.0' else '0.0.0.0'}:{port}"
     print(f"🌐 可视化服务器已启动: {url}")
     print(f"📁 数据目录: {history_dir}")
     print(f"📊 已导入比赛: {len(tournaments)} 场")
@@ -3031,6 +3032,7 @@ def main():
         description='SCML Analyzer 可视化服务器 - 无参数启动！'
     )
     parser.add_argument('--port', '-p', type=int, default=8080, help='服务器端口')
+    parser.add_argument('--host', '-H', type=str, default='0.0.0.0', help='监听地址（默认 0.0.0.0）')
     parser.add_argument('--no-browser', action='store_true', help='不自动打开浏览器')
     parser.add_argument('--static', type=str, metavar='TOURNAMENT_ID',
                        help='生成静态报告（需要指定比赛 ID）')
@@ -3040,7 +3042,7 @@ def main():
     if args.static:
         generate_static_report(args.static)
     else:
-        start_server(args.port, not args.no_browser)
+        start_server(args.port, not args.no_browser, host=args.host)
 
 
 if __name__ == "__main__":
