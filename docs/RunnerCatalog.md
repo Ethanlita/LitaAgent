@@ -65,6 +65,8 @@
 | `scml_analyzer/browser.py` | 浏览比赛结果 |
 | `scml_analyzer/history.py` | 操作历史记录 |
 | `scml_analyzer/visualizer.py` | 启动/操作可视化界面 |
+| `start_visualizer.py` | 一键启动可视化服务器，默认监听 0.0.0.0:8081（可用 VIS_HOST/VIS_PORT 覆盖） |
+| 静态报告 (report.html) | `python -m scml_analyzer.visualizer --static <tournament_id>` 生成；也可在 Python 中 `generate_static_report(tid)`；生成后文件保存在对应比赛目录下并可复用 |
 
 ## 其它仿真/最小复现脚本（Misc simulations & minimal repro）
 | 文件 (File) | 作用 (Purpose) | 说明 (Notes) |
