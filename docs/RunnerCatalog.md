@@ -12,6 +12,7 @@
 | `runners/SCML_quick_test.py` | 排除噪声 agent 的快速对比，检查得分/日志链路 | 预置少量 agents | loky 并行 |
 | `runners/SCML_small_test_tournament.py` | 小规模对比赛，验证 Lita 与获奖代理的相对表现 | 预置少量 agents | loky 并行 |
 | `SCML_2025_tourment_runner.py` | 官方示例式运行器，保留原有参数，便于对标官方行为 | 按内部配置 | 手工触发 |
+| `runners/run_std_full_tracked.py` | 官方规模 std 赛（20 配置 ×2，步长 50-200），LitaAgents 注入 tracker，尝试加载最多 8 个 Top Agents，loky 并行+进度条 | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | tracker_logs 写入输出目录 |
 
 说明 (Notes):
 - 所有 runner 已默认启用 `loky` 执行器（通过 `runners.loky_patch.enable_loky_executor()`），可用环境变量 `SCML_PARALLELISM=loky[:fraction]` 调节并发。
