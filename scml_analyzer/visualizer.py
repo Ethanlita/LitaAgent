@@ -47,7 +47,11 @@ def _extract_short_name(full_name: str) -> str:
     if ":" in full_name:
         full_name = full_name.split(":")[-1]
     # 取最后一个点后的部分
-    return full_name.split(".")[-1]
+    short = full_name.split(".")[-1]
+    # 去掉 Tracked 后缀，避免可视化侧命名不一致
+    if short.endswith("Tracked"):
+        short = short[:-7] or short
+    return short
 
 
 class VisualizerData:
