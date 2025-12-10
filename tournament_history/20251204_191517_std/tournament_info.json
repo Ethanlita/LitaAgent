@@ -1,0 +1,40 @@
+{
+  "id": "20251204_191517_std",
+  "source_dir": "/home/ecs-user/negmas/tournaments/20251204H191517319252Kqg-stage-0001",
+  "imported_at": "2025-12-05T02:01:54.376703",
+  "track": "std",
+  "settings": {
+    "n_configs": 20,
+    "n_runs_per_world": 2,
+    "n_steps": [
+      50,
+      200
+    ],
+    "n_worlds": 2400,
+    "n_processes": null,
+    "parallelism": "parallel",
+    "world_generator": "scml.utils.anac_std_world_generator",
+    "score_calculator": "scml.utils.balance_calculator_oneshot",
+    "publish_exogenous_summary": true,
+    "publish_trading_prices": true,
+    "min_factories_per_level": 4,
+    "n_agents_per_competitor": 1,
+    "n_competitors_per_world": 3
+  },
+  "competitors": [
+    "LitaAgentY",
+    "LitaAgentYR",
+    "LitaAgentCIR",
+    "LitaAgentN",
+    "LitaAgentP",
+    "XenoSotaAgent"
+  ],
+  "n_competitors": 6,
+  "results": {
+    "n_completed": 2400,
+    "total_duration_seconds": 733471.1828339113,
+    "winner": "XenoSotaAgent",
+    "winner_score": 0.9647522409300336
+  },
+  "timestamp": "2025-12-04 19:15:17"
+}

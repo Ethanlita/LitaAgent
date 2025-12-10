@@ -1,0 +1,45 @@
+{
+  "id": "20251210_223957_std",
+  "source_dir": "/home/ecs-user/negmas/tournaments/20251210H223957820072Kqg-stage-0001",
+  "imported_at": "2025-12-11T00:39:14.021050",
+  "track": "std",
+  "settings": {
+    "n_configs": 5,
+    "n_runs_per_world": 1,
+    "n_steps": [
+      50,
+      100
+    ],
+    "n_worlds": 2475,
+    "n_processes": null,
+    "parallelism": "parallel",
+    "world_generator": "scml.utils.anac_std_world_generator",
+    "score_calculator": "scml.utils.balance_calculator_oneshot",
+    "publish_exogenous_summary": true,
+    "publish_trading_prices": true,
+    "min_factories_per_level": 4,
+    "n_agents_per_competitor": 1,
+    "n_competitors_per_world": 3
+  },
+  "competitors": [
+    "LitaAgentYTracked",
+    "LitaAgentYRTracked",
+    "LitaAgentCIRTracked",
+    "LitaAgentNTracked",
+    "LitaAgentPTracked",
+    "XenoSotaAgent",
+    "UltraSuperMiracleSoraFinalAgentZ",
+    "PonponAgent",
+    "ProactiveAgent",
+    "KATSUDONAgent",
+    "OptimisticAgent"
+  ],
+  "n_competitors": 11,
+  "results": {
+    "n_completed": 2475,
+    "total_duration_seconds": 606173.0199198922,
+    "winner": "UltraSuperMiracleSoraFinalAgentZ",
+    "winner_score": 1.131322016723629
+  },
+  "timestamp": "2025-12-10 22:39:57"
+}

@@ -1,0 +1,12 @@
+index,agent_type,score
+0,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ,1.131322016723629
+1,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent,1.1250686424843406
+2,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.standard.team_255.myagent.PonponAgent,1.034764476293433
+3,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_yr.LitaAgentYRTracked,0.831299114127647
+4,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_y.LitaAgentYTracked,0.8131957484109118
+5,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent,0.7184101665437436
+6,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_p.LitaAgentPTracked,0.6871927784705921
+7,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent,0.6502244993443702
+8,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent,0.46206999110211033
+9,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_cir.LitaAgentCIRTracked,0.4085065801014843
+10,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_n.LitaAgentNTracked,0.27494315480819365
