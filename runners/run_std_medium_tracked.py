@@ -30,7 +30,7 @@ matplotlib.use('Agg')
 
 from scml.utils import anac2024_std
 from scml_analyzer.auto_tracker import TrackerConfig, TrackerManager
-from litaagent_std.tracker_mixin import inject_tracker_to_agents
+from litaagent_std.tracker_mixin import inject_tracker_to_agents, create_tracked_agent
 from litaagent_std.litaagent_y import LitaAgentY
 from litaagent_std.litaagent_yr import LitaAgentYR
 from litaagent_std.litaagent_cir import LitaAgentCIR
@@ -55,7 +55,12 @@ TOURNAMENT_CONFIG = {
 
 def build_competitors(max_top: int | None = None):
     lita_agents = [LitaAgentY, LitaAgentYR, LitaAgentCIR, LitaAgentN, LitaAgentP]
-    tracked_lita = inject_tracker_to_agents(lita_agents)
+    # 使用子类方式，支持并行
+    log_dir = os.environ.get("SCML_TRACKER_LOG_DIR", "")
+    tracked_lita = [
+        create_tracked_agent(cls, log_dir=log_dir or ".")
+        for cls in lita_agents
+    ]
     tops = TOP_AGENTS_2025 if max_top is None else TOP_AGENTS_2025[:max_top]
     competitors = tracked_lita + list(tops)
     lita_names = [a.__name__ for a in lita_agents]
@@ -92,6 +97,8 @@ def run_tournament(output_dir=None, port=8081, no_server=True, max_top: int | No
 
     TrackerManager._loggers.clear()
     TrackerConfig.configure(enabled=True, log_dir=str(tracker_dir), console_echo=False)
+    # 给子进程传递日志目录
+    os.environ["SCML_TRACKER_LOG_DIR"] = str(tracker_dir)
 
     competitors, lita_names = build_competitors(max_top=max_top)
     print(f"参赛者 ({len(competitors)}): {[c.__name__ for c in competitors]}")
