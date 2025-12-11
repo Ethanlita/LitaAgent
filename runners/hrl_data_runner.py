@@ -14,9 +14,9 @@ from datetime import datetime
 from typing import List, Type
 
 import scml_agents
-from negmas.tournaments import run_tournament
-from scml.std.agents import RandomAgent, SyncAgent, DecayAgent
-from scml.scml2024 import SCML2024StdWorld
+from scml.utils import anac2024_std
+from scml.std.agents import RandomStdAgent, SyncRandomStdAgent
+from scml.std.world import SCML2024StdWorld
 
 # LitaAgent tracked 版本（排除 HRL）
 from litaagent_std.litaagent_y import LitaAgentYTracked
@@ -77,7 +77,7 @@ def build_competitors() -> List[Type]:
     )
     competitors.extend(_get_penguin_agent())
     competitors.extend(_get_top5_std2025())
-    competitors.extend([RandomAgent, SyncAgent, DecayAgent])
+    competitors.extend([RandomStdAgent, SyncRandomStdAgent])
 
     # 去重保持顺序
     seen = set()
@@ -109,20 +109,22 @@ def main():
     print(f"[INFO] 参赛代理数: {len(competitors)}")
     print([c.__name__ for c in competitors])
 
-    results = run_tournament(
-        name=f"LitaHRLData_{timestamp}",
+    # 使用 anac2024_std 运行标准赛，强制保留日志以便 HRL 数据采集。
+    # 规模：n_configs=5、每个世界运行 3 次，单个世界参赛上限 10。
+    results = anac2024_std(
         competitors=competitors,
-        n_competitors=min(10, len(competitors)),
+        n_configs=5,
         n_runs_per_world=3,
-        n_steps=95,  # 接近标准赛完整长度
-        world_class=SCML2024StdWorld,
-        log_negotiations=True,
-        log_ufuns=True,
-        save_path=save_path,
-        verbosity=1,
+        n_competitors_per_world=min(10, len(competitors)),
+        tournament_path=save_path,
+        forced_logs_fraction=1.0,
+        parallelism="parallel",
+        name=f"LitaHRLData_{timestamp}",
+        verbose=True,
         compact=False,
+        print_exceptions=True,
     )
-    print(f"[INFO] 锦标赛完成，日志保存在 {results.log_path}")
+    print(f"[INFO] 锦标赛完成，日志保存在 {save_path}")
 
 
 if __name__ == "__main__":

@@ -3,8 +3,8 @@
 官方规模 SCML 2025 Standard 比赛（带 Penguin + Lita tracker + Top Agents），并启用谈判日志。
 
 与 run_std_full_tracked_penguin.py 的区别：
-- 默认开启 log_negotiations/log_ufuns，方便训练数据采集。
-- 不启动可视化（无 postprocess 调用）。
+- 使用 anac2024_std（官方标准赛封装），强制保存全量日志（谈判/效用）。
+- 默认不启动可视化，但会进行 postprocess 归集数据。
 其他流程保持一致：使用 Tracker、loky 并行、官方规模配置。
 """
 
@@ -25,8 +25,7 @@ from runners.loky_patch import enable_loky_executor
 
 enable_loky_executor()
 
-from scml.utils import run_tournament
-from scml.scml2024 import SCML2024StdWorld
+from scml.utils import anac2024_std
 from scml_analyzer.auto_tracker import TrackerConfig, TrackerManager
 from litaagent_std.tracker_mixin import create_tracked_agent
 from litaagent_std.litaagent_y import LitaAgentY
@@ -34,8 +33,9 @@ from litaagent_std.litaagent_yr import LitaAgentYR
 from litaagent_std.litaagent_cir import LitaAgentCIR
 from litaagent_std.litaagent_n import LitaAgentN
 from litaagent_std.litaagent_p import LitaAgentP
-from scml.std.agents import RandomAgent
+from scml.std.agents import RandomStdAgent
 from scml_agents.scml2024.standard.team_penguin.penguinagent import PenguinAgent
+from scml_analyzer.postprocess import postprocess_tournament
 
 try:
     from scml_agents import get_agents
@@ -53,7 +53,7 @@ def build_competitors(max_top: int | None = None):
     tracked_lita = [create_tracked_agent(cls, log_dir=log_dir) for cls in lita_bases]
     penguin = [PenguinAgent]
     tops = TOP_AGENTS_2025 if max_top is None else TOP_AGENTS_2025[: max_top]
-    competitors = tracked_lita + penguin + list(tops) + [RandomAgent]
+    competitors = tracked_lita + penguin + list(tops) + [RandomStdAgent]
     lita_names = [c.__name__ for c in lita_bases]
     # 去重保持顺序
     seen = set()
@@ -101,19 +101,18 @@ def run_tournament_logged(n_configs=20, n_runs=2, output_dir=None, max_top=None)
     competitors, lita_names = build_competitors(max_top=max_top)
     print(f"参赛者({len(competitors)}): {[c.__name__ for c in competitors]}")
 
-    results = run_tournament(
-        name=f"StdFullPenguinLogs_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    # 使用 anac2024_std（官方封装），强制保存日志（forced_logs_fraction=1.0）。
+    results = anac2024_std(
         competitors=competitors,
-        n_runs_per_world=n_runs,
         n_configs=n_configs,
-        n_steps=(50, 200),
-        world_class=SCML2024StdWorld,
-        log_negotiations=True,
-        log_ufuns=True,
-        save_path=str(output_dir),
-        verbosity=1,
-        compact=False,
+        n_runs_per_world=n_runs,
+        n_competitors_per_world=None,
+        tournament_path=str(output_dir),
+        forced_logs_fraction=1.0,
         parallelism="parallel",
+        name=f"StdFullPenguinLogs_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        verbose=True,
+        compact=False,
         print_exceptions=True,
     )
 
@@ -126,6 +125,12 @@ def run_tournament_logged(n_configs=20, n_runs=2, output_dir=None, max_top=None)
             print(f"  {rank}. {agent_name}: {row['score']:.4f} {tag}")
 
     save_results(output_dir, results, competitors, lita_names)
+    # 归集数据（不启动可视化）
+    postprocess_tournament(
+        output_dir=output_dir,
+        start_visualizer=False,
+        visualizer_port=None,
+    )
     return output_dir
 
 
