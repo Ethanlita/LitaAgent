@@ -86,3 +86,6 @@ test_dask_full_logs/
 
 # other logs
 *logs*
+
+# tournament result
+tournament_history/
