@@ -66,6 +66,13 @@
 | `litaagent_cir.py` | `LitaAgentCIRTracked` | `LitaAgentCIR` |
 | `litaagent_cirs.py` | `LitaAgentCIRSTracked` | `LitaAgentCIR` (文件内定义) |
 
+### 新增：LitaAgent-HRL（模式 B）
+
+- 位置：`litaagent_std/hrl_x/agent.py`
+- 基类：`StdAgent`
+- 特点：L1 提炼 Penguin 微观安全/基准，L2 简易日级目标，L3 预留残差位（当前为 0），可后续接入 RL 模型。
+- Tracked 版本：`LitaAgentHRLTracked`
+
 ```python
 # 推荐方式：使用静态定义的 Tracked 版本（支持并行模式）
 import os
@@ -204,4 +211,3 @@ results = anac2024_oneshot(
 | `counter_all()` | `offer_received`, `offer_made` (还价), `accept`, `reject` |
 | `on_negotiation_success()` | `signed`, `success` |
 | `on_negotiation_failure()` | `failure` |
-
