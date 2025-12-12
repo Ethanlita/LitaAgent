@@ -35,6 +35,7 @@ Runner 运行流程:
 | `run_oneshot_full.py` | OneShot | 10 | 2 | 50 | 20 | 30-60 分钟 |
 | `run_std_quick.py` | Standard | 3 | 1 | 50 | 3 | 10-20 分钟 |
 | `run_std_full.py` | Standard | 10 | 2 | 100 | 20 | 60-120 分钟 |
+| `run_std_full_tracked_penguin_logs_resumable.py` | Standard | 20（可调） | 2（可调） | 50-200（官方） | 官方全配 | 可断点续跑，强制谈判日志 |
 
 这些运行器使用 negmas tournament API (`anac2024_oneshot()`/`anac2024_std()`)，数据会自动导入到 `tournament_history/`。
 
@@ -180,6 +181,11 @@ python runners/run_std_full.py --no-server
 # 运行比赛，使用不同端口
 python runners/run_std_quick.py --port 9000
 ```
+
+## 🔑 新的可断点续跑 runner
+- `run_std_full_tracked_penguin_logs_resumable.py`：完整 Standard 比赛（Lita tracker + Penguin + Top Agents，强制谈判日志），支持中断后继续，使用 loky 并行。  
+  - 用法：`python runners/run_std_full_tracked_penguin_logs_resumable.py --output-dir <目录> [--configs 20 --runs 2 --max-top 8 --parallelism parallel]`  
+  - 断点恢复：保持同一 `--output-dir` 重新运行即可，已完成的 world（有 results.json）会跳过；若生成了 `*-stage-0001` 路径，脚本会自动识别并继续。
 
 ## 🔧 自定义 Agent
 
