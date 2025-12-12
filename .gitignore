@@ -86,6 +86,7 @@ test_dask_full_logs/
 
 # other logs
 *logs*
+!runners/*logs*.py
 
 # tournament result
 tournament_history/
