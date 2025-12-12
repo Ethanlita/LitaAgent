@@ -15,6 +15,8 @@
 | `runners/run_std_full_tracked.py` | 官方规模 std 赛（20 配置 ×2，步长 50-200），LitaAgents 注入 tracker，尝试加载最多 8 个 Top Agents，loky 并行+进度条 | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | tracker_logs 写入输出目录 |
 | `runners/run_std_full_tracked_penguin.py` | 官方规模 std 赛，包含 PenguinAgent，LitaAgents tracker 版 + 最多 8 个 Top Agents，loky 并行 + 进度 | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | tracker_logs 写入输出目录 |
 | `runners/run_std_medium_tracked.py` | 中等规模 std 赛（5 配置 ×1，步长 50-100），LitaAgents 注入 tracker，加载最多 6 个 Top Agents，loky 并行+进度条 | `track=std`, `n_configs=5`, `n_runs_per_world=1`, `n_steps=(50,100)` | tracker_logs 写入输出目录 |
+| `runners/run_std_full_tracked_penguin_logs_resumable.py` | 完整 std（Lita tracker + Penguin + Top Agents，强制谈判日志），可断点续跑 | `track=std`, `n_configs` 可调, `n_runs` 可调 | loky 并行，resumable，forced_logs=1.0 |
+| `runners/run_std_full_untracked_resumable.py` | 完整 std（未追踪 Lita + Penguin + 全部 Top Agents，强制谈判日志），可断点续跑 | `track=std`, `n_configs` 可调, `n_runs` 可调 | loky 并行，resumable，forced_logs=1.0 |
 
 说明 (Notes):
 - 所有 runner 已默认启用 `loky` 执行器（通过 `runners.loky_patch.enable_loky_executor()`），可用环境变量 `SCML_PARALLELISM=loky[:fraction]` 调节并发。
@@ -60,6 +62,14 @@
 | `litaagent_std/team_miyajima_oneshot/*.py`（cautious/myagent/sampleagents） | OneShot Agent 示例/自测 | 小型仿真 |
 | `Agent_tester_.py` / `Agent_tester_1.py` | 手动选择 agent 运行单个 Standard world（带图表/Pareto 分析） | 单局、步数可配置 |
 | `P_tester_vary_ptoday.py` | 迭代不同 `_ptoday` 配置运行 SCML2024StdWorld | 多次单局仿真 |
+
+## Resumable runners（可断点续跑）
+- `runners/run_std_full_tracked_penguin_logs_resumable.py`  
+  用法：`python runners/run_std_full_tracked_penguin_logs_resumable.py --output-dir <目录> [--configs 20 --runs 2 --max-top 8 --parallelism parallel]`  
+  特点：官方 std 全规模，Lita tracker + Penguin + Top Agents，强制谈判日志，loky 并行，使用相同 `--output-dir` 重跑即可续跑（已完成 world 跳过，自动识别 *-stage-0001）。
+- `runners/run_std_full_untracked_resumable.py`  
+  用法：`python runners/run_std_full_untracked_resumable.py --output-dir <目录> [--configs 20 --runs 2 --max-top 8 --parallelism parallel]`  
+  特点：官方 std 全规模，未追踪 Lita + Penguin + 全部 Top Agents，强制谈判日志，loky 并行，使用相同 `--output-dir` 重跑即可续跑（已完成 world 跳过，自动识别 *-stage-0001）。
 
 ## Analyzer/可视化工具（Analyzer & Visualization）
 | 文件 (File) | 作用 (Purpose) |
