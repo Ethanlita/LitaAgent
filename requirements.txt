@@ -85,7 +85,9 @@ networkx
 nltk
 notebook
 numexpr
-numpy
+# NumPy 2.x 与 scml_agents 不兼容（numpy.lib.arraysetops 已被移除）
+# 需要使用 NumPy 1.x 版本
+numpy<2.0
 oauthlib
 opencv-python
 opt-einsum
@@ -173,8 +175,9 @@ zipp
 pytest
 gymnasium
 stable-baselines3
-scml
-scml-agents
-negmas
+# SCML 核心依赖 - 保持最新版本
+scml  # 最新版
+scml-agents  # 最新版（注意：需要 numpy<2.0）
+negmas  # 最新版
 loky
 dask[distributed]
