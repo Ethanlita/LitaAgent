@@ -73,43 +73,65 @@ def postprocess_tournament(
     else:
         print("  ⚠️ 没有 Tracker 数据")
     
-    # 2. 查找最新的 negmas tournament 目录
+    # 2. 查找 negmas tournament 目录（优先 output_dir，其次 home）
     print("\n🔍 查找 negmas 比赛数据...")
     imported_path = None
     
     try:
-        negmas_tournaments_dir = Path.home() / "negmas" / "tournaments"
-        if negmas_tournaments_dir.exists():
-            # 找到最新创建的目录
-            tournament_dirs = [
-                d for d in negmas_tournaments_dir.iterdir() 
-                if d.is_dir() and (d / "params.json").exists()
-            ]
-            if tournament_dirs:
-                # 按修改时间排序，取最新的
-                latest_dir = max(tournament_dirs, key=lambda d: d.stat().st_mtime)
-                print(f"  找到: {latest_dir.name}")
-                
-                # 3. 移动数据到 tournament_history（使用 move 模式）
-                print("\n📂 移动数据到 tournament_history...")
-                imported_path = history.import_tournament(
-                    negmas_dir=str(latest_dir),
-                    tracker_dir=tracker_log_dir if os.path.exists(tracker_log_dir) else None,
-                    copy_mode=False,  # 移动而非复制！
-                )
-                print(f"  ✅ 已导入到: {imported_path}")
-                
-                # 4. 清理 output_dir 中的 tracker_logs（已移动）
-                if os.path.exists(tracker_log_dir):
-                    try:
-                        shutil.rmtree(tracker_log_dir)
-                        print(f"  🗑️ 已清理临时目录: {tracker_log_dir}")
-                    except Exception as e:
-                        print(f"  ⚠️ 清理临时目录失败: {e}")
+        output_path = Path(output_dir)
+        output_candidates = []
+        for params_file in output_path.glob("**/params.json"):
+            if not params_file.is_file():
+                continue
+            candidate = params_file.parent
+            if not candidate.is_dir():
+                continue
+            if not (candidate / "scores.csv").exists():
+                continue
+            output_candidates.append(candidate)
+        if output_candidates:
+            # 按修改时间排序，依次导入（复制模式，保留原始数据）
+            output_candidates = sorted(output_candidates, key=lambda d: d.stat().st_mtime)
+            print(f"  找到: {len(output_candidates)} 个比赛目录（来自 output_dir）")
+            print("\n📂 复制数据到 tournament_history...")
+            imported_ok = 0
+            for negmas_dir in output_candidates:
+                try:
+                    imported_path = history.import_tournament(
+                        negmas_dir=str(negmas_dir),
+                        tracker_dir=tracker_log_dir if os.path.exists(tracker_log_dir) else None,
+                        copy_mode=True,
+                    )
+                    imported_ok += 1
+                except Exception as e:
+                    print(f"  ⚠️ 跳过无效目录: {negmas_dir.name} ({e})")
+                    continue
+            if imported_ok:
+                print(f"  ✅ 已导入 {imported_ok} 个目录")
             else:
-                print("  ⚠️ 未找到 negmas 比赛数据")
+                print("  ⚠️ 没有可导入的比赛目录")
         else:
-            print(f"  ⚠️ negmas tournaments 目录不存在: {negmas_tournaments_dir}")
+            negmas_tournaments_dir = Path.home() / "negmas" / "tournaments"
+            if negmas_tournaments_dir.exists():
+                tournament_dirs = [
+                    d for d in negmas_tournaments_dir.iterdir() 
+                    if d.is_dir() and (d / "params.json").exists()
+                ]
+                if tournament_dirs:
+                    latest_dir = max(tournament_dirs, key=lambda d: d.stat().st_mtime)
+                    print(f"  找到: {latest_dir.name}")
+                    
+                    print("\n📂 复制数据到 tournament_history...")
+                    imported_path = history.import_tournament(
+                        negmas_dir=str(latest_dir),
+                        tracker_dir=tracker_log_dir if os.path.exists(tracker_log_dir) else None,
+                        copy_mode=True,
+                    )
+                    print(f"  ✅ 已导入到: {imported_path}")
+                else:
+                    print("  ⚠️ 未找到 negmas 比赛数据")
+            else:
+                print(f"  ⚠️ negmas tournaments 目录不存在: {negmas_tournaments_dir}")
     except Exception as e:
         print(f"  ❌ 导入失败: {e}")
         import traceback

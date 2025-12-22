@@ -32,7 +32,7 @@ HRL-XF (Hybrid Residual Learner - Extended Framework, **Futures Edition**) 是�
 3. **L2 输出维度**：16维（4桶 × 4分量：$Q_{buy}, P_{buy}, Q_{sell}, P_{sell}$）
 4. **L4 实现方式**：Transformer Encoder + 时间偏置掩码
 5. **$Q_{safe}[\delta]$ 公式**：向量化版本 $Q_{safe}[\delta] = \min_{k=\delta}^{H} (C_{total}[k] - L(k))$
-6. **时序特征维度**：9维（含分离的买卖压力）
+6. **时序特征维度**：10维（拆分采购/销售 price_diff，含买卖压力）
 7. **角色嵌入**：L2-L4 全部需要
 8. **状态空间组成**：$\{x_{static}, X_{temporal}, x_{role}\}$（无独立 $x_{market}$，市场信息分布于前两者）
 9. **$\delta_t$ 取值范围**：$\{0, 1, ..., H\}$ 共 $H+1$ 个值
@@ -76,8 +76,8 @@ HRL-XF (Hybrid Residual Learner - Extended Framework, **Futures Edition**) 是�
 ```python
 S_t = {
     "x_static": Tensor[B, 12],      # 静态特征向量
-    "X_temporal": Tensor[B, H, 9],  # 时序状态张量（9维特征通道）
-    "x_role": Tensor[B, 2],         # 角色嵌入 (One-hot 或 Embedding)
+    "X_temporal": Tensor[B, H+1, 10],  # 时序状态张量（10维特征通道，δ∈[0,H]）
+    "x_role": Tensor[B, 2],         # 角色 Multi-Hot [can_buy, can_sell]
 }
 ```
 
@@ -100,9 +100,9 @@ S_t = {
 | 10 | `pending_buy_value` | 未执行采购合约总价值 | 归一化 |
 | 11 | `pending_sell_value` | 未执行销售合约总价值 | 归一化 |
 
-### 3.3 时序状态张量 `X_temporal` (H × 9)
+### 3.3 时序状态张量 `X_temporal` (H+1 × 10)
 
-对于未来第 $k$ 天 ($k \in [0, H-1]$)，特征通道定义如下：
+覆盖 $\delta \in [0, H]$ 共 $H+1$ 个时间点，特征通道定义如下：
 
 | 通道 | 特征名 | 公式/说明 |
 |------|--------|----------|
@@ -111,45 +111,53 @@ S_t = {
 | 2 | `prod_plan` | $Q_{prod}[k]$ = 预计生产消耗（保守估计） |
 | 3 | `inventory_proj` | $I_{proj}[k] = I_{now} + \sum_{j=0}^{k}(Q_{in}[j] - Q_{out}[j] - Q_{prod}[j])$ |
 | 4 | `capacity_free` | $C_{free}[k] = C_{total}[k] - I_{proj}[k]$ |
-| 5 | `balance_proj` | $B_{proj}[k] = B_t + \sum_{j=0}^{k}(Receivables[j] - Payables[j])$ |
-| 6 | `price_diff` | $P_{future}[k] - P_{spot}$（期货溢价/贴水，见下方计算说明） |
-| 7 | `buy_pressure` | 买方压力指数（见下方计算说明） |
-| 8 | `sell_pressure` | 卖方压力指数（见下方计算说明） |
+| 5 | `balance_proj` | $B_{proj}[k] = B_t + \sum_{j=0}^{k}(Receivables[j] - Payables[j] - Q_{prod}[j]·cost)$ |
+| 6 | `price_diff_in` | 采购侧期货溢价：$P^{buy}_{future}[k] - P^{buy}_{spot}$ |
+| 7 | `price_diff_out` | 销售侧期货溢价：$P^{sell}_{future}[k] - P^{sell}_{spot}$ |
+| 8 | `buy_pressure` | 买方需求压力（价格加权） |
+| 9 | `sell_pressure` | 卖方供给压力（价格加权） |
 
-**通道 6-8 计算说明**：
+**通道 6-9 计算说明**：
 
-由于 SCML 标准世界不存在公开订单簿，通道 6-8 基于代理可观测的谈判与合约数据推断：
-
-**buy_pressure[k]（买方压力）**：
-- 含义：第 $t+k$ 天买方对商品的需求强度。值越大表示"买方多、缺货风险高、可抬价"。
-- 计算：`demand_qty[k] = active_sell_offers[k] + signed_buy_contracts[k]`
-  - `active_sell_offers[k]`：当前卖出谈判中对手请求在 $t+k$ 天交货的总量（来自 `awi.current_sell_offers`）
-  - `signed_buy_contracts[k]`：已签未执行的、交货日为 $t+k$ 的采购合约量
-- 归一化：`buy_pressure[k] = clip(demand_qty[k] / economic_capacity[k], 0, 1)`
-
-**sell_pressure[k]（卖方压力）**：
-- 含义：第 $t+k$ 天卖方的供给强度。值越大表示"供给多、价格承压"。
-- 计算：`supply_qty[k] = active_buy_offers[k] + signed_sell_contracts[k]`
-  - `active_buy_offers[k]`：当前买入谈判中对手请求在 $t+k$ 天交货的总量（来自 `awi.current_buy_offers`）
-  - `signed_sell_contracts[k]`：已签未执行的、交货日为 $t+k$ 的销售合约量
-- 归一化：`sell_pressure[k] = clip(supply_qty[k] / economic_capacity[k], 0, 1)`
-
-**price_diff[k]（价格趋势）**：
-- 含义：交货日 $t+k$ 的"期货价"相对现货价 $P_{spot}$ 的溢价/贴水。
-- 信号来源优先级：
-  1. 已签成交 VWAP（按交货日 $k$ 聚合）
-  2. 正在谈判的最新出价中位数（按 $k$ 聚合）
-  3. 回退：$P_{spot}$（无数据时保持平坦）
-- 融合：`P_future[k] = w1*VWAP_signed[k] + w2*mid_active[k] + (1-w1-w2)*P_spot`
-- 输出：`price_diff[k] = P_future[k] - P_spot`
+- **price_diff_in / price_diff_out**  
+  - 信号来源优先级：① 已签成交 VWAP（按交货日聚合）；② 正在谈判的活跃报价**加权均值**；③ 回退现货价  
+  - 融合：`P_future = w_signed*VWAP + w_active*avg + w_spot*P_spot`（权重 0.6/0.3/0.1）  
+  - 输出：`price_diff = P_future - P_spot`（分别使用 `spot_price_in`、`spot_price_out`）
+- **buy_pressure[k]**（买方需求强度）  
+  `demand[k] = signed_buy[k] + active_sell_offers[k]·weight·price_weight`，再除以经济容量 `C_total[k]` 并裁剪到 `[0,1]`
+- **sell_pressure[k]**（卖方供给强度）  
+  `supply[k] = signed_sell[k] + active_buy_offers[k]·weight·price_weight`，再除以 `C_total[k]` 并裁剪到 `[0,1]`
 
 **设计说明**：
-- 当前市场现货价格已包含在 `x_static` 中（`spot_price_in`/`spot_price_out`），无需在时序张量中重复
-- 买卖压力分开表示，使代理可根据角色做出差异化响应
+- 现货价格在 `x_static` 中提供（`spot_price_in`/`spot_price_out`），时序张量只存储期货溢价/贴水
+- 买卖压力分离，便于 L3 根据谈判方向选择性关注
 
 ### 3.4 角色嵌入 `x_role`
 
-- **One-hot 编码**：`[1, 0]` = Buyer, `[0, 1]` = Seller
+#### L2 层：Multi-Hot 谈判能力编码
+
+根据 SCML 2025 Standard 规则，代理在供应链中的位置决定了其谈判能力：
+
+| 位置 | 采购 | 销售 | x_role | 说明 |
+|------|------|------|--------|------|
+| 第一层 | 外生 (SELLER) | 需谈判 | `[0, 1]` | 只能谈判销售 |
+| 中间层 | 需谈判 | 需谈判 | `[1, 1]` | 买卖都需谈判 |
+| 最后层 | 需谈判 | 外生 (BUYER) | `[1, 0]` | 只能谈判采购 |
+
+```python
+x_role = [can_negotiate_buy, can_negotiate_sell]  # Multi-Hot
+```
+
+**设计理由**：
+- Multi-Hot 编码比 One-Hot 更适合表示两个独立能力（买/卖不是互斥的）
+- `[1, 1]` 明确表示"两种能力都有"，而 `[0.5, 0.5]` 语义模糊
+- 网络可学习：当 `dim[0]=1` 时关注 `Q_buy, P_buy`；当 `dim[1]=1` 时关注 `Q_sell, P_sell`
+
+#### L3/L4 层：One-Hot 谈判角色编码
+
+L3/L4 处理具体谈判，每个谈判有明确的买/卖方向：
+
+- **One-hot 编码**：`[1, 0]` = Buyer（当前谈判中是买家）, `[0, 1]` = Seller（当前谈判中是卖家）
 - **或可学习嵌入**：`Embedding(input_dim=2, output_dim=d_role)`
 
 ---
@@ -455,8 +463,8 @@ L2 是**日级战略规划器**，基于宏观状态生成分桶目标向量，�
 ```
 输入:
   - x_static: (B, 12)
-  - X_temporal: (B, H, 9)
-  - x_role: (B, d_role)  # 角色嵌入
+  - X_temporal: (B, H+1, 10)  # H=40, 10通道: vol_in, vol_out, prod_plan, inventory_proj, capacity_free, balance_proj, price_diff_in, price_diff_out, buy_pressure, sell_pressure
+  - x_role: (B, 2)  # 角色 Multi-Hot [can_buy, can_sell]
 
 架构:
   1. 时序特征塔 (Temporal Tower)
@@ -468,10 +476,10 @@ L2 是**日级战略规划器**，基于宏观状态生成分桶目标向量，�
      - Dense(32, ReLU) -> h_static (B, 32)
   
   3. 角色嵌入
-     - Embedding(2, 16) 或直接使用 -> h_role (B, 16)
+     - Linear(2, d_role) + ReLU -> h_role (B, d_role)  # 支持 Multi-Hot 输入
   
   4. 融合层
-     - Concat([h_temp, h_static, h_role]) -> (B, 112)
+     - Concat([h_temp, h_static, h_role]) -> (B, 64+32+d_role)
      - Dense(128, ReLU)
   
   5. 策略头 (Actor)
@@ -527,7 +535,7 @@ class HorizonManagerPPO(nn.Module):
         horizon: int = 40,
         n_buckets: int = 4,
         d_static: int = 12,
-        d_temporal: int = 9,
+        d_temporal: int = 10,  # 10通道: vol_in, vol_out, prod_plan, inventory_proj, capacity_free, balance_proj, price_diff_in, price_diff_out, buy_pressure, sell_pressure
         d_role: int = 16,
     ):
         super().__init__()
@@ -544,8 +552,9 @@ class HorizonManagerPPO(nn.Module):
         # 静态特征嵌入
         self.static_embed = nn.Linear(d_static, 32)
         
-        # 角色嵌入
-        self.role_embed = nn.Embedding(2, d_role)
+        # 角色嵌入：使用 Linear 支持 Multi-Hot [can_buy, can_sell]
+        # [0,1]=第一层（只卖）, [1,1]=中间层, [1,0]=最后层（只买）
+        self.role_embed = nn.Linear(2, d_role)
         
         # 融合层
         fusion_dim = 64 + 32 + d_role
@@ -562,12 +571,12 @@ class HorizonManagerPPO(nn.Module):
             nn.Linear(64, 1)
         )
     
-    def forward(self, x_static, X_temporal, role_idx):
+    def forward(self, x_static, X_temporal, x_role):
         """
         Args:
             x_static: (B, 12) - 静态特征
-            X_temporal: (B, H, 9) - 时序特征
-            role_idx: (B,) - 角色索引 (0=Buyer, 1=Seller)
+            X_temporal: (B, H+1, 10) - 时序特征 (H=40, 10通道)
+            x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
         
         Returns:
             mean: (B, 16)
@@ -575,7 +584,7 @@ class HorizonManagerPPO(nn.Module):
             value: (B, 1)
         """
         # 时序塔 (需要转置为 B, C, L)
-        x_t = X_temporal.permute(0, 2, 1)  # (B, 9, H)
+        x_t = X_temporal.permute(0, 2, 1)  # (B, 10, H+1)
         x_t = F.relu(self.conv1(x_t))
         x_t = F.relu(self.conv2(x_t))
         h_temp = self.pool(x_t).squeeze(-1)  # (B, 64)
@@ -583,8 +592,8 @@ class HorizonManagerPPO(nn.Module):
         # 静态嵌入
         h_static = F.relu(self.static_embed(x_static))  # (B, 32)
         
-        # 角色嵌入
-        h_role = self.role_embed(role_idx)  # (B, d_role)
+        # 角色嵌入 (Linear 接受 Multi-Hot)
+        h_role = F.relu(self.role_embed(x_role))  # (B, d_role)
         
         # 融合
         h = torch.cat([h_temp, h_static, h_role], dim=-1)
@@ -600,9 +609,13 @@ class HorizonManagerPPO(nn.Module):
         
         return mean, log_std, value
     
-    def sample_action(self, x_static, X_temporal, role_idx):
-        """采样动作并计算 log_prob"""
-        mean, log_std, value = self.forward(x_static, X_temporal, role_idx)
+    def sample_action(self, x_static, X_temporal, x_role):
+        """采样动作并计算 log_prob
+        
+        Args:
+            x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
+        """
+        mean, log_std, value = self.forward(x_static, X_temporal, x_role)
         std = torch.exp(log_std)
         dist = torch.distributions.Normal(mean, std)
         action = dist.rsample()
@@ -1069,14 +1082,82 @@ def reconstruct_l2_goals(daily_logs: List[dict], n_buckets: int = 4) -> List[dic
 ### 10.2 L3 残差标签提取
 
 ```python
+def compute_time_mask_offline(
+    current_step: int,
+    horizon: int,
+    inventory: int,
+    pending_delivery: np.ndarray,
+    pending_commitments: np.ndarray,
+    min_tradable_qty: float = 1.0,
+) -> np.ndarray:
+    """
+    离线计算 time_mask，基于 Q_safe 公式重建 L1 安全约束。
+    
+    Args:
+        current_step: 当前步骤
+        horizon: 总步数 (H)
+        inventory: 当前库存
+        pending_delivery: 未来采购到货数组
+        pending_commitments: 未来销售承诺数组
+        min_tradable_qty: 最小可交易量阈值
+    
+    Returns:
+        time_mask: (H+1,) 形状，0.0 表示允许，-inf 表示禁止
+    """
+    H_plus_1 = horizon - current_step + 1
+    time_mask = np.zeros(H_plus_1, dtype=np.float32)
+    
+    for delta in range(H_plus_1):
+        # Q_safe = inventory + sum(pending_delivery[:delta]) - sum(pending_commitments[:delta])
+        cumulative_delivery = np.sum(pending_delivery[:delta]) if delta > 0 else 0
+        cumulative_commitment = np.sum(pending_commitments[:delta]) if delta > 0 else 0
+        Q_safe = inventory + cumulative_delivery - cumulative_commitment
+        
+        if Q_safe < min_tradable_qty:
+            time_mask[delta] = -np.inf
+    
+    return time_mask
+
+
+def fix_invalid_time_label(
+    time_label: int,
+    time_mask: np.ndarray,
+) -> int:
+    """
+    修复无效的 time_label：若被 L1 禁止，则投影到最近的合法 delta。
+    
+    Args:
+        time_label: 原始时间标签
+        time_mask: (H+1,) 形状，0.0 表示允许，-inf 表示禁止
+    
+    Returns:
+        修复后的 time_label
+    """
+    if time_mask[time_label] == 0.0:
+        return time_label  # 原本合法
+    
+    # 找最近的合法位置
+    valid_indices = np.where(time_mask == 0.0)[0]
+    if len(valid_indices) == 0:
+        return 0  # 全部禁止则返回 0
+    
+    distances = np.abs(valid_indices - time_label)
+    return int(valid_indices[np.argmin(distances)])
+
+
 def extract_l3_residuals(negotiation_logs: List[dict], l1_shield: TemporalSafetyShield):
     """
     从谈判日志中提取 L3 残差标签
     
     Returns:
-        List of {history, goal_bucket, role, baseline, residual, time_label}
+        List of {history, role, baseline, residual, time_label, time_mask}
+    
+    离线训练注意事项:
+        1. time_mask 使用 compute_time_mask_offline() 从日志状态重建
+        2. 若 time_label 被 time_mask 禁止，使用 fix_invalid_time_label() 修复
     """
     samples = []
+    fix_count = 0
     
     for neg in negotiation_logs:
         # 历史序列
@@ -1089,14 +1170,27 @@ def extract_l3_residuals(negotiation_logs: List[dict], l1_shield: TemporalSafety
         baseline = l1_shield.compute(neg['awi_snapshot'], neg['is_buyer']).baseline_action
         baseline = np.array(baseline)
         
+        # 离线重建 time_mask
+        awi = neg['awi_snapshot']
+        time_mask = compute_time_mask_offline(
+            current_step=awi['current_step'],
+            horizon=awi['n_steps'],
+            inventory=awi['inventory'],
+            pending_delivery=awi['pending_delivery'],
+            pending_commitments=awi['pending_commitments'],
+        )
+        
         # 专家动作
         expert_action = np.array(neg['final_action'])  # (q, p, t)
         
         # 残差
         residual = expert_action[:2] - baseline[:2]  # (Δq, Δp)
         
-        # 时间标签 (分类)
+        # 时间标签 (分类) - 修复无效值
         time_label = int(expert_action[2])
+        if time_mask[time_label] != 0.0:
+            time_label = fix_invalid_time_label(time_label, time_mask)
+            fix_count += 1
         
         samples.append({
             'history': history,
@@ -1104,7 +1198,11 @@ def extract_l3_residuals(negotiation_logs: List[dict], l1_shield: TemporalSafety
             'baseline': baseline,
             'residual': residual,
             'time_label': time_label,
+            'time_mask': time_mask,  # 新增: 真实的 L1 约束
         })
+    
+    if fix_count > 0:
+        print(f"[L3数据] 修复了 {fix_count}/{len(samples)} 个无效 time_label")
     
     return samples
 ```
@@ -1133,21 +1231,53 @@ class HRLXFTrainer:
         self.l4 = l4
         self.config = config
     
+    def _build_l2_loss_mask(self, x_role: torch.Tensor) -> torch.Tensor:
+        """
+        根据 x_role 构建 L2 损失掩码：不可谈判的分量应被忽略
+        
+        Args:
+            x_role: (B, 2) - [can_buy, can_sell] Multi-Hot
+        
+        Returns:
+            mask: (B, 16) - 1.0 表示有效，0.0 表示忽略
+        """
+        B = x_role.size(0)
+        mask = torch.ones(B, 16, device=x_role.device)
+        
+        # 16 维目标结构: [Q_buy, P_buy, Q_sell, P_sell] × 4 个 bucket
+        # 索引: 0,1=buy_bucket0, 2,3=sell_bucket0, 4,5=buy_bucket1, ...
+        buy_indices = [0, 1, 4, 5, 8, 9, 12, 13]    # Q_buy, P_buy 在每个 bucket
+        sell_indices = [2, 3, 6, 7, 10, 11, 14, 15]  # Q_sell, P_sell 在每个 bucket
+        
+        # can_buy=0 时，掩码 buy 分量
+        mask[:, buy_indices] *= x_role[:, 0:1]
+        # can_sell=0 时，掩码 sell 分量
+        mask[:, sell_indices] *= x_role[:, 1:2]
+        
+        return mask
+    
     def train_step(self, batch):
         # ========== L2 更新 (日级) ==========
         with torch.enable_grad():
+            # x_role: Multi-Hot [can_buy, can_sell]
+            x_role = batch['x_role']  # (B, 2)
+            
             mean, log_std, value = self.l2(
                 batch['macro_state'],
                 batch['temporal_state'],
-                batch['l2_role']
+                x_role  # 传入 Multi-Hot 角色向量
             )
             
-            # PPO Loss
+            # 构建损失掩码：忽略不可谈判的目标分量
+            loss_mask = self._build_l2_loss_mask(x_role)  # (B, 16)
+            
+            # PPO Loss (带掩码)
             l2_loss = self.ppo_loss(
                 mean, log_std, value,
                 batch['l2_actions'],
                 batch['l2_returns'],
-                batch['l2_advantages']
+                batch['l2_advantages'],
+                loss_mask=loss_mask  # 新增：传入损失掩码
             )
         
         self.l2_optimizer.zero_grad()
@@ -1164,12 +1294,12 @@ class HRLXFTrainer:
                 batch['l2_goals']
             )
             
-            # L3 前向
+            # L3 前向 - 使用真实 time_mask (由 compute_time_mask_offline 计算)
             delta_q, delta_p, time_logits = self.l3(
                 batch['history'],
                 batch['goal_bucket'],
                 batch['l3_role'],
-                batch['time_mask'],
+                batch['time_mask'],  # 真实 L1 约束，非 ones()
                 batch['baseline']
             )
             

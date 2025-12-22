@@ -38,6 +38,11 @@ class TrainConfig:
     data_dir: str = "./data"
     output_dir: str = "./checkpoints"
     
+    # 断点续训（checkpoint 路径）
+    l2_resume_path: Optional[str] = None
+    l3_bc_resume_path: Optional[str] = None
+    l3_awr_resume_path: Optional[str] = None
+    
     # 通用
     seed: int = 42
     device: str = "cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu"
@@ -61,6 +66,9 @@ class TrainConfig:
     # AWR
     awr_beta: float = 1.0
     awr_clip: float = 20.0
+    
+    # 规划视界
+    horizon: int = 40  # H，用于 L3Dataset 的 time_mask 长度 (H+1)
     
     # 正则化
     grad_clip: float = 0.5
@@ -87,6 +95,7 @@ class L2Dataset(Dataset):
         return {
             'state_static': torch.FloatTensor(s.state_static),
             'state_temporal': torch.FloatTensor(s.state_temporal),
+            'x_role': torch.FloatTensor(s.x_role),  # Multi-Hot: [can_buy, can_sell]
             'goal': torch.FloatTensor(s.goal),
             'value': torch.FloatTensor([s.value if s.value else 0.0]),
         }
@@ -95,9 +104,10 @@ class L2Dataset(Dataset):
 class L3Dataset(Dataset):
     """L3 微观数据集."""
     
-    def __init__(self, samples: List[MicroSample], max_history_len: int = 20):
+    def __init__(self, samples: List[MicroSample], max_history_len: int = 20, horizon: int = 40):
         self.samples = samples
         self.max_len = max_history_len
+        self.horizon = horizon  # 用于动态确定 time_mask 长度
     
     def __len__(self):
         return len(self.samples)
@@ -113,6 +123,18 @@ class L3Dataset(Dataset):
             pad = np.zeros((self.max_len - len(history), 3))
             history = np.vstack([pad, history])
         
+        # time_mask 动态长度：使用 horizon+1，若缺失则默认全部允许 (0.0)
+        tm_len = self.horizon + 1
+        if s.time_mask is not None:
+            time_mask = s.time_mask
+            # 如果长度不匹配，截断或填充
+            if len(time_mask) > tm_len:
+                time_mask = time_mask[:tm_len]
+            elif len(time_mask) < tm_len:
+                time_mask = np.concatenate([time_mask, np.zeros(tm_len - len(time_mask))])
+        else:
+            time_mask = np.zeros(tm_len, dtype=np.float32)
+        
         return {
             'history': torch.FloatTensor(history),
             'role': torch.LongTensor([s.role]),
@@ -120,6 +142,7 @@ class L3Dataset(Dataset):
             'baseline': torch.FloatTensor(s.baseline),
             'residual': torch.FloatTensor(s.residual),
             'time_label': torch.LongTensor([s.time_label]),
+            'time_mask': torch.FloatTensor(time_mask),
             'reward': torch.FloatTensor([s.reward if s.reward else 0.0]),
         }
 
@@ -129,7 +152,8 @@ class L3Dataset(Dataset):
 def train_l2_bc(
     model: "nn.Module",
     samples: List[MacroSample],
-    config: TrainConfig
+    config: TrainConfig,
+    resume_path: Optional[str] = None,
 ) -> Dict[str, List[float]]:
     """L2 行为克隆训练.
     
@@ -137,6 +161,7 @@ def train_l2_bc(
         model: L2 模型
         samples: 宏观样本
         config: 训练配置
+        resume_path: 断点路径（包含优化器状态）
         
     Returns:
         训练历史
@@ -157,8 +182,22 @@ def train_l2_bc(
     model.train()
     
     history = {'loss': [], 'mse': []}
+    start_epoch = 0
+    if resume_path:
+        if os.path.exists(resume_path):
+            start_epoch, ckpt_history = load_checkpoint(
+                model, optimizer, resume_path, device=config.device
+            )
+            if ckpt_history:
+                history = ckpt_history
+        else:
+            print(f"[WARN] Resume path not found: {resume_path} (start fresh)")
     
-    for epoch in range(config.l2_epochs):
+    if start_epoch >= config.l2_epochs:
+        print(f"[INFO] Resume epoch {start_epoch} >= target {config.l2_epochs}, skip training")
+        return history
+    
+    for epoch in range(start_epoch, config.l2_epochs):
         epoch_loss = 0.0
         epoch_mse = 0.0
         n_batches = 0
@@ -166,17 +205,42 @@ def train_l2_bc(
         for batch in loader:
             state_static = batch['state_static'].to(config.device)
             state_temporal = batch['state_temporal'].to(config.device)
+            x_role = batch['x_role'].to(config.device)  # Multi-Hot: [can_buy, can_sell]
             goal_target = batch['goal'].to(config.device)
             
             # 前向
-            goal_pred = model(state_static, state_temporal)
+            goal_pred = model(state_static, state_temporal, x_role)
             
             # 如果模型返回 (mean, log_std, value)
             if isinstance(goal_pred, tuple):
                 goal_pred = goal_pred[0]
             
-            # MSE 损失
-            loss = F.mse_loss(goal_pred, goal_target)
+            # 构建损失掩码：屏蔽不可谈判的分量
+            # 16维 = 4桶 × (Q_buy, P_buy, Q_sell, P_sell)
+            # can_buy=0 时屏蔽 Q_buy/P_buy (索引 0,1,4,5,8,9,12,13)
+            # can_sell=0 时屏蔽 Q_sell/P_sell (索引 2,3,6,7,10,11,14,15)
+            B = x_role.size(0)
+            loss_mask = torch.ones(B, 16, device=config.device)
+            
+            can_buy = x_role[:, 0:1]   # (B, 1)
+            can_sell = x_role[:, 1:2]  # (B, 1)
+            
+            # 每个桶的 Q_buy, P_buy 索引
+            buy_indices = [0, 1, 4, 5, 8, 9, 12, 13]
+            # 每个桶的 Q_sell, P_sell 索引
+            sell_indices = [2, 3, 6, 7, 10, 11, 14, 15]
+            
+            for idx in buy_indices:
+                loss_mask[:, idx] = can_buy.squeeze(-1)
+            for idx in sell_indices:
+                loss_mask[:, idx] = can_sell.squeeze(-1)
+            
+            # 加权 MSE 损失（只计算可谈判分量）
+            squared_error = (goal_pred - goal_target) ** 2  # (B, 16)
+            masked_error = squared_error * loss_mask
+            # 归一化：除以有效分量数量
+            n_valid = loss_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+            loss = (masked_error.sum(dim=1) / n_valid.squeeze(-1)).mean()
             
             # 反向
             optimizer.zero_grad()
@@ -185,7 +249,10 @@ def train_l2_bc(
             optimizer.step()
             
             epoch_loss += loss.item()
-            epoch_mse += F.mse_loss(goal_pred, goal_target, reduction='mean').item()
+            # 防止除零（极端情况：x_role=[0,0] 导致 loss_mask 全零）
+            mask_sum = loss_mask.sum()
+            if mask_sum > 0:
+                epoch_mse += (masked_error.sum() / mask_sum).item()
             n_batches += 1
         
         avg_loss = epoch_loss / max(n_batches, 1)
@@ -198,6 +265,14 @@ def train_l2_bc(
         
         if (epoch + 1) % config.save_every == 0:
             save_model(model, config.output_dir, f"l2_bc_epoch{epoch + 1}.pt")
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch + 1,
+                config.output_dir,
+                f"l2_bc_epoch{epoch + 1}.ckpt.pt",
+                history=history,
+            )
     
     return history
 
@@ -206,15 +281,15 @@ def train_l3_bc(
     model: "nn.Module",
     samples: List[MicroSample],
     config: TrainConfig,
-    horizon: int = 40
+    resume_path: Optional[str] = None,
 ) -> Dict[str, List[float]]:
     """L3 行为克隆训练.
     
     Args:
         model: L3 模型
         samples: 微观样本
-        config: 训练配置
-        horizon: 规划视界
+        config: 训练配置（包含 horizon 参数）
+        resume_path: 断点路径（包含优化器状态）
         
     Returns:
         训练历史
@@ -222,7 +297,7 @@ def train_l3_bc(
     if not TORCH_AVAILABLE:
         raise RuntimeError("PyTorch not available")
     
-    dataset = L3Dataset(samples)
+    dataset = L3Dataset(samples, horizon=config.horizon)
     loader = DataLoader(dataset, batch_size=config.l3_batch_size, shuffle=True)
     
     optimizer = torch.optim.AdamW(
@@ -235,8 +310,22 @@ def train_l3_bc(
     model.train()
     
     history = {'loss': [], 'loss_q': [], 'loss_p': [], 'loss_t': []}
+    start_epoch = 0
+    if resume_path:
+        if os.path.exists(resume_path):
+            start_epoch, ckpt_history = load_checkpoint(
+                model, optimizer, resume_path, device=config.device
+            )
+            if ckpt_history:
+                history = ckpt_history
+        else:
+            print(f"[WARN] Resume path not found: {resume_path} (start fresh)")
     
-    for epoch in range(config.l3_epochs):
+    if start_epoch >= config.l3_epochs:
+        print(f"[INFO] Resume epoch {start_epoch} >= target {config.l3_epochs}, skip training")
+        return history
+    
+    for epoch in range(start_epoch, config.l3_epochs):
         epoch_loss = 0.0
         epoch_loss_q = 0.0
         epoch_loss_p = 0.0
@@ -250,10 +339,7 @@ def train_l3_bc(
             baseline = batch['baseline'].to(config.device)
             residual_target = batch['residual'].to(config.device)
             time_target = batch['time_label'].squeeze(-1).to(config.device)
-            
-            # 时间掩码 (这里简化为全 1)
-            B = history_seq.size(0)
-            time_mask = torch.ones(B, horizon + 1, device=config.device)
+            time_mask = batch['time_mask'].to(config.device)  # 使用真实的 L1 time_mask
             
             # 前向
             delta_q, delta_p, time_logits = model(
@@ -261,8 +347,8 @@ def train_l3_bc(
             )
             
             # 损失
-            loss_q = F.mse_loss(delta_q, residual_target[:, 0])
-            loss_p = F.mse_loss(delta_p, residual_target[:, 1])
+            loss_q = F.mse_loss(delta_q, residual_target[:, 0:1])
+            loss_p = F.mse_loss(delta_p, residual_target[:, 1:2])
             loss_t = F.cross_entropy(time_logits, time_target)
             
             loss = loss_q + loss_p + loss_t
@@ -290,6 +376,14 @@ def train_l3_bc(
         
         if (epoch + 1) % config.save_every == 0:
             save_model(model, config.output_dir, f"l3_bc_epoch{epoch + 1}.pt")
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch + 1,
+                config.output_dir,
+                f"l3_bc_epoch{epoch + 1}.ckpt.pt",
+                history=history,
+            )
     
     return history
 
@@ -336,15 +430,15 @@ def train_l3_awr(
     model: "nn.Module",
     samples: List[MicroSample],
     config: TrainConfig,
-    horizon: int = 40
+    resume_path: Optional[str] = None,
 ) -> Dict[str, List[float]]:
     """L3 优势加权回归训练.
     
     Args:
         model: L3 模型
         samples: 带奖励的微观样本
-        config: 训练配置
-        horizon: 规划视界
+        config: 训练配置（包含 horizon 参数）
+        resume_path: 断点路径（包含优化器状态）
         
     Returns:
         训练历史
@@ -356,9 +450,9 @@ def train_l3_awr(
     samples_with_reward = [s for s in samples if s.reward is not None]
     if not samples_with_reward:
         print("[WARN] No samples with reward, falling back to BC")
-        return train_l3_bc(model, samples, config, horizon)
+        return train_l3_bc(model, samples, config, resume_path=resume_path)
     
-    dataset = L3Dataset(samples_with_reward)
+    dataset = L3Dataset(samples_with_reward, horizon=config.horizon)
     loader = DataLoader(dataset, batch_size=config.l3_batch_size, shuffle=True)
     
     optimizer = torch.optim.AdamW(
@@ -371,8 +465,22 @@ def train_l3_awr(
     model.train()
     
     history = {'loss': [], 'weighted_loss': []}
+    start_epoch = 0
+    if resume_path:
+        if os.path.exists(resume_path):
+            start_epoch, ckpt_history = load_checkpoint(
+                model, optimizer, resume_path, device=config.device
+            )
+            if ckpt_history:
+                history = ckpt_history
+        else:
+            print(f"[WARN] Resume path not found: {resume_path} (start fresh)")
     
-    for epoch in range(config.l3_epochs):
+    if start_epoch >= config.l3_epochs:
+        print(f"[INFO] Resume epoch {start_epoch} >= target {config.l3_epochs}, skip training")
+        return history
+    
+    for epoch in range(start_epoch, config.l3_epochs):
         epoch_loss = 0.0
         n_batches = 0
         
@@ -384,16 +492,16 @@ def train_l3_awr(
             residual_target = batch['residual'].to(config.device)
             time_target = batch['time_label'].squeeze(-1).to(config.device)
             rewards = batch['reward'].squeeze(-1).to(config.device)
-            
-            B = history_seq.size(0)
-            time_mask = torch.ones(B, horizon + 1, device=config.device)
+            time_mask = batch['time_mask'].to(config.device)  # 使用真实的 L1 time_mask
             
             # 计算优势权重
             # 简化版：使用 exp(reward / beta) 作为权重
+            B = history_seq.size(0)
             advantages = rewards  # 简化
             weights = torch.exp(advantages / config.awr_beta)
             weights = torch.clamp(weights, max=config.awr_clip)
             weights = weights / weights.sum() * B  # 归一化
+            weights_resid = weights.unsqueeze(-1)
             
             # 前向
             delta_q, delta_p, time_logits = model(
@@ -401,8 +509,8 @@ def train_l3_awr(
             )
             
             # 加权损失
-            loss_q = (weights * (delta_q - residual_target[:, 0]) ** 2).mean()
-            loss_p = (weights * (delta_p - residual_target[:, 1]) ** 2).mean()
+            loss_q = (weights_resid * (delta_q - residual_target[:, 0:1]) ** 2).mean()
+            loss_p = (weights_resid * (delta_p - residual_target[:, 1:2]) ** 2).mean()
             loss_t = F.cross_entropy(time_logits, time_target, reduction='none')
             loss_t = (weights * loss_t).mean()
             
@@ -425,6 +533,14 @@ def train_l3_awr(
         
         if (epoch + 1) % config.save_every == 0:
             save_model(model, config.output_dir, f"l3_awr_epoch{epoch + 1}.pt")
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch + 1,
+                config.output_dir,
+                f"l3_awr_epoch{epoch + 1}.ckpt.pt",
+                history=history,
+            )
     
     return history
 
@@ -514,6 +630,16 @@ def ppo_loss(
 
 # ============== 模型保存/加载 ==============
 
+def _move_optimizer_state_to_device(optimizer: "torch.optim.Optimizer", device: str) -> None:
+    """将优化器状态迁移到指定设备."""
+    if optimizer is None:
+        return
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+
+
 def save_model(model: "nn.Module", output_dir: str, filename: str) -> str:
     """保存模型.
     
@@ -535,6 +661,31 @@ def save_model(model: "nn.Module", output_dir: str, filename: str) -> str:
     return path
 
 
+def save_checkpoint(
+    model: "nn.Module",
+    optimizer: "torch.optim.Optimizer",
+    epoch: int,
+    output_dir: str,
+    filename: str,
+    history: Optional[Dict[str, List[float]]] = None,
+) -> str:
+    """保存断点（模型 + 优化器 + 进度）."""
+    if not TORCH_AVAILABLE:
+        raise RuntimeError("PyTorch not available")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, filename)
+    state = {
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict() if optimizer is not None else None,
+        "epoch": epoch,
+        "history": history,
+    }
+    torch.save(state, path)
+    print(f"[SAVE] Checkpoint saved to {path}")
+    return path
+
+
 def load_model(model: "nn.Module", path: str) -> "nn.Module":
     """加载模型.
     
@@ -552,6 +703,33 @@ def load_model(model: "nn.Module", path: str) -> "nn.Module":
     model.load_state_dict(state_dict)
     print(f"[LOAD] Model loaded from {path}")
     return model
+
+
+def load_checkpoint(
+    model: "nn.Module",
+    optimizer: Optional["torch.optim.Optimizer"],
+    path: str,
+    device: str = "cpu",
+) -> Tuple[int, Optional[Dict[str, List[float]]]]:
+    """加载断点（模型 + 优化器 + 进度）."""
+    if not TORCH_AVAILABLE:
+        raise RuntimeError("PyTorch not available")
+    
+    state = torch.load(path, map_location=device)
+    if isinstance(state, dict) and "model_state" in state:
+        model.load_state_dict(state["model_state"])
+        if optimizer is not None and state.get("optimizer_state") is not None:
+            optimizer.load_state_dict(state["optimizer_state"])
+            _move_optimizer_state_to_device(optimizer, device)
+        epoch = int(state.get("epoch", 0))
+        history = state.get("history")
+        print(f"[LOAD] Checkpoint loaded from {path} (epoch={epoch})")
+        return epoch, history
+    
+    # 兼容仅保存了 state_dict 的旧格式
+    model.load_state_dict(state)
+    print(f"[LOAD] Model state loaded from {path} (no optimizer state)")
+    return 0, None
 
 
 # ============== 完整训练流程 ==============
@@ -586,13 +764,23 @@ class HRLXFTrainer:
             print("=" * 50)
             print("Phase 0: L2 Behavior Cloning")
             print("=" * 50)
-            results['l2_bc'] = train_l2_bc(self.l2, macro_samples, self.config)
+            results['l2_bc'] = train_l2_bc(
+                self.l2,
+                macro_samples,
+                self.config,
+                resume_path=self.config.l2_resume_path,
+            )
         
         if self.l3 is not None and micro_samples:
             print("=" * 50)
             print("Phase 0: L3 Behavior Cloning")
             print("=" * 50)
-            results['l3_bc'] = train_l3_bc(self.l3, micro_samples, self.config)
+            results['l3_bc'] = train_l3_bc(
+                self.l3,
+                micro_samples,
+                self.config,
+                resume_path=self.config.l3_bc_resume_path,
+            )
         
         return results
     
@@ -607,7 +795,12 @@ class HRLXFTrainer:
             print("=" * 50)
             print("Phase 1: L3 Advantage-Weighted Regression")
             print("=" * 50)
-            results['l3_awr'] = train_l3_awr(self.l3, micro_samples, self.config)
+            results['l3_awr'] = train_l3_awr(
+                self.l3,
+                micro_samples,
+                self.config,
+                resume_path=self.config.l3_awr_resume_path,
+            )
         
         return results
     
@@ -643,5 +836,7 @@ __all__ = [
     "PPOBuffer",
     "save_model",
     "load_model",
+    "save_checkpoint",
+    "load_checkpoint",
     "HRLXFTrainer",
 ]

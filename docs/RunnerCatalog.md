@@ -1,26 +1,33 @@
-## 运行脚本一览（Runners Overview）
+## 运行脚本一览
 
-| 文件 (File) | 作用 (Purpose) | 赛道/规模 (Track & Size) | 备注 (Notes) |
-|-------------|----------------|--------------------------|--------------|
-| `runners/run_std_full.py` | 官方尺度 std 锦标赛，覆盖 Lita+Top5；验证 loky 稳定性并保留 tracker/可视化后处理 | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | loky 并行，verbose 进度条 |
-| `runners/run_std_quick.py` | 快速 smoke，最少配置验证环境/依赖是否正常，观测 loky 是否能跑完一轮 | `track=std`, `n_configs=3`, `n_runs_per_world=1`, `n_steps=50`, `max_worlds_per_config=10` | loky 并行，小规模 |
-| `runners/run_full_std_tournament.py` | 含历届 Top Agents 的完整 std 赛，验证多版本 agent 共存及 tracker 输出 | `track=std`, 参数可调 | loky 并行 |
-| `runners/run_full_tournament.py` | 同时支持 std/oneshot 混合运行的入口，用于一次性生成全套结果 | 依内部参数 | loky 并行 |
-| `runners/run_oneshot_full.py` | 完整 oneshot 锦标赛，测试 Lita 变体与 Top5 的对局稳定性 | `track=oneshot`, `n_configs=10`, `n_runs_per_world=2`, `n_steps=50` | loky 并行 |
-| `runners/run_oneshot_quick.py` | oneshot 快速自检，确保最小配置也能跑通并输出日志 | `track=oneshot`, `n_configs=3`, `n_runs_per_world=1`, `n_steps=50`, `max_worlds_per_config=10` | loky 并行 |
-| `runners/run_scml_analyzer.py` | 集成 tracker + postprocess + visualizer 的多模式入口，适合日常分析 | 根据 `--mode` (standard/full/oneshot) | loky 并行 |
-| `runners/SCML_quick_test.py` | 排除噪声 agent 的快速对比，检查得分/日志链路 | 预置少量 agents | loky 并行 |
-| `runners/SCML_small_test_tournament.py` | 小规模对比赛，验证 Lita 与获奖代理的相对表现 | 预置少量 agents | loky 并行 |
-| `SCML_2025_tourment_runner.py` | 官方示例式运行器，保留原有参数，便于对标官方行为 | 按内部配置 | 手工触发 |
-| `runners/run_std_full_tracked.py` | 官方规模 std 赛（20 配置 ×2，步长 50-200），LitaAgents 注入 tracker，尝试加载最多 8 个 Top Agents，loky 并行+进度条 | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | tracker_logs 写入输出目录 |
-| `runners/run_std_full_tracked_penguin.py` | 官方规模 std 赛，包含 PenguinAgent，LitaAgents tracker 版 + 最多 8 个 Top Agents，loky 并行 + 进度 | `track=std`, `n_configs=20`, `n_runs_per_world=2`, `n_steps=(50,200)` | tracker_logs 写入输出目录 |
-| `runners/run_std_medium_tracked.py` | 中等规模 std 赛（5 配置 ×1，步长 50-100），LitaAgents 注入 tracker，加载最多 6 个 Top Agents，loky 并行+进度条 | `track=std`, `n_configs=5`, `n_runs_per_world=1`, `n_steps=(50,100)` | tracker_logs 写入输出目录 |
-| `runners/run_std_full_tracked_penguin_logs_resumable.py` | 完整 std（Lita tracker + Penguin + Top Agents，强制谈判日志），可断点续跑 | `track=std`, `n_configs` 可调, `n_runs` 可调 | loky 并行，resumable，forced_logs=1.0 |
-| `runners/run_std_full_untracked_resumable.py` | 完整 std（未追踪 Lita + Penguin + 全部 Top Agents，强制谈判日志），可断点续跑 | `track=std`, `n_configs` 可调, `n_runs` 可调 | loky 并行，resumable，forced_logs=1.0 |
+| 文件 | 参与代理 | 是否可续跑 | 赛道 | 默认规模 | 参数 | 自动启动可视化 | 自动归集数据 |
+|---|---|---|---|---|---|---|---|
+| `runners/run_default_std.py` | `LitaAgentY/YR/CIR/N/P`（动态 Tracked）<br>2025 Std Top5 + 2024 Std Top5（动态 Tracked） | 否 | Std | n_configs=20, n_runs=2, n_competitors_per_world=全部<br>max_worlds_per_config=全部（=n_per_world）<br>n_steps=(50,200)<br>输出: `tournament_history/std_default_<timestamp>/`（含 `tracker_logs/agent_*.json`、`tournament_results.json`） | `--configs --runs --max-top-2025 --max-top-2024 --n-competitors-per-world --max-worlds-per-config --target-worlds --round-robin --quick --output-dir --parallelism --quiet/--verbose` | 否 | 是 |
+| `runners/run_std_quick.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025 前 5 代理<br>不足时补 `RandomStdAgent/GreedyStdAgent/SyncRandomStdAgent` | 否 | Std | n_configs=3, n_runs=1, n_steps=50<br>max_worlds_per_config=10 | `--output-dir --port --no-server` | 默认是（`--no-server` 关闭） | 是 |
+| `runners/run_std_full.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025 前 5 代理 | 否 | Std | n_configs=20, n_runs=2, n_steps=(50,200) | `--output-dir --port --no-server` | 默认是（`--no-server` 关闭） | 是 |
+| `runners/run_std_full_tracked.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025 前 8 代理 | 否 | Std | n_configs=20, n_runs=2, n_steps=(50,200) | `--output-dir --port --no-server` | 默认是（`--no-server` 关闭） | 是 |
+| `runners/run_std_medium_tracked.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025 前 6 代理（可用 `--max-top`） | 否 | Std | n_configs=5, n_runs=1, n_steps=(50,100) | `--output-dir --port --no-server --max-top` | 默认是（`--no-server` 关闭） | 是 |
+| `runners/run_std_full_tracked_penguin.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>`PenguinAgent`<br>2025 前 8 代理 | 否 | Std | n_configs=20, n_runs=2, n_steps=(50,200) | `--configs --runs --max-top --output-dir --port --no-server` | 默认是（`--no-server` 关闭） | 是 |
+| `runners/run_std_full_tracked_penguin_logs.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>`PenguinAgent`<br>2025 前 8 代理 + `RandomStdAgent` | 否 | Std | n_configs=20, n_runs=2, n_steps=(50,200)<br>forced_logs=1.0 | `--configs --runs --max-top --output-dir` | 否 | 是 |
+| `runners/run_std_full_tracked_penguin_logs_resumable.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>`PenguinAgent`（Tracked）<br>2025 前 8 代理（尽量 Tracked） + `RandomStdAgent` | 是 | Std | n_configs=20, n_runs=2, n_steps=(50,200)<br>forced_logs=1.0 | `--configs --runs --max-top --parallelism --output-dir --no-postprocess` | 否 | 默认是（`--no-postprocess` 关闭） |
+| `runners/run_std_full_untracked_resumable.py` | `LitaAgentY/YR/CIR/N/P`（未追踪）<br>`PenguinAgent`<br>2025 前 8 代理 + `RandomStdAgent` | 是 | Std | n_configs=20, n_runs=2, n_steps=(50,200)<br>forced_logs=1.0 | `--configs --runs --max-top --parallelism --output-dir --no-postprocess` | 否 | 默认是（`--no-postprocess` 关闭） |
+| `runners/run_oneshot_quick.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025 OneShot 前 5 代理 | 否 | OneShot | n_configs=3, n_runs=1, n_steps=20 | `--output-dir --port --no-server` | 默认是（`--no-server` 关闭） | 是 |
+| `runners/run_oneshot_full.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025 OneShot 前 5 代理 | 否 | OneShot | n_configs=20, n_runs=2, n_steps=(50,200) | `--output-dir --port --no-server` | 默认是（`--no-server` 关闭） | 是 |
+| `runners/run_full_std_tournament.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025/2024/2023 Std 前 5 代理<br>`GreedyStdAgent/RandomStdAgent/SyncRandomStdAgent` | 否 | Std | 单 world，n_steps=50 | `--n-steps --output-dir` | 是 | 是（import_tournament） |
+| `runners/run_full_tournament.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>2025/2024/2023 Std/OneShot 前 5 代理<br>`Greedy/Random/SyncRandom`（Std/OneShot） + `RandDistOneShotAgent` | 否 | OneShot/Std（`--track` 控制） | 单 world，n_steps=20 | `--track oneshot/std/both --n-steps --output-dir` | 是 | 是（import_tournament） |
+| `runners/run_scml_analyzer.py` | `LitaAgentY/LitaAgentYR/LitaAgentN`（Tracked）<br>`PenguinAgent` + `AS0` | 否 | Std | quick: n_configs=2, n_runs=1, n_steps=30<br>standard: 5x2x50<br>full: 10x2x100 | `--mode quick/standard/full --visualize <log_dir> --auto-visualize --no-browser --silent --port` | 可选（`--auto-visualize`/`--visualize`） | 可选（配合可视化导入） |
+| `runners/hrl_data_runner.py` | `LitaAgentY/YR/CIR/N/P`（动态 Tracked）<br>2025 Std Top5 + 2024 Std Top5 + `RandomStdAgent/SyncRandomStdAgent`（动态 Tracked） | 否 | Std | n_configs=20, n_runs=2, n_competitors_per_world=全部<br>max_worlds_per_config=全部（=n_per_world）<br>n_steps=(50,200)<br>输出: `tournament_history/hrl_data_<timestamp>_std/`（含 `tracker_logs/agent_*.json`、`tournament_run.log`） | `--configs --runs --max-top-2025 --max-top-2024 --n-competitors-per-world --max-worlds-per-config --target-worlds --round-robin --steps --output-dir --parallelism --foreground --quiet --no-auto-collect` | 否 | 默认是（`--no-auto-collect` 关闭） |
+| `runners/run_batched_hrl_logs.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>`PenguinAgent`（Tracked）<br>2025 前 8 代理（尽量 Tracked） + `RandomStdAgent` | 是 | Std | 自适应（CPU 决定 configs/runs/steps/batches） | `--batches --configs --runs --steps-min --steps-max --parallelism --max-top --output-base` | 否 | 否 |
+| `runners/run_manifest_hrl_logs.py` | `LitaAgentY/YR/CIR/N/P`（Tracked）<br>`PenguinAgent`（Tracked）<br>2025 前 8 代理（尽量 Tracked） + `RandomStdAgent` | 是 | Std | 每 world: n_configs=1, n_runs=1, steps=100<br>min_comp=5（默认 `--generate=0`） | `--manifest --generate --steps --min-comp --max-comp --max-top --seed-base --parallelism --output-base --no-run` | 否 | 否 |
+| `runners/SCML_quick_test.py` | `LitaAgentY/LitaAgentYR` + `AS0` + `PenguinAgent` | 否 | Std | n_worlds=2, n_steps=30 | 无 | 是 | 是（import_tournament） |
+| `runners/SCML_small_test_tournament.py` | `LitaAgentY/YR/N/P/CIR` + `AS0` + `PenguinAgent` | 否 | Std | n_configs=3, n_runs=1, n_steps=50 | 无 | 是 | 是（import_tournament） |
+| `SCML_2025_tourment_runner.py` | `SyncRandomStdAgent` + `RandDistOneShotAgent` + `GreedyOneShotAgent` + `RandomStdAgent` + `LitaAgentCIR` + `LitaAgentY` | 否 | Std | 单 world，n_steps=50 | 无 | 否（仅 matplotlib 绘图） | 否 |
 
-说明 (Notes):
-- 所有 runner 已默认启用 `loky` 执行器（通过 `runners.loky_patch.enable_loky_executor()`），可用环境变量 `SCML_PARALLELISM=loky[:fraction]` 调节并发。
-- 运行后需告知用户输出路径，等待确认再做后续处理（详见 docs/Agents.md）。***
+说明：
+- “自动归集数据”指调用 `scml_analyzer.postprocess.postprocess_tournament` 或 `scml_analyzer.history.import_tournament`。
+- “自动启动可视化”指启动 `scml_analyzer.visualizer.start_server`，`matplotlib` 绘图不计入。
+- 标注“未显式设置”的步数来自 `scml.utils` 默认值（当前为 `(50,200)`）。
+- 参与代理可能受可选依赖影响（如 `scml_agents`、`stable_baselines3`）。
 
 ## 诊断/测试脚本（Diagnostic / Test Scripts）
 以下脚本也会启动比赛（多为 Standard，用于复现/调试）。默认未强制 loky；如需 loky，可设置 `SCML_PARALLELISM=loky` 再运行。

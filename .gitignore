@@ -65,6 +65,8 @@ test_debug_logs2/
 test_tracker_full/
 test_tracker_logs/
 test_tracker_output/
+.mpl_cache/
+.mplconfig/
 out/
 console.out
 console_Y_YS.out

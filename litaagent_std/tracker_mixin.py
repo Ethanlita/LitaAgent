@@ -21,7 +21,8 @@ Usage:
 
 import os
 import sys
-from typing import List, Type, Dict, Any, Optional
+import hashlib
+from typing import List, Type, Dict, Any, Optional, Tuple
 from functools import wraps
 
 # 尝试导入 Tracker
@@ -114,6 +115,196 @@ class LitaTrackerMixin:
                 self.tracker.production_executed(quantity)
 
 
+def _build_agent_identity(agent: Any, base_class: Optional[Type] = None) -> Dict[str, Any]:
+    """构建可用于匹配的代理身份信息."""
+    cls = type(agent)
+    if base_class is None:
+        bases = getattr(cls, "__bases__", None) or ()
+        base_class = bases[0] if bases else cls
+    
+    identity = {
+        "agent_type_raw": cls.__name__,
+        "agent_type_raw_full": f"{cls.__module__}.{cls.__name__}",
+        "agent_type_raw_qualname": getattr(cls, "__qualname__", cls.__name__),
+        "agent_type_base": base_class.__name__,
+        "agent_type_base_full": f"{base_class.__module__}.{base_class.__name__}",
+        "agent_type_base_qualname": getattr(base_class, "__qualname__", base_class.__name__),
+    }
+    
+    name_fields = [
+        ("agent_display_name", "name"),
+        ("agent_registry_name", "registry_name"),
+        ("agent_short_name", "short_name"),
+        ("agent_name", "agent_name"),
+    ]
+    for out_key, attr in name_fields:
+        value = getattr(agent, attr, None)
+        if value:
+            identity[out_key] = str(value)
+    
+    return identity
+
+
+def _extract_contract_terms(contract) -> Tuple[int, float, int, Optional[str], Optional[str], Optional[int]]:
+    """提取合约字段用于 tracking/commitments."""
+    agreement = getattr(contract, 'agreement', contract)
+    if isinstance(agreement, dict):
+        qty = int(agreement.get('quantity', 0))
+        price = float(agreement.get('unit_price', 0))
+        delivery = int(agreement.get('time', 0))
+        buyer = agreement.get('buyer', None)
+        seller = agreement.get('seller', None)
+    else:
+        qty = int(getattr(agreement, 'quantity', 0))
+        price = float(getattr(agreement, 'unit_price', 0))
+        delivery = int(getattr(agreement, 'time', 0))
+        buyer = getattr(contract, 'buyer', None)
+        seller = getattr(contract, 'seller', None)
+
+    annotation = getattr(contract, 'annotation', {})
+    product_index = annotation.get('product', None) if isinstance(annotation, dict) else None
+    return qty, price, delivery, buyer, seller, product_index
+
+
+def _infer_is_buying_for_contract(
+    agent_id: Optional[str],
+    my_input_product: int,
+    awi_is_first_level: bool,
+    buyer: Optional[str],
+    product_index: Optional[int],
+) -> bool:
+    """判断该合约对我方是买入还是卖出."""
+    is_buying = None
+    if buyer is not None and agent_id:
+        is_buying = (agent_id == buyer)
+    if is_buying is None and product_index is not None:
+        is_buying = (product_index == my_input_product)
+    if is_buying is None:
+        is_buying = bool(awi_is_first_level)
+    return is_buying
+
+
+def _sum_mapping_values(mapping: Any) -> float:
+    if not isinstance(mapping, dict):
+        return 0.0
+    total = 0.0
+    for v in mapping.values():
+        if isinstance(v, (int, float)):
+            total += float(v)
+    return total
+
+
+def _fill_future_values(
+    future_map: Any,
+    current_step: int,
+    target: List[float],
+) -> None:
+    if not isinstance(future_map, dict):
+        return
+    for step, per_partner in future_map.items():
+        try:
+            delta = int(step) - current_step
+        except Exception:
+            continue
+        if 0 <= delta < len(target):
+            target[delta] += _sum_mapping_values(per_partner)
+
+
+def _build_commitments_from_future(
+    awi: Any,
+    current_step: int,
+    max_len: int,
+) -> Tuple[List[float], List[float], List[float], List[float], bool]:
+    """基于 AWI 的 future_* 视图重建 commitments（含当前日）."""
+    Q_in = [0.0] * max_len
+    Q_out = [0.0] * max_len
+    Payables = [0.0] * max_len
+    Receivables = [0.0] * max_len
+
+    supplies = getattr(awi, 'supplies', None)
+    sales = getattr(awi, 'sales', None)
+    future_supplies = getattr(awi, 'future_supplies', None)
+    future_sales = getattr(awi, 'future_sales', None)
+    supplies_cost = getattr(awi, 'supplies_cost', None)
+    sales_cost = getattr(awi, 'sales_cost', None)
+    future_supplies_cost = getattr(awi, 'future_supplies_cost', None)
+    future_sales_cost = getattr(awi, 'future_sales_cost', None)
+
+    has_any = any(x is not None for x in (
+        supplies, sales, future_supplies, future_sales, supplies_cost, sales_cost
+    ))
+    if not has_any:
+        return Q_in, Q_out, Payables, Receivables, False
+
+    # 当前日 (delta=0)
+    Q_in[0] = _sum_mapping_values(supplies)
+    Q_out[0] = _sum_mapping_values(sales)
+    Payables[0] = _sum_mapping_values(supplies_cost)
+    Receivables[0] = _sum_mapping_values(sales_cost)
+
+    # 未来日 (delta>0)
+    _fill_future_values(future_supplies, current_step, Q_in)
+    _fill_future_values(future_sales, current_step, Q_out)
+    _fill_future_values(future_supplies_cost, current_step, Payables)
+    _fill_future_values(future_sales_cost, current_step, Receivables)
+
+    has_nonzero = any(Q_in) or any(Q_out) or any(Payables) or any(Receivables)
+    return Q_in, Q_out, Payables, Receivables, has_nonzero
+
+
+def _extract_offers_snapshot(awi, current_step: int) -> Dict[str, Any]:
+    """提取当前活跃谈判的报价快照，用于离线重建 6-8 通道.
+    
+    数据结构:
+        {
+            'buy': [(delivery_time, quantity, unit_price), ...],  # 买入谈判中的活跃报价
+            'sell': [(delivery_time, quantity, unit_price), ...], # 卖出谈判中的活跃报价
+        }
+    
+    Args:
+        awi: Agent World Interface
+        current_step: 当前仿真步骤
+        
+    Returns:
+        活跃报价快照字典
+    """
+    snapshot = {'buy': [], 'sell': []}
+    
+    try:
+        # 买入谈判（我方作为买方，收到卖方报价）
+        current_buy_offers = getattr(awi, 'current_buy_offers', None)
+        if current_buy_offers and isinstance(current_buy_offers, dict):
+            for partner_id, offer in current_buy_offers.items():
+                if offer is None:
+                    continue
+                try:
+                    # Outcome 格式: (quantity, time, unit_price)
+                    quantity = float(offer[0])
+                    delivery_time = int(offer[1])
+                    unit_price = float(offer[2])
+                    snapshot['buy'].append([delivery_time, quantity, unit_price])
+                except (IndexError, TypeError, ValueError):
+                    continue
+        
+        # 卖出谈判（我方作为卖方，收到买方报价）
+        current_sell_offers = getattr(awi, 'current_sell_offers', None)
+        if current_sell_offers and isinstance(current_sell_offers, dict):
+            for partner_id, offer in current_sell_offers.items():
+                if offer is None:
+                    continue
+                try:
+                    quantity = float(offer[0])
+                    delivery_time = int(offer[1])
+                    unit_price = float(offer[2])
+                    snapshot['sell'].append([delivery_time, quantity, unit_price])
+                except (IndexError, TypeError, ValueError):
+                    continue
+    except Exception:
+        pass
+    
+    return snapshot
+
+
 def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None) -> Type:
     """
     动态修补 Agent 类以添加 Tracker 功能
@@ -160,10 +351,12 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
             original_init(self)
             tracker = self.tracker
             if tracker:
+                identity = _build_agent_identity(self)
                 tracker.custom("agent_initialized", 
                     n_steps=getattr(self.awi, 'n_steps', None),
                     n_lines=getattr(self.awi, 'n_lines', None),
                     level=getattr(self.awi, 'level', None),
+                    **identity,
                 )
         agent_class.init = patched_init
     
@@ -213,19 +406,118 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                     # 生产能力
                     n_lines = getattr(awi, 'n_lines', 0) or 0
                     
-                    # 记录基本库存状态（使用外生合同数量作为"虚拟库存"概念）
-                    # 在 OneShot 中: raw_material = 外生输入, product = 外生输出
+                    # === HRL-XF 训练所需字段 ===
+                    # 市场价格（用于计算 L1 baseline）
+                    trading_prices = getattr(awi, 'trading_prices', None)
+                    if trading_prices is not None:
+                        trading_prices_list = list(trading_prices) if hasattr(trading_prices, '__iter__') else []
+                    else:
+                        trading_prices_list = []
+                    
+                    # 输入/输出产品索引
+                    my_input_product = getattr(awi, 'my_input_product', 0) or 0
+                    my_output_product = getattr(awi, 'my_output_product', 1) or 1
+                    
+                    # Spot 价格（从 trading_prices 提取）
+                    spot_price_in = trading_prices_list[my_input_product] if my_input_product < len(trading_prices_list) else 10.0
+                    spot_price_out = trading_prices_list[my_output_product] if my_output_product < len(trading_prices_list) else 20.0
+                    
+                    # 真实库存（Standard Track 有持久库存）
+                    current_inventory = getattr(awi, 'current_inventory', None)
+                    if current_inventory is not None:
+                        if hasattr(current_inventory, '__iter__') and not isinstance(current_inventory, (str, dict)):
+                            inventory_input = int(current_inventory[0]) if len(current_inventory) > 0 else 0
+                            inventory_output = int(current_inventory[-1]) if len(current_inventory) > 0 else 0
+                        elif isinstance(current_inventory, dict):
+                            inventory_input = int(current_inventory.get('input', 0))
+                            inventory_output = int(current_inventory.get('output', 0))
+                        else:
+                            inventory_input = int(current_inventory)
+                            inventory_output = 0
+                    else:
+                        inventory_input = exo_input_qty
+                        inventory_output = exo_output_qty
+                    
+                    # 合同承诺（用于计算 Q_safe 和 B_free）
+                    # 尝试从 awi 获取未来承诺
+                    n_steps = getattr(awi, 'n_steps', 100) or 100
+                    current_step = getattr(awi, 'current_step', 0) or 0
+                    remaining_steps = n_steps - current_step
+                    
+                    # 尝试基于 AWI future_* 重建 commitments
+                    max_len = min(remaining_steps + 1, 50)
+                    Q_in, Q_out, Payables, Receivables, has_future = _build_commitments_from_future(
+                        awi, current_step, max_len
+                    )
+                    
+                    # 回退：旧接口 signed_contracts（兼容旧版本）
+                    signed_contracts = getattr(awi, 'signed_contracts', None)
+                    if (not has_future) and signed_contracts:
+                        tracked_ids = getattr(self, "_tracked_contract_ids", None)
+                        if tracked_ids is None:
+                            tracked_ids = set()
+                            self._tracked_contract_ids = tracked_ids
+                        for contract in signed_contracts:
+                            try:
+                                qty, price, delivery, buyer, seller, product_index = _extract_contract_terms(contract)
+                                agent_id = tracker.agent_id if tracker else None
+                                is_buying = _infer_is_buying_for_contract(
+                                    agent_id,
+                                    my_input_product,
+                                    getattr(awi, 'is_first_level', True),
+                                    buyer,
+                                    product_index,
+                                )
+                                
+                                delta = delivery - current_step
+                                if 0 <= delta < len(Q_in):
+                                    if is_buying:
+                                        Q_in[delta] += qty
+                                        Payables[delta] += qty * price
+                                    else:
+                                        Q_out[delta] += qty
+                                        Receivables[delta] += qty * price
+                                
+                                # 额外记录 contract_signed，用于离线 L2 目标反推
+                                contract_id = getattr(contract, 'id', None)
+                                if contract_id is None:
+                                    agreement = getattr(contract, 'agreement', None)
+                                    contract_id = getattr(agreement, 'id', None) if agreement is not None else None
+                                if contract_id is None:
+                                    contract_id = f"{buyer}-{seller}-{delivery}-{qty}-{price}"
+                                contract_id = str(contract_id)
+                                if contract_id not in tracked_ids and qty > 0 and price >= 0:
+                                    partner = seller if is_buying else buyer
+                                    if partner is None:
+                                        partner = "UNKNOWN"
+                                    tracker.contract_signed(
+                                        contract_id,
+                                        partner,
+                                        qty,
+                                        price,
+                                        delivery,
+                                        is_seller=not is_buying,
+                                    )
+                                    tracked_ids.add(contract_id)
+                            except Exception:
+                                pass
+                    
+                    # 记录基本库存状态
                     tracker.inventory_state(
-                        raw_material=exo_input_qty,  # 今日获得的原材料数量
-                        product=exo_output_qty,       # 今日需要交付的产品数量
+                        raw_material=inventory_input,
+                        product=inventory_output,
                         balance=balance,
                     )
                     
-                    # 记录完整的每日状态
+                    # === HRL-XF 6-8通道：获取活跃谈判快照 ===
+                    offers_snapshot = _extract_offers_snapshot(awi, current_step)
+                    
+                    # 记录完整的每日状态（包含 HRL-XF 训练所需字段）
                     tracker.custom("daily_status",
                         # 财务状态
                         score=score,
                         balance=balance,
+                        initial_balance=getattr(awi, 'initial_balance', 10000.0) or 10000.0,
                         # 外生合同（系统分配）
                         exo_input_qty=exo_input_qty,
                         exo_input_price=exo_input_price,
@@ -243,6 +535,29 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                         storage_cost=storage_cost,
                         # 生产能力
                         n_lines=n_lines,
+                        n_steps=n_steps,
+                        current_step=current_step,
+                        # === HRL-XF 新增字段 ===
+                        # 市场价格
+                        spot_price_in=float(spot_price_in),
+                        spot_price_out=float(spot_price_out),
+                        trading_prices=trading_prices_list,
+                        # 真实库存
+                        inventory_input=inventory_input,
+                        inventory_output=inventory_output,
+                        # 合同承诺（用于离线计算 L1 baseline）
+                        # H=40 天规划视界，记录 H+1=41 个时间点
+                        commitments={
+                            'Q_in': Q_in[:41],
+                            'Q_out': Q_out[:41],
+                            'Payables': Payables[:41],
+                            'Receivables': Receivables[:41],
+                        },
+                        # 活跃谈判快照（用于离线重建 6-8 通道）
+                        offers_snapshot=offers_snapshot,
+                        # 产品索引
+                        my_input_product=my_input_product,
+                        my_output_product=my_output_product,
                     )
                         
                 except Exception as e:
@@ -326,10 +641,13 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                         # 确保目录存在
                         os.makedirs(log_dir, exist_ok=True)
                         
-                        # 使用 world_id + agent_id 作为文件名，避免并行模式下的冲突
+                        # 使用 world_id hash 避免并行模式下的文件名冲突
                         safe_agent_id = tracker.agent_id.replace("@", "_at_").replace("/", "_")
-                        safe_world_id = str(world_id).replace("/", "_").replace("\\", "_")[:50]  # 截断过长的 world_id
-                        filename = f"agent_{safe_agent_id}_world_{safe_world_id}.json"
+                        raw_world_id = str(world_id)
+                        safe_world_id = raw_world_id.replace("/", "_").replace("\\", "_")
+                        short_world_id = safe_world_id[:40]
+                        world_hash = hashlib.sha1(raw_world_id.encode("utf-8")).hexdigest()[:12]
+                        filename = f"agent_{safe_agent_id}_world_{short_world_id}_{world_hash}.json"
                         filepath = os.path.join(log_dir, filename)
                         tracker.save(filepath)
             except Exception as e:
@@ -501,7 +819,17 @@ def save_tracker_data(output_dir: Optional[str] = None):
     TrackerManager.save_all(output_dir)
 
 
-def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str = "Tracked") -> Type:
+DEFAULT_TRACKED_MODULE = "litaagent_std.tracked_registry"
+
+
+def create_tracked_agent(
+    base_class: Type,
+    log_dir: str,
+    agent_name_suffix: str = "Tracked",
+    register: bool = True,
+    register_module: Optional[str] = None,
+    class_name: Optional[str] = None,
+) -> Type:
     """
     创建一个带有 Tracker 功能的 Agent 子类（支持并行模式）
     
@@ -512,6 +840,9 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
         base_class: 原始 Agent 类（如 LitaAgentY）
         log_dir: Tracker 日志目录（绝对路径）
         agent_name_suffix: 新类名后缀
+        register: 是否写入跨进程注册表
+        register_module: 注册模块（默认 tracked_registry）
+        class_name: 显式指定类名（用于注册重建）
         
     Returns:
         带有 Tracker 功能的新 Agent 类
@@ -529,6 +860,17 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
     
     # 确保 log_dir 是绝对路径
     abs_log_dir = os.path.abspath(log_dir)
+    target_module = register_module or DEFAULT_TRACKED_MODULE
+    new_class_name = class_name or f"{base_class.__name__}{agent_name_suffix}"
+
+    if register:
+        try:
+            from litaagent_std import tracked_registry
+
+            base_path = f"{base_class.__module__}.{base_class.__name__}"
+            tracked_registry.register(new_class_name, base_path)
+        except Exception:
+            pass
     
     # 动态创建新类
     class TrackedAgent(base_class):
@@ -555,14 +897,16 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
             super().init()
             tracker = self.tracker
             if tracker:
+                identity = _build_agent_identity(self, base_class=base_class)
                 tracker.custom("agent_initialized", 
                     n_steps=getattr(self.awi, 'n_steps', None),
                     n_lines=getattr(self.awi, 'n_lines', None),
                     level=getattr(self.awi, 'level', None),
+                    **identity,
                 )
         
         def before_step(self):
-            """每步开始时记录状态"""
+            """每步开始时记录状态（包含 HRL-XF 训练所需字段）"""
             super().before_step()
             tracker = self.tracker
             if tracker:
@@ -579,15 +923,117 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
                     needed_sales = getattr(awi, 'needed_sales', 0) or 0
                     total_supplies = getattr(awi, 'total_supplies', 0) or 0
                     total_sales = getattr(awi, 'total_sales', 0) or 0
+                    disposal_cost = getattr(awi, 'current_disposal_cost', 0) or 0
+                    shortfall_penalty = getattr(awi, 'current_shortfall_penalty', 0) or 0
+                    storage_cost = getattr(awi, 'current_storage_cost', 0) or 0
+                    n_lines = getattr(awi, 'n_lines', 0) or 0
+                    
+                    # === HRL-XF 训练所需字段 ===
+                    trading_prices = getattr(awi, 'trading_prices', None)
+                    if trading_prices is not None:
+                        trading_prices_list = list(trading_prices) if hasattr(trading_prices, '__iter__') else []
+                    else:
+                        trading_prices_list = []
+                    
+                    my_input_product = getattr(awi, 'my_input_product', 0) or 0
+                    my_output_product = getattr(awi, 'my_output_product', 1) or 1
+                    spot_price_in = trading_prices_list[my_input_product] if my_input_product < len(trading_prices_list) else 10.0
+                    spot_price_out = trading_prices_list[my_output_product] if my_output_product < len(trading_prices_list) else 20.0
+                    
+                    # 真实库存
+                    current_inventory = getattr(awi, 'current_inventory', None)
+                    if current_inventory is not None:
+                        if hasattr(current_inventory, '__iter__') and not isinstance(current_inventory, (str, dict)):
+                            inventory_input = int(current_inventory[0]) if len(current_inventory) > 0 else 0
+                            inventory_output = int(current_inventory[-1]) if len(current_inventory) > 0 else 0
+                        elif isinstance(current_inventory, dict):
+                            inventory_input = int(current_inventory.get('input', 0))
+                            inventory_output = int(current_inventory.get('output', 0))
+                        else:
+                            inventory_input = int(current_inventory)
+                            inventory_output = 0
+                    else:
+                        inventory_input = exo_input_qty
+                        inventory_output = exo_output_qty
+                    
+                    n_steps = getattr(awi, 'n_steps', 100) or 100
+                    current_step = getattr(awi, 'current_step', 0) or 0
+                    remaining_steps = n_steps - current_step
+                    
+                    # === 从 AWI future_* 重建 commitments ===
+                    max_len = min(remaining_steps + 1, 50)
+                    Q_in, Q_out, Payables, Receivables, has_future = _build_commitments_from_future(
+                        awi, current_step, max_len
+                    )
+                    
+                    # 回退：旧接口 signed_contracts（兼容旧版本）
+                    signed_contracts = getattr(awi, 'signed_contracts', None)
+                    if (not has_future) and signed_contracts:
+                        for contract in signed_contracts:
+                            try:
+                                agreement = getattr(contract, 'agreement', contract)
+                                if isinstance(agreement, dict):
+                                    qty = int(agreement.get('quantity', 0))
+                                    price = float(agreement.get('unit_price', 0))
+                                    delivery = int(agreement.get('time', 0))
+                                else:
+                                    qty = int(getattr(agreement, 'quantity', 0))
+                                    price = float(getattr(agreement, 'unit_price', 0))
+                                    delivery = int(getattr(agreement, 'time', 0))
+                                
+                                delta = delivery - current_step
+                                if 0 <= delta < len(Q_in):
+                                    # 判断买卖方向：
+                                    # 1. 首选：使用合约的 buyer/seller 字段
+                                    # 2. 备选：基于 product_index 和 my_input/output_product
+                                    # 3. 回退：基于 is_first_level（不推荐）
+                                    
+                                    is_buying = None
+                                    agent_id = tracker.agent_id if tracker else None
+                                    
+                                    # 方法1：检查合约的 buyer 字段
+                                    buyer = getattr(contract, 'buyer', None)
+                                    if buyer is not None and agent_id:
+                                        is_buying = (agent_id == buyer)
+                                    
+                                    # 方法2：基于 product_index
+                                    if is_buying is None:
+                                        product_index = None
+                                        annotation = getattr(contract, 'annotation', {})
+                                        if isinstance(annotation, dict):
+                                            product_index = annotation.get('product', None)
+                                        
+                                        if product_index is not None:
+                                            is_buying = (product_index == my_input_product)
+                                    
+                                    # 方法3：回退方案（不推荐）
+                                    if is_buying is None:
+                                        is_buying = getattr(awi, 'is_first_level', True)
+                                    
+                                    if is_buying:
+                                        Q_in[delta] += qty
+                                        Payables[delta] += qty * price
+                                    else:
+                                        Q_out[delta] += qty
+                                        Receivables[delta] += qty * price
+                            except Exception:
+                                pass
+                    
+                    # === HRL-XF 6-8通道：获取活跃谈判快照 ===
+                    offers_snapshot = _extract_offers_snapshot(awi, current_step)
                     
                     tracker.inventory_state(
-                        raw_material=exo_input_qty,
-                        product=exo_output_qty,
+                        raw_material=inventory_input,
+                        product=inventory_output,
                         balance=balance,
                     )
+                    # P0 修复: 获取 n_products 用于正确计算 x_role
+                    n_products = getattr(awi, 'n_products', my_output_product + 1) or (my_output_product + 1)
+                    
                     tracker.custom("daily_status",
                         score=score,
                         balance=balance,
+                        initial_balance=getattr(awi, 'initial_balance', 10000.0) or 10000.0,
                         exo_input_qty=exo_input_qty,
                         exo_input_price=exo_input_price,
                         exo_output_qty=exo_output_qty,
@@ -596,6 +1042,31 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
                         needed_sales=needed_sales,
                         total_supplies=total_supplies,
                         total_sales=total_sales,
+                        disposal_cost=disposal_cost,
+                        shortfall_penalty=shortfall_penalty,
+                        storage_cost=storage_cost,
+                        n_lines=n_lines,
+                        n_steps=n_steps,
+                        current_step=current_step,
+                        # HRL-XF 新增字段
+                        spot_price_in=float(spot_price_in),
+                        spot_price_out=float(spot_price_out),
+                        trading_prices=trading_prices_list,
+                        inventory_input=inventory_input,
+                        inventory_output=inventory_output,
+                        my_input_product=my_input_product,
+                        my_output_product=my_output_product,
+                        n_products=n_products,  # P0 修复: 用于正确计算 is_last_level 和 x_role
+                        # 合同承诺（用于离线计算 L1 baseline）
+                        # H=40 天规划视界，记录 H+1=41 个时间点
+                        commitments={
+                            'Q_in': Q_in[:41],
+                            'Q_out': Q_out[:41],
+                            'Payables': Payables[:41],
+                            'Receivables': Receivables[:41],
+                        },
+                        # 活跃谈判快照（用于离线重建 6-8 通道）
+                        offers_snapshot=offers_snapshot,
                     )
                 except Exception:
                     pass
@@ -621,8 +1092,11 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
                         if log_dir:
                             os.makedirs(log_dir, exist_ok=True)
                             safe_agent_id = tracker.agent_id.replace("@", "_at_").replace("/", "_")
-                            safe_world_id = str(world_id).replace("/", "_").replace("\\", "_")[:50]
-                            filename = f"agent_{safe_agent_id}_world_{safe_world_id}.json"
+                            raw_world_id = str(world_id)
+                            safe_world_id = raw_world_id.replace("/", "_").replace("\\", "_")
+                            short_world_id = safe_world_id[:40]
+                            world_hash = hashlib.sha1(raw_world_id.encode("utf-8")).hexdigest()[:12]
+                            filename = f"agent_{safe_agent_id}_world_{short_world_id}_{world_hash}.json"
                             filepath = os.path.join(log_dir, filename)
                             tracker.save(filepath)
                 except Exception:
@@ -636,7 +1110,25 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
                 try:
                     partner = [p for p in contract.partners if p != self.id][0]
                     agreement = contract.agreement
-                    is_seller = not getattr(self.awi, 'is_first_level', True)
+                    
+                    # P1 修复: 使用 product_index 正确判断买卖方向
+                    # - 如果交易的是 my_input_product，我们是买家 (is_seller=False)
+                    # - 如果交易的是 my_output_product，我们是卖家 (is_seller=True)
+                    my_input_product = getattr(self.awi, 'my_input_product', 0)
+                    my_output_product = getattr(self.awi, 'my_output_product', 1)
+                    annotation = getattr(contract, 'annotation', {})
+                    product_index = annotation.get('product', None) if isinstance(annotation, dict) else None
+                    
+                    if product_index is not None:
+                        is_seller = (product_index == my_output_product)
+                    else:
+                        # 回退: 检查 contract.buyer 字段
+                        buyer = getattr(contract, 'buyer', None)
+                        if buyer is not None:
+                            is_seller = (self.id != buyer)
+                        else:
+                            # 最后回退: 基于层级（不推荐，可能不准确）
+                            is_seller = not getattr(self.awi, 'is_first_level', True)
                     
                     qty = agreement.get("quantity", 0) if isinstance(agreement, dict) else getattr(agreement, 'quantity', 0)
                     price = agreement.get("unit_price", 0) if isinstance(agreement, dict) else getattr(agreement, 'unit_price', 0)
@@ -747,16 +1239,16 @@ def create_tracked_agent(base_class: Type, log_dir: str, agent_name_suffix: str 
                     pass
             return proposals
     
-    # 设置类名和模块（重要：使模块指向原始类的模块，以便 pickle 能正确工作）
-    new_class_name = f"{base_class.__name__}{agent_name_suffix}"
+    # 设置类名和模块（重要：使模块指向注册模块，以便子进程可重建）
     TrackedAgent.__name__ = new_class_name
     TrackedAgent.__qualname__ = new_class_name
-    # 关键：保持原始模块，这样 SCML 在反序列化时能找到这个类
-    TrackedAgent.__module__ = base_class.__module__
-    
-    # 将新类注册到原始模块中，这样子进程能找到它
+    TrackedAgent.__module__ = target_module
+
+    # 将新类注册到目标模块中，这样子进程能找到它
     import importlib
-    original_module = importlib.import_module(base_class.__module__)
-    setattr(original_module, new_class_name, TrackedAgent)
+    module = sys.modules.get(target_module)
+    if module is None:
+        module = importlib.import_module(target_module)
+    setattr(module, new_class_name, TrackedAgent)
     
     return TrackedAgent

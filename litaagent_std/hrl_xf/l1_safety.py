@@ -255,17 +255,10 @@ class L1SafetyLayer:
         Q_prod = np.full(self.horizon, n_lines, dtype=np.float32)
         
         # 4. 计算库存轨迹
-        # current_inventory 返回 tuple (input_qty, output_qty) 或单个数值
-        inventory = getattr(awi, 'current_inventory', None)
-        if inventory is None:
-            I_now = 0.0
-        elif hasattr(inventory, '__iter__') and not isinstance(inventory, (str, dict)):
-            # tuple 或 list
-            I_now = float(sum(inventory))
-        elif isinstance(inventory, dict):
-            I_now = float(sum(inventory.values()))
-        else:
-            I_now = float(inventory)
+        # 重要：使用原材料库存（current_inventory_input），而非总库存
+        # 因为采购入库的是原材料，库容约束针对原材料存储空间
+        # 成品（current_inventory_output）是独立的存储空间，不影响采购决策
+        I_now = float(getattr(awi, 'current_inventory_input', 0) or 0)
         L = compute_inventory_trajectory(I_now, Q_in, Q_out, Q_prod, self.horizon)
         
         # 5. 计算安全买入量掩码 (H 维)
@@ -394,17 +387,8 @@ class L1SafetyLayer:
                 output_product = output_product[0]
             market_price = get_price(output_product, 20.0)
             
-            # 对于卖出，Q_safe 不直接适用，使用库存
-            # current_inventory 返回 tuple (input_qty, output_qty) 或单个数值
-            inventory = getattr(awi, 'current_inventory', None)
-            if inventory is None:
-                available = 0.0
-            elif hasattr(inventory, '__iter__') and not isinstance(inventory, (str, dict)):
-                available = float(sum(inventory))
-            elif isinstance(inventory, dict):
-                available = float(sum(inventory.values()))
-            else:
-                available = float(inventory)
+            # 对于卖出，使用成品库存（current_inventory_output）
+            available = float(getattr(awi, 'current_inventory_output', 0) or 0)
             
             best_delta = 1
             q_base = max(1.0, available / 2)

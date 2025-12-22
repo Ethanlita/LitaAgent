@@ -48,7 +48,7 @@
 #### **2.1.2 时序状态张量 ($\\mathbf{X}\_{temporal}$)**
 
 这是 HRL-XF 的核心创新。我们需要一个能够描述未来 $H$ 天（Planning Horizon，建议 40 天）供需状况的矩阵。
-$\\mathbf{X}\_{temporal} \\in \\mathbb{R}^{H \\times F}$，其中 $H=40$，$F=9$（**确定为9维特征通道**）。  
+$\\mathbf{X}\_{temporal} \\in \\mathbb{R}^{(H+1) \\times 10}$，其中 $H=40$，$F=10$（拆分买/卖 price_diff，含买卖压力）。  
 对于未来第 $k$ 天（即绝对时间 $t+k$），特征通道定义如下：
 
 | 通道 | 特征名 | 公式/说明 |
@@ -58,28 +58,17 @@ $\\mathbf{X}\_{temporal} \\in \\mathbb{R}^{H \\times F}$，其中 $H=40$，$F=9$
 | 2 | `prod_plan` | $Q_{prod}[k]$ = 预计生产消耗（保守估计） |
 | 3 | `inventory_proj` | $I_{proj}[k] = I_{now} + \sum_{j=0}^{k}(Q_{in}[j] - Q_{out}[j] - Q_{prod}[j])$ |
 | 4 | `capacity_free` | $C_{free}[k] = C_{total}[k] - I_{proj}[k]$ |
-| 5 | `balance_proj` | $B_{proj}[k] = B_t + \sum_{j=0}^{k}(Receivables[j] - Payables[j])$ |
-| 6 | `price_diff` | $P_{future}[k] - P_{spot}$（期货溢价/贴水，见下方计算说明） |
-| 7 | `buy_pressure` | 买方压力指数（见下方计算说明） |
-| 8 | `sell_pressure` | 卖方压力指数（见下方计算说明） |
+| 5 | `balance_proj` | $B_{proj}[k] = B_t + \sum_{j=0}^{k}(Receivables[j] - Payables[j] - Q_{prod}[j]\cdot cost)$ |
+| 6 | `price_diff_in` | 采购侧期货溢价：$P^{buy}_{future}[k] - P^{buy}_{spot}$ |
+| 7 | `price_diff_out` | 销售侧期货溢价：$P^{sell}_{future}[k] - P^{sell}_{spot}$ |
+| 8 | `buy_pressure` | 买方需求压力（价格加权） |
+| 9 | `sell_pressure` | 卖方供给压力（价格加权） |
 
-**通道 6-8 计算说明**：
+**通道 6-9 计算说明**：
 
-由于 SCML 标准世界不存在公开订单簿，通道 6-8 基于代理可观测的谈判与合约数据推断：
-
-**buy_pressure[k]（买方压力）**：
-- 含义：第 $t+k$ 天买方对商品的需求强度。值越大表示"买方多、缺货风险高、可抬价"。
-- 计算：`demand_qty[k] = active_sell_offers[k] + signed_buy_contracts[k]`
-- 归一化：`buy_pressure[k] = clip(demand_qty[k] / economic_capacity[k], 0, 1)`
-
-**sell_pressure[k]（卖方压力）**：
-- 含义：第 $t+k$ 天卖方的供给强度。值越大表示"供给多、价格承压"。
-- 计算：`supply_qty[k] = active_buy_offers[k] + signed_sell_contracts[k]`
-- 归一化：`sell_pressure[k] = clip(supply_qty[k] / economic_capacity[k], 0, 1)`
-
-**price_diff[k]（价格趋势）**：
-- 信号来源：已签成交 VWAP > 谈判出价中位数 > 现货价回退
-- 输出：`price_diff[k] = P_future[k] - P_spot`
+- `price_diff_in/out`：成交 VWAP 与活跃报价中位数融合（权重 0.6/0.3/0.1），分别基于买入/卖出谈判和 `spot_price_in/out`
+- `buy_pressure[k]`：输出市场买方需求强度 = 已签销售量 (Q_out) + 卖出谈判中买家的报价量（以 spot_price_out 为基准，高价权重更大），除以经济容量裁剪到 `[0,1]`
+- `sell_pressure[k]`：输入市场卖方供给强度 = 已签采购量 (Q_in) + 买入谈判中卖家的报价量（以 spot_price_in 为基准，低价权重更大），除以经济容量裁剪到 `[0,1]`
 
 **设计说明**：
 - 当前市场现货价格已包含在 $\mathbf{x}_{static}$ 中（`spot_price_in`/`spot_price_out`），无需在时序张量中重复

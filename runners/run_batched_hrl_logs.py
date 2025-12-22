@@ -68,9 +68,20 @@ def build_competitors(max_top: int | None = None):
     log_dir = os.environ.get("SCML_TRACKER_LOG_DIR", ".")
     lita_bases = [LitaAgentY, LitaAgentYR, LitaAgentCIR, LitaAgentN, LitaAgentP]
     tracked_lita = [create_tracked_agent(cls, log_dir=log_dir) for cls in lita_bases]
-    penguin = [PenguinAgent]
+    
+    # PenguinAgent 也需要 Tracker 包装，确保收集完整数据
+    tracked_penguin = create_tracked_agent(PenguinAgent, log_dir=log_dir)
+    
+    # Top Agents 也需要 Tracker 包装
     tops = TOP_AGENTS_2025 if max_top is None else TOP_AGENTS_2025[: max_top]
-    competitors = tracked_lita + penguin + list(tops) + [RandomStdAgent]
+    tracked_tops = []
+    for cls in tops:
+        try:
+            tracked_tops.append(create_tracked_agent(cls, log_dir=log_dir))
+        except Exception:
+            tracked_tops.append(cls)  # 包装失败则使用原始类
+    
+    competitors = tracked_lita + [tracked_penguin] + tracked_tops + [RandomStdAgent]
     # 去重保持顺序
     seen = set()
     uniq = []

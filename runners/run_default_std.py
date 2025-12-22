@@ -6,13 +6,12 @@
 并采集谈判日志以供 HRL 训练使用。
 
 核心特性：
-- ✅ Resumable: 支持断点续跑，中断后重新运行同一目录即可继续
 - ✅ 官方规模: 默认使用 SCML 2025 Standard 官方环境和规模
-- ✅ 完整参赛池: 包含所有 LitaAgent、PenguinAgent 及 SCML 2025 Top 5 Agents
+- ✅ 完整参赛池: 所有 LitaAgent（不含 HRL）+ SCML 2025 Top5 + SCML 2024 Top5
 - ✅ 可配置规模: 支持通过参数指定更小的比赛规模用于测试
 - ✅ 自动归集: 运行完成后自动归集数据到 tournament_history/
-- ✅ 默认不使用 Tracker: 避免额外开销，适合大规模训练数据采集
-- ✅ 默认不使用 Visualizer: 无需人工观察时节省资源
+- ✅ 强制启用 Tracker: 所有代理均为动态生成的 Tracked 版本
+- ✅ 默认不启用 Visualizer: 无需人工观察时节省资源（不提供启动开关）
 
 用法：
     # 1. 默认官方规模（推荐用于正式数据采集）
@@ -22,15 +21,12 @@
     python runners/run_default_std.py --quick
     
     # 3. 自定义规模
-    python runners/run_default_std.py --configs 10 --runs 1 --steps 50
+    python runners/run_default_std.py --configs 10 --runs 1 --max-worlds-per-config 10
     
-    # 4. 启用 Tracker 和 Visualizer
-    python runners/run_default_std.py --tracker --visualizer
-    
-    # 5. 断点续跑（使用同一输出目录）
+    # 4. 自定义输出目录
     python runners/run_default_std.py --output-dir tournament_history/my_run
     
-    # 6. 静默模式（减少输出）
+    # 5. 静默模式（减少输出）
     python runners/run_default_std.py --quiet
 
 环境：
@@ -43,6 +39,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
 import sys
@@ -75,7 +72,7 @@ from scml.utils import (
     anac2024_std_world_generator,
     balance_calculator_std,
 )
-from scml.std.agents import RandomStdAgent
+from scml_agents import get_agents
 
 # ============================================================================
 # LitaAgent 系列（使用延迟导入避免可选依赖问题）
@@ -119,23 +116,15 @@ def _load_lita_agents() -> Tuple[List[Type], List[str]]:
         from litaagent_std.litaagent_n import LitaAgentN
         agents.append(LitaAgentN)
         names.append("LitaAgentN")
-    except ImportError:
-        pass  # 静默跳过，可能缺少 stable_baselines3
+    except ImportError as e:
+        print(f"[警告] 无法加载 LitaAgentN: {e}")
     
     try:
         from litaagent_std.litaagent_p import LitaAgentP
         agents.append(LitaAgentP)
         names.append("LitaAgentP")
-    except ImportError:
-        pass  # 静默跳过
-    
-    # HRL Agent（可选）
-    try:
-        from litaagent_std.hrl_xf import LitaAgentHRL
-        agents.append(LitaAgentHRL)
-        names.append("LitaAgentHRL")
-    except ImportError:
-        pass  # 静默跳过
+    except ImportError as e:
+        print(f"[警告] 无法加载 LitaAgentP: {e}")
     
     LITA_AGENTS = agents
     LITA_AGENT_NAMES = names
@@ -144,24 +133,15 @@ def _load_lita_agents() -> Tuple[List[Type], List[str]]:
 # ============================================================================
 # 外部 Agent
 # ============================================================================
-# PenguinAgent (2024 冠军)
+# 2025/2024 Top Agents
 try:
-    from scml_agents.scml2024.standard.team_penguin.penguinagent import PenguinAgent
-    PENGUIN_AVAILABLE = True
-except ImportError:
-    PenguinAgent = None
-    PENGUIN_AVAILABLE = False
-
-# 2025 Top Agents
-try:
-    from scml_agents import get_agents
-    TOP_AGENTS_2025 = get_agents(2025, as_class=True, track="std")
+    TOP_AGENTS_2025 = list(get_agents(2025, as_class=True, track="std", top_only=5))
+    TOP_AGENTS_2024 = list(get_agents(2024, as_class=True, track="std", top_only=5))
 except Exception as exc:
-    print(f"[警告] 无法加载 2025 Top Agents: {exc}")
-    TOP_AGENTS_2025: List[Type] = []
+    raise RuntimeError(f"无法加载 SCML Top Agents: {exc}")
 
 # ============================================================================
-# Tracker（可选）
+# Tracker（必须）
 # ============================================================================
 try:
     from scml_analyzer.auto_tracker import TrackerConfig, TrackerManager
@@ -179,62 +159,134 @@ except ImportError:
 # ============================================================================
 DEFAULT_CONFIGS = 20          # 官方配置数
 DEFAULT_RUNS = 2              # 每配置运行次数
-DEFAULT_MAX_TOP = 5           # Top Agents 数量（前 5 名）
+DEFAULT_MAX_TOP_2025 = 5      # 2025 Top Agents 数量
+DEFAULT_MAX_TOP_2024 = 5      # 2024 Top Agents 数量
 FORCED_LOGS = 1.0             # 强制保存所有谈判日志（用于训练）
-DEFAULT_PARALLELISM = "parallel"
+DEFAULT_PARALLELISM = "loky"
+DEFAULT_MAX_WORLDS_PER_CONFIG: int | None = None
+
+
+def _filter_legacy_agents(agents: List[Type]) -> List[Type]:
+    filtered: List[Type] = []
+    for cls in agents:
+        module = getattr(cls, "__module__", "")
+        if "scml2020" in module.lower():
+            continue
+        filtered.append(cls)
+    return filtered
+
+
+def _ensure_tracked(base_cls: Type, tracked_cls: Type) -> Type:
+    if tracked_cls is base_cls or tracked_cls.__name__ == base_cls.__name__:
+        raise RuntimeError(f"无法为 {base_cls.__name__} 创建动态 Tracked 版本")
+    return tracked_cls
+
+
+def _estimate_competitor_sets(
+    n_competitors: int,
+    n_per_world: int,
+    round_robin: bool,
+) -> int:
+    if n_per_world >= n_competitors:
+        return 1
+    if round_robin:
+        return math.comb(n_competitors, n_per_world)
+    return math.ceil(n_competitors / n_per_world)
+
+
+def _strip_adapter_prefix(agent_type: str) -> str:
+    if not isinstance(agent_type, str):
+        return agent_type
+    if "DefaultOneShotAdapter" in agent_type and ":" in agent_type:
+        return agent_type.split(":", 1)[1]
+    if "DefaultStdAdapter" in agent_type and ":" in agent_type:
+        return agent_type.split(":", 1)[1]
+    return agent_type
+
+
+def _patch_score_calculator() -> None:
+    import scml.utils as scml_utils
+
+    if getattr(scml_utils, "_litaagent_score_patch", False):
+        return
+
+    original = scml_utils.balance_calculator_std
+
+    def wrapped(*args, **kwargs):
+        result = original(*args, **kwargs)
+        try:
+            if result is not None and getattr(result, "types", None):
+                result.types = [_strip_adapter_prefix(t) for t in result.types]
+        except Exception:
+            pass
+        return result
+
+    scml_utils.balance_calculator_std = wrapped
+    scml_utils._litaagent_score_patch = True
 
 
 def build_competitors(
-    max_top: int = DEFAULT_MAX_TOP,
-    use_tracker: bool = False,
+    max_top_2025: int = DEFAULT_MAX_TOP_2025,
+    max_top_2024: int = DEFAULT_MAX_TOP_2024,
     tracker_log_dir: str = ".",
 ) -> Tuple[List[Type], List[str]]:
     """
     构建参赛代理池。
     
     Args:
-        max_top: 包含的 Top Agents 数量
-        use_tracker: 是否为 LitaAgent 启用 Tracker
+        max_top_2025: 2025 Top Agents 数量
+        max_top_2024: 2024 Top Agents 数量
         tracker_log_dir: Tracker 日志目录
         
     Returns:
         (competitors, lita_names): 参赛者列表和 LitaAgent 名称列表
     """
-    # 加载 LitaAgent（延迟加载，避免可选依赖问题）
+    if not TRACKER_AVAILABLE or create_tracked_agent is None:
+        raise RuntimeError("必须安装 scml_analyzer 以启用全量 Tracker")
+
+    # 加载 LitaAgent（不含 HRL）
     lita_bases, lita_names = _load_lita_agents()
     
     if not lita_bases:
         print("[警告] 没有可用的 LitaAgent！")
-    
-    # 是否包装 Tracker
-    if use_tracker and TRACKER_AVAILABLE and create_tracked_agent is not None:
-        lita_agents = [create_tracked_agent(cls, log_dir=tracker_log_dir) for cls in lita_bases]
-    else:
-        lita_agents = list(lita_bases)
+    expected = {"LitaAgentY", "LitaAgentYR", "LitaAgentCIR", "LitaAgentN", "LitaAgentP"}
+    missing = expected - set(lita_names)
+    if missing:
+        raise RuntimeError(f"LitaAgent 缺失: {sorted(missing)}，请确认依赖已安装")
+
+    # 所有 LitaAgent 使用动态 Tracked 版本
+    lita_agents = [
+        _ensure_tracked(cls, create_tracked_agent(cls, log_dir=tracker_log_dir))
+        for cls in lita_bases
+    ]
+    lita_display_names = [c.__name__ for c in lita_agents]
     
     # 构建完整参赛池
     competitors: List[Type] = list(lita_agents)
     
-    # PenguinAgent
-    if PENGUIN_AVAILABLE and PenguinAgent is not None:
-        competitors.append(PenguinAgent)
-    
-    # Top Agents (截断到 max_top)
-    tops = TOP_AGENTS_2025[:max_top] if max_top else TOP_AGENTS_2025
-    competitors.extend(tops)
-    
-    # RandomStdAgent 作为基准
-    competitors.append(RandomStdAgent)
+    # Top Agents (2025/2024)
+    tops_2025 = TOP_AGENTS_2025[:max_top_2025] if max_top_2025 else TOP_AGENTS_2025
+    tops_2024 = TOP_AGENTS_2024[:max_top_2024] if max_top_2024 else TOP_AGENTS_2024
+    tops_2025 = _filter_legacy_agents(tops_2025)
+    tops_2024 = _filter_legacy_agents(tops_2024)
+    lita_base_names = {c.__name__ for c in lita_bases}
+    tops = [cls for cls in list(tops_2025) + list(tops_2024) if cls.__name__ not in lita_base_names]
+    for cls in tops:
+        try:
+            competitors.append(create_tracked_agent(cls, log_dir=tracker_log_dir))
+        except Exception as exc:
+            raise RuntimeError(f"无法为 {cls.__name__} 创建动态 Tracked 版本: {exc}")
     
     # 去重（保持顺序）
     seen = set()
     unique = []
     for c in competitors:
-        if c not in seen:
-            seen.add(c)
+        key = (c.__module__, c.__name__)
+        if key not in seen:
+            seen.add(key)
             unique.append(c)
     
-    return unique, lita_names
+    return unique, lita_display_names
 
 
 def has_existing_tournament(tournament_dir: Path) -> bool:
@@ -305,6 +357,7 @@ def prepare_tournament(
     competitors: List[Type],
     n_configs: int,
     n_runs_per_world: int,
+    max_worlds_per_config: int | None,
     forced_logs_fraction: float,
     parallelism: str,
     verbose: bool,
@@ -333,12 +386,15 @@ def prepare_tournament(
     if verbose:
         print(f"[创建] 生成比赛配置: {tournament_dir}")
         print(f"       n_configs={n_configs}, n_runs_per_world={n_runs_per_world}")
+        if max_worlds_per_config is not None:
+            print(f"       max_worlds_per_config={max_worlds_per_config}")
     
     # 使用 anac2024_std 生成配置（configs_only=True 不运行）
     configs_path = anac2024_std(
         competitors=competitors,
         n_configs=n_configs,
         n_runs_per_world=n_runs_per_world,
+        max_worlds_per_config=max_worlds_per_config,
         tournament_path=str(base_dir),
         name=tournament_dir.name,
         forced_logs_fraction=forced_logs_fraction,
@@ -419,12 +475,14 @@ def print_rankings(results, lita_names: List[str], verbose: bool) -> None:
 def run_tournament_resumable(
     n_configs: int,
     n_runs: int,
-    max_top: int,
+    max_top_2025: int,
+    max_top_2024: int,
+    n_competitors_per_world: int | None,
+    round_robin: bool,
     output_dir: Path | None,
     parallelism: str,
-    use_tracker: bool,
-    use_visualizer: bool,
-    auto_collect: bool,
+    parallelism_label: str,
+    max_worlds_per_config: int | None,
     verbose: bool,
 ) -> Path:
     """
@@ -435,14 +493,23 @@ def run_tournament_resumable(
     """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     tournament_dir = output_dir or Path(f"tournament_history/std_default_{ts}")
+    tournament_dir.mkdir(parents=True, exist_ok=True)
     
     # 构建参赛池
-    tracker_dir = tournament_dir / "tracker_logs" if use_tracker else Path(".")
+    tracker_dir = tournament_dir / "tracker_logs"
     competitors, lita_names = build_competitors(
-        max_top=max_top,
-        use_tracker=use_tracker,
+        max_top_2025=max_top_2025,
+        max_top_2024=max_top_2024,
         tracker_log_dir=str(tracker_dir),
     )
+    n_per_world = n_competitors_per_world or len(competitors)
+    if max_worlds_per_config is None:
+        max_worlds_per_config = n_per_world
+    if not round_robin and len(competitors) % n_per_world != 0:
+        raise RuntimeError(
+            f"n_competitors_per_world={n_per_world} 不能整除参赛数量 {len(competitors)}，"
+            f"请调整或启用 --round-robin"
+        )
     
     if verbose:
         print("\n" + "=" * 60)
@@ -452,57 +519,41 @@ def run_tournament_resumable(
         print(f"   LitaAgent: {lita_names}")
         print(f"   外部 Agent: {[c.__name__ for c in competitors if c.__name__ not in lita_names]}")
         print(f"📊 配置: n_configs={n_configs}, n_runs={n_runs}")
-        print(f"🔧 选项: tracker={use_tracker}, visualizer={use_visualizer}, auto_collect={auto_collect}")
+        if max_worlds_per_config is not None:
+            n_sets = _estimate_competitor_sets(len(competitors), n_per_world, round_robin)
+            approx_worlds = n_configs * n_runs * max_worlds_per_config * n_sets
+            print(f"🧮 约束: max_worlds_per_config={max_worlds_per_config} (≈ {approx_worlds} worlds)")
+        print("🔧 选项: tracker=True, visualizer=False, auto_collect=True")
+        print(f"⚙️  并行: {parallelism_label}")
         print("=" * 60 + "\n")
     
-    # 准备比赛配置
-    created, tournament_root = prepare_tournament(
-        tournament_dir=tournament_dir,
+    # 配置 Tracker（必须启用）
+    tracker_dir = tournament_dir / "tracker_logs"
+    os.environ["SCML_TRACKER_LOG_DIR"] = str(tracker_dir)
+    setup_tracker(tracker_dir)
+    if verbose:
+        print(f"[Tracker] 启用，日志目录: {tracker_dir}")
+    
+    if verbose:
+        print(f"[运行] 启动比赛: {tournament_dir}")
+        print(f"       parallelism={parallelism_label}")
+    
+    _patch_score_calculator()
+    
+    results = anac2024_std(
         competitors=competitors,
         n_configs=n_configs,
         n_runs_per_world=n_runs,
+        max_worlds_per_config=max_worlds_per_config,
+        tournament_path=str(tournament_dir),
         forced_logs_fraction=FORCED_LOGS,
         parallelism=parallelism,
-        verbose=verbose,
-    )
-    
-    # 配置 Tracker（如果启用）
-    if use_tracker:
-        tracker_dir = tournament_root / "tracker_logs"
-        os.environ["SCML_TRACKER_LOG_DIR"] = str(tracker_dir)
-        setup_tracker(tracker_dir)
-        if verbose:
-            print(f"[Tracker] 启用，日志目录: {tracker_dir}")
-    
-    # 显示进度
-    done, total = summarize_progress(tournament_root)
-    if total and verbose:
-        print(f"[进度] 已完成 {done}/{total} 个 world ({done/total:.1%})")
-    
-    if verbose:
-        print(f"[运行] 启动比赛: {tournament_root}")
-        print(f"       parallelism={parallelism}")
-    
-    # 运行比赛
-    run_tournament(
-        tournament_path=str(tournament_root),
-        world_generator=anac2024_std_world_generator,
-        score_calculator=balance_calculator_std,
-        parallelism=parallelism,
+        round_robin=round_robin,
+        n_competitors_per_world=n_per_world,
+        name=f"StdDefault_{ts}",
         verbose=verbose,
         compact=False,
         print_exceptions=True,
-    )
-    
-    # 评估结果
-    if verbose:
-        print("[评估] 汇总比赛结果...")
-    
-    results = evaluate_tournament(
-        tournament_path=str(tournament_root),
-        metric=truncated_mean,
-        verbose=verbose,
-        recursive=True,
     )
     
     # 打印排名
@@ -510,57 +561,46 @@ def run_tournament_resumable(
     
     # 保存结果摘要
     save_results(
-        output_dir=tournament_root,
+        output_dir=tournament_dir,
         results=results,
         competitors=competitors,
         lita_names=lita_names,
         config={
             "n_configs": n_configs,
             "n_runs_per_world": n_runs,
-            "max_top": max_top,
-            "parallelism": parallelism,
-            "use_tracker": use_tracker,
-            "use_visualizer": use_visualizer,
-            "auto_collect": auto_collect,
+            "max_worlds_per_config": max_worlds_per_config,
+            "n_competitors_per_world": n_per_world,
+            "round_robin": round_robin,
+            "max_top_2025": max_top_2025,
+            "max_top_2024": max_top_2024,
+            "parallelism": parallelism_label,
+            "tracker": True,
+            "visualizer": False,
+            "auto_collect": True,
         },
     )
     
     # 自动归集（后处理）
-    if auto_collect:
-        try:
-            from scml_analyzer.postprocess import postprocess_tournament
-            if verbose:
-                print("[归集] 汇总日志到 tournament_history/...")
-            postprocess_tournament(
-                output_dir=tournament_root,
-                start_visualizer=False,
-                visualizer_port=None,
-            )
-        except ImportError:
-            if verbose:
-                print("[归集] scml_analyzer.postprocess 不可用，跳过自动归集")
-        except Exception as e:
-            if verbose:
-                print(f"[归集] 后处理失败: {e}")
-    
-    # 启动 Visualizer（如果启用）
-    if use_visualizer:
-        try:
-            from scml_analyzer.visualizer import start_visualizer
-            if verbose:
-                print("[Visualizer] 启动可视化服务器...")
-            start_visualizer(port=8080)
-        except ImportError:
-            if verbose:
-                print("[Visualizer] scml_analyzer.visualizer 不可用")
-        except Exception as e:
-            if verbose:
-                print(f"[Visualizer] 启动失败: {e}")
+    try:
+        from scml_analyzer.postprocess import postprocess_tournament
+        if verbose:
+            print("[归集] 汇总日志到 tournament_history/...")
+        postprocess_tournament(
+            output_dir=tournament_dir,
+            start_visualizer=False,
+            visualizer_port=None,
+        )
+    except ImportError:
+        if verbose:
+            print("[归集] scml_analyzer.postprocess 不可用，跳过自动归集")
+    except Exception as e:
+        if verbose:
+            print(f"[归集] 后处理失败: {e}")
     
     if verbose:
-        print(f"\n✅ 比赛完成！结果保存在: {tournament_root}")
+        print(f"\n✅ 比赛完成！结果保存在: {tournament_dir}")
     
-    return tournament_root
+    return tournament_dir
 
 
 def main():
@@ -578,10 +618,7 @@ def main():
   # 自定义规模
   python runners/run_default_std.py --configs 10 --runs 1
   
-  # 启用 Tracker 和 Visualizer
-  python runners/run_default_std.py --tracker --visualizer
-  
-  # 断点续跑
+  # 自定义输出目录
   python runners/run_default_std.py --output-dir tournament_history/my_run
         """,
     )
@@ -596,26 +633,16 @@ def main():
         help=f"每个 world 运行次数 (default: {DEFAULT_RUNS})",
     )
     parser.add_argument(
-        "--max-top", type=int, default=DEFAULT_MAX_TOP,
-        help=f"包含的 Top Agents 数量 (default: {DEFAULT_MAX_TOP})",
+        "--max-top-2025", type=int, default=DEFAULT_MAX_TOP_2025,
+        help=f"2025 Top Agents 数量 (default: {DEFAULT_MAX_TOP_2025})",
+    )
+    parser.add_argument(
+        "--max-top-2024", type=int, default=DEFAULT_MAX_TOP_2024,
+        help=f"2024 Top Agents 数量 (default: {DEFAULT_MAX_TOP_2024})",
     )
     parser.add_argument(
         "--quick", action="store_true",
         help="快速测试模式 (configs=3, runs=1)",
-    )
-    
-    # 功能开关
-    parser.add_argument(
-        "--tracker", action="store_true",
-        help="启用 Tracker（记录 LitaAgent 协商过程）",
-    )
-    parser.add_argument(
-        "--visualizer", action="store_true",
-        help="完成后启动 Visualizer 可视化服务器",
-    )
-    parser.add_argument(
-        "--no-auto-collect", action="store_true",
-        help="禁用自动归集（不执行 postprocess）",
     )
     
     # 输出控制
@@ -626,6 +653,22 @@ def main():
     parser.add_argument(
         "--parallelism", type=str, default=DEFAULT_PARALLELISM,
         help=f"并行模式 (default: {DEFAULT_PARALLELISM})",
+    )
+    parser.add_argument(
+        "--max-worlds-per-config", type=int, default=DEFAULT_MAX_WORLDS_PER_CONFIG,
+        help="限制每个配置的最大 world 数量（用于压缩总规模）",
+    )
+    parser.add_argument(
+        "--n-competitors-per-world", type=int, default=None,
+        help="每个 world 的参赛者数量（默认使用全部参赛者）",
+    )
+    parser.add_argument(
+        "--round-robin", action="store_true",
+        help="启用 round-robin（组合爆炸，慎用）",
+    )
+    parser.add_argument(
+        "--target-worlds", type=int, default=None,
+        help="目标总 world 数量（自动折算为 max_worlds_per_config）",
     )
     parser.add_argument(
         "--quiet", "-q", action="store_true",
@@ -652,15 +695,28 @@ def main():
     
     output_dir = Path(args.output_dir) if args.output_dir else None
     
+    if args.target_worlds and args.max_worlds_per_config is None:
+        denom = max(1, args.configs * args.runs)
+        args.max_worlds_per_config = max(1, math.ceil(args.target_worlds / denom))
+
+    parallelism_label = args.parallelism
+    parallelism = args.parallelism
+    if args.parallelism.startswith("loky"):
+        os.environ["SCML_PARALLELISM"] = args.parallelism
+        parallelism_label = f"{args.parallelism}（通过 SCML_PARALLELISM）"
+        parallelism = "parallel"
+
     run_tournament_resumable(
         n_configs=args.configs,
         n_runs=args.runs,
-        max_top=args.max_top,
+        max_top_2025=args.max_top_2025,
+        max_top_2024=args.max_top_2024,
+        n_competitors_per_world=args.n_competitors_per_world,
+        round_robin=args.round_robin,
         output_dir=output_dir,
-        parallelism=args.parallelism,
-        use_tracker=args.tracker,
-        use_visualizer=args.visualizer,
-        auto_collect=not args.no_auto_collect,
+        parallelism=parallelism,
+        parallelism_label=parallelism_label,
+        max_worlds_per_config=args.max_worlds_per_config,
         verbose=verbose,
     )
 

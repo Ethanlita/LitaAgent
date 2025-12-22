@@ -37,9 +37,8 @@ $$\\mathcal{S}\_t^+ \= \\{ \\mathbf{x}\_{static}, \\mathbf{X}\_{temporal}, \\mat
 
 #### **2.1.2 时序状态张量 ($\\mathbf{X}\_{temporal}$) —— 核心感知单元**
 
-这是HRL-XF区别于传统架构的核心。为了捕捉期货市场的供需波动，我们需要构建一个能够描述未来 $H$ 天（规划视界，例如40天）供需状况的矩阵。  
-维度：$\\mathbb{R}^{H \\times F}$，其中 $H=40$，$F=9$ 为特征通道数。  
-对于未来第 $k$ 天（即绝对时间 $t+k$），特征通道定义如下：
+这是HRL-XF区别于传统架构的核心。覆盖未来 $H$ 天（含 $\\delta=0$ 当日）的供需/价格轨迹。  
+维度：$\\mathbb{R}^{(H+1) \\times 10}$。通道定义如下：
 
 | 通道 | 特征名 | 公式/说明 |
 |------|--------|----------|
@@ -48,28 +47,19 @@ $$\\mathcal{S}\_t^+ \= \\{ \\mathbf{x}\_{static}, \\mathbf{X}\_{temporal}, \\mat
 | 2 | `prod_plan` | $Q_{prod}[k]$ = 预计生产消耗（保守估计） |
 | 3 | `inventory_proj` | $I_{proj}[k] = I_{now} + \sum_{j=0}^{k}(Q_{in}[j] - Q_{out}[j] - Q_{prod}[j])$ |
 | 4 | `capacity_free` | $C_{free}[k] = C_{total}[k] - I_{proj}[k]$ |
-| 5 | `balance_proj` | $B_{proj}[k] = B_t + \sum_{j=0}^{k}(Receivables[j] - Payables[j])$ |
-| 6 | `price_diff` | $P_{future}[k] - P_{spot}$（期货溢价/贴水，见下方计算说明） |
-| 7 | `buy_pressure` | 买方压力指数（见下方计算说明） |
-| 8 | `sell_pressure` | 卖方压力指数（见下方计算说明） |
+| 5 | `balance_proj` | $B_{proj}[k] = B_t + \sum_{j=0}^{k}(Receivables[j] - Payables[j] - Q_{prod}[j]\cdot cost)$ |
+| 6 | `price_diff_in` | 采购侧期货溢价：$P^{buy}_{future}[k] - P^{buy}_{spot}$ |
+| 7 | `price_diff_out` | 销售侧期货溢价：$P^{sell}_{future}[k] - P^{sell}_{spot}$ |
+| 8 | `buy_pressure` | 买方需求压力（价格加权） |
+| 9 | `sell_pressure` | 卖方供给压力（价格加权） |
 
-**通道 6-8 计算说明**：
+**通道 6-9 计算说明**：
 
-由于 SCML 标准世界不存在公开订单簿，通道 6-8 基于代理可观测的谈判与合约数据推断：
+由于 SCML 标准世界不存在公开订单簿，通道 6-9 基于代理可观测的谈判与合约数据推断：
 
-**buy_pressure[k]（买方压力）**：
-- 含义：第 $t+k$ 天买方对商品的需求强度。值越大表示"买方多、缺货风险高、可抬价"。
-- 计算：`demand_qty[k] = active_sell_offers[k] + signed_buy_contracts[k]`
-- 归一化：`buy_pressure[k] = clip(demand_qty[k] / economic_capacity[k], 0, 1)`
-
-**sell_pressure[k]（卖方压力）**：
-- 含义：第 $t+k$ 天卖方的供给强度。值越大表示"供给多、价格承压"。
-- 计算：`supply_qty[k] = active_buy_offers[k] + signed_sell_contracts[k]`
-- 归一化：`sell_pressure[k] = clip(supply_qty[k] / economic_capacity[k], 0, 1)`
-
-**price_diff[k]（价格趋势）**：
-- 信号来源：已签成交 VWAP > 谈判出价中位数 > 现货价回退
-- 输出：`price_diff[k] = P_future[k] - P_spot`
+- `price_diff_in/out`：成交 VWAP 与活跃报价**加权均值**融合（权重 0.6/0.3/0.1），分别基于买入/卖出谈判和 `spot_price_in/out`
+- `buy_pressure[k]`：输出市场买方需求强度 = 已签销售量 (Q_out) + 卖出谈判中买家的报价量（按轮次/数量加权，spot_price_out 为基准高价权重更大），除以经济容量裁剪到 `[0,1]`
+- `sell_pressure[k]`：输入市场卖方供给强度 = 已签采购量 (Q_in) + 买入谈判中卖家的报价量（按轮次/数量加权，spot_price_in 为基准低价权重更大），除以经济容量裁剪到 `[0,1]`
 
 **设计说明**：
 - 当前市场现货价格已包含在 $\mathbf{x}_{static}$ 中（`spot_price_in`/`spot_price_out`），无需在时序张量中重复
@@ -77,12 +67,25 @@ $$\\mathcal{S}\_t^+ \= \\{ \\mathbf{x}\_{static}, \\mathbf{X}\_{temporal}, \\mat
 
 #### **2.1.3 角色嵌入向量 ($\\mathbf{x}\_{role}$) —— 对称性的基石**
 
-**设计决策：L2-L4 全部需要角色嵌入。**
+**设计决策：L2-L4 全部需要角色嵌入，但语义因层级而异。**
 
-为了解决"B方案"中买卖逻辑不对称的缺陷，HRL-XF在 **L2、L3、L4 所有层级** 强制引入角色嵌入。
+为了解决"B方案"中买卖逻辑不对称的缺陷，HRL-XF在 **L2、L3、L4 所有层级** 强制引入角色嵌入，但根据层级职责采用不同的编码方式：
 
-* 形式：One-hot编码 $[1, 0]$ (Buyer) 或 $[0, 1]$ (Seller)，或者通过可学习的Embedding层映射为低维稠密向量 $\\mathbf{e}\_{role} \\in \\mathbb{R}^{d}$。
-* 作用：指示神经网络当前是在处理"补货"任务还是"去库存"任务，使得同一套网络权重可以学习镜像的博弈逻辑（例如：买方压价与卖方抬价是对称的）。
+##### L2 层：Multi-Hot 谈判能力编码
+
+根据 SCML 2025 Standard 规则，代理在供应链中的位置决定了其谈判能力：
+
+* **形式**：Multi-Hot 编码 $[\text{can\_buy}, \text{can\_sell}]$
+  * $[0, 1]$：第一层代理，采购来自外生合约 (SELLER)，只能谈判销售
+  * $[1, 1]$：中间层代理，买卖都需要谈判
+  * $[1, 0]$：最后一层代理，销售来自外生合约 (BUYER)，只能谈判采购
+* **作用**：L2 输出 16 维目标向量（4 桶 × 买卖各 2 分量），Multi-Hot 编码让网络知道应关注哪些分量
+* **优势**：$[1,1]$ 明确表示"两种能力都有"，比 $[0.5, 0.5]$ 语义更清晰
+
+##### L3/L4 层：One-Hot 谈判角色编码
+
+* **形式**：One-hot 编码 $[1, 0]$ (Buyer) 或 $[0, 1]$ (Seller)，或通过可学习 Embedding 映射为 $\\mathbf{e}\_{role} \\in \\mathbb{R}^{d}$
+* **作用**：指示当前这个具体谈判的方向，使网络学习镜像博弈逻辑（买方压价 vs 卖方抬价）
 
 ### **2.2 动作空间的混合编码与时间维度 ($\\mathcal{A}^+$)**
 

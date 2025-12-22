@@ -68,9 +68,20 @@ def competitor_pool(max_top: int | None = None) -> List[Type]:
     log_dir = os.environ.get("SCML_TRACKER_LOG_DIR", ".")
     lita_bases = [LitaAgentY, LitaAgentYR, LitaAgentCIR, LitaAgentN, LitaAgentP]
     tracked_lita = [create_tracked_agent(cls, log_dir=log_dir) for cls in lita_bases]
-    penguin = [PenguinAgent]
+    
+    # PenguinAgent 也需要 Tracker 包装，确保收集完整数据
+    tracked_penguin = create_tracked_agent(PenguinAgent, log_dir=log_dir)
+    
+    # Top Agents 也需要 Tracker 包装
     tops = TOP_AGENTS_2025 if max_top is None else TOP_AGENTS_2025[: max_top]
-    pool = tracked_lita + penguin + list(tops) + [RandomStdAgent]
+    tracked_tops = []
+    for cls in tops:
+        try:
+            tracked_tops.append(create_tracked_agent(cls, log_dir=log_dir))
+        except Exception:
+            tracked_tops.append(cls)  # 包装失败则使用原始类
+    
+    pool = tracked_lita + [tracked_penguin] + tracked_tops + [RandomStdAgent]
     # 去重保持顺序
     seen = set()
     uniq = []
@@ -93,7 +104,17 @@ def gen_manifest(
 ) -> None:
     """生成 manifest（若已存在则追加未完成部分）。"""
     pool = competitor_pool(max_top=max_top)
-    penguin_cls = PenguinAgent
+    # 使用 Tracked 版本的 PenguinAgent（在 pool 中找到它）
+    log_dir = os.environ.get("SCML_TRACKER_LOG_DIR", ".")
+    tracked_penguin = create_tracked_agent(PenguinAgent, log_dir=log_dir)
+    # 找到 pool 中的 tracked penguin（通过基类名匹配）
+    penguin_cls = None
+    for c in pool:
+        if 'Penguin' in c.__name__ or (hasattr(c, '__bases__') and any('Penguin' in b.__name__ for b in c.__bases__)):
+            penguin_cls = c
+            break
+    if penguin_cls is None:
+        penguin_cls = tracked_penguin  # 回退
     pool_no_penguin = [c for c in pool if c is not penguin_cls]
     entries = []
     if path.exists():

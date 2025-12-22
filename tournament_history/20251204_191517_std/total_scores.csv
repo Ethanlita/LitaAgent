@@ -1,7 +1,0 @@
-index,agent_type,score
-0,scml.oneshot.sysagents.DefaultOneShotAdapter:scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent,0.9647522409300336
-1,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_yr.LitaAgentYR,0.7683068776791419
-2,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_y.LitaAgentY,0.6622311247573941
-3,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_cir.LitaAgentCIR,0.5322956674538473
-4,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_p.LitaAgentP,0.4937725169544739
-5,scml.oneshot.sysagents.DefaultOneShotAdapter:litaagent_std.litaagent_n.LitaAgentN,0.3425617479069635

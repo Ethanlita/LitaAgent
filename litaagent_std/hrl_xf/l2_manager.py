@@ -138,7 +138,7 @@ class HeuristicL2Manager:
         
         Args:
             x_static: 静态特征，shape (12,)
-            X_temporal: 时序特征，shape (H, 9)
+            X_temporal: 时序特征，shape (H, 10)
             is_buying: 当前角色
             
         Returns:
@@ -235,7 +235,7 @@ if TORCH_AVAILABLE:
             horizon: int = 40,
             n_buckets: int = 4,
             d_static: int = 12,
-            d_temporal: int = 9,
+            d_temporal: int = 10,  # 10通道：vol_in, vol_out, prod_plan, inventory_proj, capacity_free, balance_proj, price_diff_in, price_diff_out, buy_pressure, sell_pressure
             d_role: int = 16,
         ):
             super().__init__()
@@ -252,8 +252,9 @@ if TORCH_AVAILABLE:
             # 静态特征嵌入
             self.static_embed = nn.Linear(d_static, 32)
             
-            # 角色嵌入
-            self.role_embed = nn.Embedding(2, d_role)
+            # 角色嵌入：使用 Linear 支持 Multi-Hot [can_buy, can_sell]
+            # 例如: [0,1]=第一层（只卖）, [1,1]=中间层, [1,0]=最后层（只买）
+            self.role_embed = nn.Linear(2, d_role)
             
             # 融合层
             fusion_dim = 64 + 32 + d_role
@@ -274,14 +275,14 @@ if TORCH_AVAILABLE:
             self,
             x_static: "torch.Tensor",
             X_temporal: "torch.Tensor",
-            role_idx: "torch.Tensor"
+            x_role: "torch.Tensor"
         ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
             """前向传播.
             
             Args:
                 x_static: (B, 12) - 静态特征
-                X_temporal: (B, H, 9) - 时序特征
-                role_idx: (B,) - 角色索引 (0=Buyer, 1=Seller)
+                X_temporal: (B, H, 10) - 时序特征
+                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
                 
             Returns:
                 mean: (B, 16) - 目标向量均值
@@ -289,7 +290,7 @@ if TORCH_AVAILABLE:
                 value: (B, 1) - 价值估计
             """
             # 时序塔 (需要转置为 B, C, L)
-            x_t = X_temporal.permute(0, 2, 1)  # (B, 9, H)
+            x_t = X_temporal.permute(0, 2, 1)  # (B, 10, H)
             x_t = F.relu(self.conv1(x_t))
             x_t = F.relu(self.conv2(x_t))
             h_temp = self.pool(x_t).squeeze(-1)  # (B, 64)
@@ -297,8 +298,8 @@ if TORCH_AVAILABLE:
             # 静态嵌入
             h_static = F.relu(self.static_embed(x_static))  # (B, 32)
             
-            # 角色嵌入
-            h_role = self.role_embed(role_idx)  # (B, d_role)
+            # 角色嵌入 (Linear 接受 Multi-Hot)
+            h_role = F.relu(self.role_embed(x_role))  # (B, d_role)
             
             # 融合
             h = torch.cat([h_temp, h_static, h_role], dim=-1)
@@ -318,16 +319,19 @@ if TORCH_AVAILABLE:
             self,
             x_static: "torch.Tensor",
             X_temporal: "torch.Tensor",
-            role_idx: "torch.Tensor"
+            x_role: "torch.Tensor"
         ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
             """采样动作并计算 log_prob.
+            
+            Args:
+                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
             
             Returns:
                 action: (B, 16) - 采样的目标向量
                 log_prob: (B,) - 对数概率
                 value: (B, 1) - 价值估计
             """
-            mean, log_std, value = self.forward(x_static, X_temporal, role_idx)
+            mean, log_std, value = self.forward(x_static, X_temporal, x_role)
             std = torch.exp(log_std)
             dist = torch.distributions.Normal(mean, std)
             action = dist.rsample()
@@ -338,12 +342,13 @@ if TORCH_AVAILABLE:
             self,
             x_static: "torch.Tensor",
             X_temporal: "torch.Tensor",
-            role_idx: "torch.Tensor",
+            x_role: "torch.Tensor",
             actions: "torch.Tensor"
         ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
             """评估给定动作的 log_prob 和熵.
             
             Args:
+                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
                 actions: (B, 16) - 要评估的动作
                 
             Returns:
@@ -351,7 +356,7 @@ if TORCH_AVAILABLE:
                 entropy: (B,)
                 value: (B, 1)
             """
-            mean, log_std, value = self.forward(x_static, X_temporal, role_idx)
+            mean, log_std, value = self.forward(x_static, X_temporal, x_role)
             std = torch.exp(log_std)
             dist = torch.distributions.Normal(mean, std)
             log_prob = dist.log_prob(actions).sum(dim=-1)
@@ -362,14 +367,17 @@ if TORCH_AVAILABLE:
             self,
             x_static: "torch.Tensor",
             X_temporal: "torch.Tensor",
-            role_idx: "torch.Tensor"
+            x_role: "torch.Tensor"
         ) -> "torch.Tensor":
             """获取确定性动作（均值）.
+            
+            Args:
+                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
             
             Returns:
                 action: (B, 16)
             """
-            mean, _, _ = self.forward(x_static, X_temporal, role_idx)
+            mean, _, _ = self.forward(x_static, X_temporal, x_role)
             return mean
 
 else:
@@ -419,14 +427,16 @@ class L2StrategicManager:
         self,
         x_static: np.ndarray,
         X_temporal: np.ndarray,
-        is_buying: bool
+        is_buying: bool,
+        awi: Optional["StdAWI"] = None
     ) -> L2Output:
         """计算 L2 目标.
         
         Args:
             x_static: 静态特征，shape (12,)
-            X_temporal: 时序特征，shape (H, 9)
-            is_buying: 当前角色
+            X_temporal: 时序特征，shape (H, 10)
+            is_buying: 当前角色（用于启发式模式）
+            awi: Agent World Interface（用于神经网络模式计算 x_role）
             
         Returns:
             L2Output
@@ -434,26 +444,48 @@ class L2StrategicManager:
         if self.mode == "heuristic":
             return self._impl.compute(x_static, X_temporal, is_buying)
         else:
-            return self._compute_neural(x_static, X_temporal, is_buying)
+            return self._compute_neural(x_static, X_temporal, is_buying, awi)
     
     def _compute_neural(
         self,
         x_static: np.ndarray,
         X_temporal: np.ndarray,
-        is_buying: bool
+        is_buying: bool,
+        awi: Optional["StdAWI"] = None
     ) -> L2Output:
         """使用神经网络计算目标."""
         # 转换为 Tensor
         x_static_t = torch.from_numpy(x_static).float().unsqueeze(0)
         X_temporal_t = torch.from_numpy(X_temporal).float().unsqueeze(0)
-        role_idx_t = torch.tensor([0 if is_buying else 1], dtype=torch.long)
+        
+        # 基于供应链位置计算 x_role (Multi-Hot: [can_buy, can_sell])
+        # 第一层 (input_product=0): 采购外生 → 只能谈判销售 → [0, 1]
+        # 最后层 (output_product=n_products-1): 销售外生 → 只能谈判采购 → [1, 0]
+        # 中间层: 买卖都需谈判 → [1, 1]
+        if awi is not None:
+            input_product = getattr(awi, 'my_input_product', 0)
+            output_product = getattr(awi, 'my_output_product', 1)
+            n_products = getattr(awi, 'n_products', output_product + 1)
+            
+            is_first_level = (input_product == 0)
+            is_last_level = (output_product == n_products - 1)
+            
+            can_buy = 0.0 if is_first_level else 1.0
+            can_sell = 0.0 if is_last_level else 1.0
+        else:
+            # 回退：基于 is_buying 推断（不准确，但兼容旧接口）
+            can_buy = 1.0
+            can_sell = 1.0
+        
+        x_role = np.array([can_buy, can_sell], dtype=np.float32)
+        x_role_t = torch.from_numpy(x_role).float().unsqueeze(0)
         
         with torch.no_grad():
             action = self._model.get_deterministic_action(
-                x_static_t, X_temporal_t, role_idx_t
+                x_static_t, X_temporal_t, x_role_t
             )
             _, _, value = self._model.forward(
-                x_static_t, X_temporal_t, role_idx_t
+                x_static_t, X_temporal_t, x_role_t
             )
         
         goal_vector = action.squeeze(0).numpy()
