@@ -190,7 +190,34 @@ def _merge_unique_agents(primary: List[Type], fallback: List[Type], max_top: int
     return unique[:max_top]
 
 
-def _get_top5_std2025(tracker_log_dir: str, max_top: int = 5) -> List[Type]:
+def _is_penguin_agent(cls: Type) -> bool:
+    name = getattr(cls, "__name__", "") or ""
+    module = getattr(cls, "__module__", "") or ""
+    if name == "PenguinAgent":
+        return True
+    module_l = module.lower()
+    name_l = name.lower()
+    return ("team_penguin" in module_l) and ("penguin" in name_l)
+
+
+def _maybe_track_agent(
+    cls: Type,
+    tracker_log_dir: str,
+    track_only_penguin: bool,
+) -> Type:
+    if track_only_penguin and (not _is_penguin_agent(cls)):
+        return cls
+    tracked_cls = create_tracked_agent(cls, log_dir=tracker_log_dir)
+    if tracked_cls is cls or tracked_cls.__name__ == cls.__name__:
+        raise RuntimeError(f"无法为 {cls.__name__} 创建动态 Tracked 版本")
+    return tracked_cls
+
+
+def _get_top5_std2025(
+    tracker_log_dir: str,
+    max_top: int = 5,
+    track_only_penguin: bool = False,
+) -> List[Type]:
     """加载 SCML 2025 Standard 前 5 代理，并用 Tracker 包装。"""
     explicit = _load_explicit_agents(EXPLICIT_STD_TOP2025)
     explicit = _filter_legacy_agents(explicit)
@@ -213,16 +240,17 @@ def _get_top5_std2025(tracker_log_dir: str, max_top: int = 5) -> List[Type]:
     if len(agents) < max_top:
         print(f"[WARN] 2025 Std Top 代理不足: {len(agents)}/{max_top}")
     # 用 Tracker 包装所有代理
-    tracked_agents = []
+    wrapped_agents: List[Type] = []
     for cls in agents:
-        tracked_cls = create_tracked_agent(cls, log_dir=tracker_log_dir)
-        if tracked_cls is cls or tracked_cls.__name__ == cls.__name__:
-            raise RuntimeError(f"无法为 {cls.__name__} 创建动态 Tracked 版本")
-        tracked_agents.append(tracked_cls)
-    return tracked_agents
+        wrapped_agents.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin))
+    return wrapped_agents
 
 
-def _get_top5_std2024(tracker_log_dir: str, max_top: int = 5) -> List[Type]:
+def _get_top5_std2024(
+    tracker_log_dir: str,
+    max_top: int = 5,
+    track_only_penguin: bool = False,
+) -> List[Type]:
     """加载 SCML 2024 Standard 前 5 代理，并用 Tracker 包装。"""
     explicit = _load_explicit_agents(EXPLICIT_STD_TOP2024)
     explicit = _filter_legacy_agents(explicit)
@@ -244,19 +272,17 @@ def _get_top5_std2024(tracker_log_dir: str, max_top: int = 5) -> List[Type]:
     agents = _merge_unique_agents(explicit, fallback, max_top)
     if len(agents) < max_top:
         print(f"[WARN] 2024 Std Top 代理不足: {len(agents)}/{max_top}")
-    tracked_agents = []
+    wrapped_agents: List[Type] = []
     for cls in agents:
-        tracked_cls = create_tracked_agent(cls, log_dir=tracker_log_dir)
-        if tracked_cls is cls or tracked_cls.__name__ == cls.__name__:
-            raise RuntimeError(f"无法为 {cls.__name__} 创建动态 Tracked 版本")
-        tracked_agents.append(tracked_cls)
-    return tracked_agents
+        wrapped_agents.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin))
+    return wrapped_agents
 
 
 def build_competitors(
     tracker_log_dir: str,
     max_top_2025: int = 5,
     max_top_2024: int = 5,
+    track_only_penguin: bool = False,
 ) -> Tuple[List[Type], List[str], List[str]]:
     """构建参赛代理列表，所有 LitaAgent 使用动态创建的 Tracked 版本。
     
@@ -274,15 +300,24 @@ def build_competitors(
     
     # 动态创建 LitaAgent Tracked 版本（包含完整 HRL-XF 字段）
     for base_cls in LITA_AGENT_BASES:
-        tracked_cls = create_tracked_agent(base_cls, log_dir=tracker_log_dir)
-        if tracked_cls is base_cls or tracked_cls.__name__ == base_cls.__name__:
-            raise RuntimeError(f"无法为 {base_cls.__name__} 创建动态 Tracked 版本")
-        competitors.append(tracked_cls)
-        lita_agents.append(tracked_cls)
-        print(f"[INFO] 动态创建 Tracked 版本: {tracked_cls.__name__}")
+        wrapped_cls = _maybe_track_agent(base_cls, tracker_log_dir, track_only_penguin)
+        competitors.append(wrapped_cls)
+        lita_agents.append(wrapped_cls)
+        if wrapped_cls is base_cls:
+            print(f"[INFO] 使用未追踪版本: {base_cls.__name__}")
+        else:
+            print(f"[INFO] 动态创建 Tracked 版本: {wrapped_cls.__name__}")
     
-    top_agents_2025 = _get_top5_std2025(tracker_log_dir, max_top=max_top_2025)
-    top_agents_2024 = _get_top5_std2024(tracker_log_dir, max_top=max_top_2024)
+    top_agents_2025 = _get_top5_std2025(
+        tracker_log_dir,
+        max_top=max_top_2025,
+        track_only_penguin=track_only_penguin,
+    )
+    top_agents_2024 = _get_top5_std2024(
+        tracker_log_dir,
+        max_top=max_top_2024,
+        track_only_penguin=track_only_penguin,
+    )
     lita_base_names = {c.__name__ for c in LITA_AGENT_BASES}
     top_agents = [
         cls for cls in list(top_agents_2025) + list(top_agents_2024)
@@ -290,13 +325,26 @@ def build_competitors(
     ]
     competitors.extend(top_agents)
     
+    # 若启用“仅追踪 PenguinAgent”，但参赛名单里没有 Penguin，则强制加入
+    if track_only_penguin:
+        have_penguin = any("penguinagent" in (getattr(c, "__name__", "") or "").lower() for c in competitors)
+        if not have_penguin:
+            forced = _load_explicit_agents([
+                ("scml_agents.scml2024.standard.team_penguin.penguinagent", "PenguinAgent"),
+            ])
+            forced = _filter_legacy_agents(forced)
+            forced = _filter_oneshot_track_agents(forced)
+            if forced:
+                penguin_cls = forced[0]
+                competitors.append(_maybe_track_agent(penguin_cls, tracker_log_dir, track_only_penguin))
+                print("[INFO] 已强制加入 PenguinAgent（track_only_penguin=True）")
+            else:
+                print("[WARN] track_only_penguin=True 但未能导入 PenguinAgent，可能导致 tracker_logs 为空")
+
     # 内置基线代理（Random/SyncRandom），也需要动态 Tracked
     extra_agents = [RandomStdAgent, SyncRandomStdAgent]
     for cls in extra_agents:
-        tracked_cls = create_tracked_agent(cls, log_dir=tracker_log_dir)
-        if tracked_cls is cls or tracked_cls.__name__ == cls.__name__:
-            raise RuntimeError(f"无法为 {cls.__name__} 创建动态 Tracked 版本")
-        competitors.append(tracked_cls)
+        competitors.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin))
 
     # 去重保持顺序
     seen = set()
@@ -390,8 +438,25 @@ def main():
     parser.add_argument("--foreground", action="store_true", help="前台运行（输出到终端而非日志文件）")
     parser.add_argument("--quiet", "-q", action="store_true", help="静默模式")
     parser.add_argument("--parallelism", type=str, default="loky", help="并行模式 (parallel/serial/dask/loky)")
-    parser.add_argument("--round-robin", action="store_true", help="启用 round-robin（组合爆炸，慎用）")
+    parser.add_argument(
+        "--round-robin",
+        dest="round_robin",
+        action="store_true",
+        help="启用 round-robin（保留官方全组合，默认开启）",
+    )
+    parser.add_argument(
+        "--no-round-robin",
+        dest="round_robin",
+        action="store_false",
+        help="禁用 round-robin（仅采样少量随机组合，运行更快）",
+    )
+    parser.set_defaults(round_robin=True)
     parser.add_argument("--steps", type=int, default=None, help="固定 n_steps（小规模快速验证用）")
+    parser.add_argument(
+        "--track-only-penguin",
+        action="store_true",
+        help="仅追踪 PenguinAgent（其它参赛者不写 Tracker JSON，节省磁盘/解析开销）",
+    )
     parser.add_argument("--no-auto-collect", action="store_true", help="禁用自动归集")
     args = parser.parse_args()
     
@@ -427,22 +492,31 @@ def main():
     TrackerConfig.configure(log_dir=tracker_dir, enabled=True)
     os.environ["SCML_TRACKER_LOG_DIR"] = tracker_dir
     print(f"[INFO] Tracker enabled, log dir: {tracker_dir}")
+    if args.track_only_penguin:
+        print("[INFO] Tracker 过滤模式：仅追踪 PenguinAgent")
 
     competitors, lita_names, external_names = build_competitors(
         tracker_dir,
         max_top_2025=args.max_top_2025,
         max_top_2024=args.max_top_2024,
+        track_only_penguin=args.track_only_penguin,
     )
     _patch_score_calculator()
-    n_per_world = args.n_competitors_per_world or len(competitors)
-    if not args.round_robin and len(competitors) % n_per_world != 0:
-        raise RuntimeError(
-            f"n_competitors_per_world={n_per_world} 不能整除参赛数量 {len(competitors)}，"
-            f"请调整或启用 --round-robin"
-        )
-    if args.max_worlds_per_config is None and args.target_worlds is None:
-        args.max_worlds_per_config = n_per_world
+    n_per_world = args.n_competitors_per_world
+    if n_per_world is not None:
+        if not args.round_robin and len(competitors) % n_per_world != 0:
+            raise RuntimeError(
+                f"n_competitors_per_world={n_per_world} 不能整除参赛数量 {len(competitors)}，"
+                f"请调整或启用 --round-robin"
+            )
+        if (
+            args.max_worlds_per_config is None
+            and args.target_worlds is None
+        ):
+            args.max_worlds_per_config = n_per_world
     if args.target_worlds and args.max_worlds_per_config is None:
+        if n_per_world is None:
+            raise RuntimeError("使用 --target-worlds 时必须指定 --n-competitors-per-world")
         args.max_worlds_per_config = _calc_max_worlds_per_config(
             args.target_worlds,
             args.configs,
