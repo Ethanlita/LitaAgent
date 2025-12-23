@@ -434,22 +434,15 @@ def main():
         max_top_2024=args.max_top_2024,
     )
     _patch_score_calculator()
-    n_per_world = args.n_competitors_per_world
-    if n_per_world is not None:
-        if not args.round_robin and len(competitors) % n_per_world != 0:
-            raise RuntimeError(
-                f"n_competitors_per_world={n_per_world} 不能整除参赛数量 {len(competitors)}，"
-                f"请调整或启用 --round-robin"
-            )
-    if (
-        n_per_world is not None
-        and args.max_worlds_per_config is None
-        and args.target_worlds is None
-    ):
+    n_per_world = args.n_competitors_per_world or len(competitors)
+    if not args.round_robin and len(competitors) % n_per_world != 0:
+        raise RuntimeError(
+            f"n_competitors_per_world={n_per_world} 不能整除参赛数量 {len(competitors)}，"
+            f"请调整或启用 --round-robin"
+        )
+    if args.max_worlds_per_config is None and args.target_worlds is None:
         args.max_worlds_per_config = n_per_world
     if args.target_worlds and args.max_worlds_per_config is None:
-        if n_per_world is None:
-            raise RuntimeError("使用 --target-worlds 时必须指定 --n-competitors-per-world")
         args.max_worlds_per_config = _calc_max_worlds_per_config(
             args.target_worlds,
             args.configs,
