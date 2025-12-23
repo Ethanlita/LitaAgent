@@ -574,7 +574,23 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                 try:
                     partner = [p for p in contract.partners if p != self.id][0]
                     agreement = contract.agreement
-                    is_seller = not getattr(self.awi, 'is_first_level', True)
+                    
+                    # 尽量使用 annotation/product/buyer 正确判断买卖方向（中间层不能用 is_first_level 硬猜）
+                    my_input_product = getattr(self.awi, 'my_input_product', 0)
+                    my_output_product = getattr(self.awi, 'my_output_product', 1)
+                    annotation = getattr(contract, 'annotation', {})
+                    product_index = annotation.get('product', None) if isinstance(annotation, dict) else None
+                    if hasattr(product_index, '__len__') and not isinstance(product_index, (str, int)):
+                        product_index = product_index[0] if len(product_index) > 0 else None
+
+                    if product_index is not None:
+                        is_seller = (product_index == my_output_product)
+                    else:
+                        buyer = getattr(contract, 'buyer', None)
+                        if buyer is not None:
+                            is_seller = (self.id != buyer)
+                        else:
+                            is_seller = not getattr(self.awi, 'is_first_level', True)
                     
                     tracker.contract_signed(
                         contract_id=str(contract.id),
@@ -728,14 +744,51 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
             
             if tracker and proposals:
                 try:
+                    def _infer_is_seller(negotiator_id: str) -> bool:
+                        """尽量用 nmi.annotation 判断买卖方向，避免用层级硬猜污染数据。"""
+                        nmi = None
+                        try:
+                            nmi = self.get_nmi(negotiator_id)
+                        except Exception:
+                            nmi = None
+
+                        annotation = getattr(nmi, "annotation", {}) or {}
+
+                        product_index = annotation.get("product", None)
+                        if hasattr(product_index, "__len__") and not isinstance(product_index, (str, int)):
+                            product_index = product_index[0] if len(product_index) > 0 else None
+
+                        my_input_product = getattr(self.awi, "my_input_product", None)
+                        my_output_product = getattr(self.awi, "my_output_product", None)
+
+                        if product_index is not None:
+                            if my_output_product is not None and product_index == my_output_product:
+                                return True
+                            if my_input_product is not None and product_index == my_input_product:
+                                return False
+
+                        seller = annotation.get("seller", None)
+                        buyer = annotation.get("buyer", None)
+                        if seller is not None and seller == getattr(self, "id", None):
+                            return True
+                        if buyer is not None and buyer == getattr(self, "id", None):
+                            return False
+
+                        # 仅在无法判断时才回退到供应链端点（中间层不适用）
+                        if getattr(self.awi, "is_first_level", False):
+                            return True
+                        if getattr(self.awi, "is_last_level", False):
+                            return False
+                        return False
+
                     for partner_id, proposal in proposals.items():
                         if proposal:
                             prop_qty = proposal[0] if proposal else 0
                             prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
                             prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
                             
-                            # 判断是买方还是卖方
-                            is_seller = hasattr(self.awi, 'is_first_level') and not self.awi.is_first_level
+                            # 判断是买方还是卖方（必须准确，否则会污染后续离线训练标签）
+                            is_seller = _infer_is_seller(partner_id)
                             
                             # 记录协商开始
                             tracker.negotiation_started(partner_id, {
@@ -1221,7 +1274,36 @@ def create_tracked_agent(
                             prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
                             prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
                             
-                            is_seller = hasattr(self.awi, 'is_first_level') and not self.awi.is_first_level
+                            # 方向判定必须尽量准确：中间层同时存在买卖谈判，不能用层级硬猜
+                            nmi = None
+                            try:
+                                nmi = self.get_nmi(partner_id)
+                            except Exception:
+                                nmi = None
+
+                            annotation = getattr(nmi, "annotation", {}) or {}
+                            product_index = annotation.get("product", None)
+                            if hasattr(product_index, "__len__") and not isinstance(product_index, (str, int)):
+                                product_index = product_index[0] if len(product_index) > 0 else None
+
+                            my_input_product = getattr(self.awi, "my_input_product", None)
+                            my_output_product = getattr(self.awi, "my_output_product", None)
+
+                            if product_index is not None:
+                                is_seller = (my_output_product is not None and product_index == my_output_product)
+                            else:
+                                seller = annotation.get("seller", None)
+                                buyer = annotation.get("buyer", None)
+                                if seller is not None and seller == getattr(self, "id", None):
+                                    is_seller = True
+                                elif buyer is not None and buyer == getattr(self, "id", None):
+                                    is_seller = False
+                                elif getattr(self.awi, "is_first_level", False):
+                                    is_seller = True
+                                elif getattr(self.awi, "is_last_level", False):
+                                    is_seller = False
+                                else:
+                                    is_seller = False
                             
                             tracker.negotiation_started(partner_id, {
                                 "quantity_range": str(prop_qty),

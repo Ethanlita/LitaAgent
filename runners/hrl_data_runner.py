@@ -352,22 +352,6 @@ def build_competitors(
                 print("[INFO] 已强制加入 PenguinAgent（track_only_penguin=True）")
             else:
                 print("[WARN] track_only_penguin=True 但未能导入 PenguinAgent，可能导致 tracker_logs 为空")
-    
-    # 若启用“仅追踪 PenguinAgent”，但参赛名单里没有 Penguin，则强制加入
-    if track_only_penguin:
-        have_penguin = any("penguinagent" in (getattr(c, "__name__", "") or "").lower() for c in competitors)
-        if not have_penguin:
-            forced = _load_explicit_agents([
-                ("scml_agents.scml2024.standard.team_penguin.penguinagent", "PenguinAgent"),
-            ])
-            forced = _filter_legacy_agents(forced)
-            forced = _filter_oneshot_track_agents(forced)
-            if forced:
-                penguin_cls = forced[0]
-                competitors.append(_maybe_track_agent(penguin_cls, tracker_log_dir, track_only_penguin))
-                print("[INFO] 已强制加入 PenguinAgent（track_only_penguin=True）")
-            else:
-                print("[WARN] track_only_penguin=True 但未能导入 PenguinAgent，可能导致 tracker_logs 为空")
 
     # 内置基线代理（Random/SyncRandom）：默认也追踪；track_only_penguin 下不追踪
     extra_agents = [RandomStdAgent, SyncRandomStdAgent]
