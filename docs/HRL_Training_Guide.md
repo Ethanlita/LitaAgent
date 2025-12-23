@@ -208,6 +208,8 @@ data_pipeline 会优先使用这些字段做匹配，避免 `agent_type` 为分�
 - 参赛：全部 LitaAgent（tracked 版，除 HRL）、2025 标准前 5、2024 标准前 5、RandomStdAgent/SyncRandomStdAgent（全部动态 Tracked）。  
 - 开启 `log_negotiations=True`、`log_ufuns=True`，输出至 `tournament_history/hrl_data_<timestamp>_std`（可用 `--output-dir` 覆盖）。  
 - 若安装 `scml_analyzer`，自动记录 Tracker。
+- 支持 `--resumable` 续跑（复用同一 `--output-dir`）。
+- 可选 `--no-csv` 减少 negmas CSV 写盘（仍会保留必要文件，如 contracts/negotiations/stats）。
 
 ### 4.3 解析日志
 使用 `litaagent_std/hrl_xf/data_pipeline.py`：  

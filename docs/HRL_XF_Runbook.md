@@ -28,6 +28,8 @@ MPLCONFIGDIR=./.mpl_cache .venv/bin/python -m runners.hrl_data_runner \
 - `--max-worlds-per-config`：每配置最大 world 数  
 - `--steps`：固定步数（用于快速验证）  
 - `--track-only-penguin`：仅追踪 `PenguinAgent`（适合只用 Penguin 做专家示范时，显著降低 `tracker_logs` 体积与 pipeline 解析开销）  
+- `--no-csv`：尽量减少 negmas CSV 输出（仍会保留必要文件，如 contracts/negotiations/stats）  
+- `--resumable`：启用断点续跑（复用 `--output-dir`）  
 - `--output-dir`：输出目录  
 - `--parallelism`：并行后端（推荐 `loky`）  
 - `--foreground`：前台输出
@@ -35,15 +37,15 @@ MPLCONFIGDIR=./.mpl_cache .venv/bin/python -m runners.hrl_data_runner \
 注意：`max-worlds-per-config` 必须 **≥ 参赛代理数量**，否则会报“公平分配”错误。
 
 ## 2) 中断恢复（resume）
-`hrl_data_runner` 本身 **不支持续跑**。如需续跑，建议使用可断点的默认 runner：
+`hrl_data_runner` 支持断点续跑：使用同一个 `--output-dir` 并加上 `--resumable` 即可自动跳过已完成 world。
 ```bash
-MPLCONFIGDIR=./.mpl_cache .venv/bin/python runners/run_default_std.py \
-  --output-dir tournament_history/std_default_resume
+MPLCONFIGDIR=./.mpl_cache .venv/bin/python -m runners.hrl_data_runner \
+  --resumable --output-dir tournament_history/hrl_data_resume_std
 ```
-中断后再执行同一命令即可继续。
+中断后再执行同一命令即可继续（已完成的 world 会被跳过）。
 
-如果仍需用 `hrl_data_runner` 采集数据：  
-- 重新跑到**新的输出目录**  
+如果想分批采集数据：  
+- 仍可跑到**新的输出目录**  
 - pipeline 可递归读取多个目录（把父目录作为输入即可）
 
 ## 3) 运行 pipeline

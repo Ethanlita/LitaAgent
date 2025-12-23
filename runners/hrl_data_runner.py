@@ -5,7 +5,7 @@
   SCML 2025 Standard 前 5 名（scml-agents）和 SCML 2024 Standard 前 5 名、
   RandomStdAgent/SyncRandomStdAgent。
 - 启用 scml_analyzer Tracker 记录所有 LitaAgent 行为（包含 HRL-XF 完整字段）。
-- 启用 log_negotiations/log_ufuns，输出到 tournament_history。
+- 默认启用 log_negotiations/log_ufuns（可用 --no-csv 关闭大部分 CSV 以减轻 I/O）。
 - 使用 loky 执行器避免并行死锁问题。
 - 结束后自动归集数据，不启动浏览器。
 - 支持后台运行并将输出重定向到日志文件。
@@ -23,6 +23,9 @@
     
     # 自定义规模
     python -m runners.hrl_data_runner --configs 3 --runs 1
+
+    # 关闭大部分 CSV（仍保留最小 stats/params 等）
+    python -m runners.hrl_data_runner --no-csv
 """
 
 from __future__ import annotations
@@ -40,8 +43,17 @@ from typing import List, Tuple, Type
 from runners.loky_patch import enable_loky_executor
 enable_loky_executor()
 
+from negmas.helpers.inout import load
+from negmas.helpers.numeric import truncated_mean
+from negmas.tournaments.tournaments import (
+    ASSIGNED_CONFIGS_JSON_FILE,
+    ASSIGNED_CONFIGS_PICKLE_FILE,
+    RESULTS_FILE,
+    evaluate_tournament,
+    run_tournament,
+)
 import scml_agents
-from scml.utils import anac2024_std
+from scml.utils import anac2024_std, anac2024_std_world_generator, balance_calculator_std
 from scml.std.agents import RandomStdAgent, SyncRandomStdAgent
 
 # LitaAgent 基类（不使用硬编码的 *Tracked 版本，改用动态创建）
@@ -437,6 +449,72 @@ def _calc_max_worlds_per_config(
     return max(1, math.ceil(target_worlds / denom))
 
 
+def _has_existing_tournament(tournament_dir: Path) -> bool:
+    return any(
+        (tournament_dir / fname).exists()
+        for fname in (
+            ASSIGNED_CONFIGS_PICKLE_FILE,
+            ASSIGNED_CONFIGS_JSON_FILE,
+            "assigned_configs",
+        )
+    )
+
+
+def _load_assignments(tournament_dir: Path):
+    for fname in (
+        ASSIGNED_CONFIGS_PICKLE_FILE,
+        ASSIGNED_CONFIGS_JSON_FILE,
+        "assigned_configs",
+    ):
+        fpath = tournament_dir / fname
+        if not fpath.exists():
+            continue
+        try:
+            data = load(fpath)
+            if data:
+                return data
+        except Exception:
+            continue
+    return []
+
+
+def _summarize_progress(tournament_dir: Path) -> Tuple[int, int]:
+    assignments = _load_assignments(tournament_dir)
+    if not assignments:
+        return 0, 0
+    total = len(assignments)
+    done = 0
+    for config_set in assignments:
+        if not config_set:
+            continue
+        dir_name = config_set[0].get("__dir_name")
+        if not dir_name:
+            continue
+        run_root = Path(dir_name).parent
+        if (run_root / RESULTS_FILE).exists():
+            done += 1
+    return done, total
+
+
+def _find_existing_tournament_root(base_dir: Path) -> Path | None:
+    if _has_existing_tournament(base_dir):
+        return base_dir
+    stage_candidate = base_dir.parent / f"{base_dir.name}-stage-0001"
+    if _has_existing_tournament(stage_candidate):
+        return stage_candidate
+    for p in base_dir.parent.glob(f"{base_dir.name}-stage-*"):
+        if _has_existing_tournament(p):
+            return p
+    return None
+
+
+def _resolve_tracker_dir(base_dir: Path, tournament_root: Path) -> Path:
+    base_tracker = base_dir / "tracker_logs"
+    if base_tracker.exists() or base_dir == tournament_root:
+        return base_tracker
+    return tournament_root / "tracker_logs"
+
+
 def main():
     """主函数：解析参数并运行锦标赛。"""
     parser = argparse.ArgumentParser(
@@ -451,6 +529,12 @@ def main():
     parser.add_argument("--max-worlds-per-config", type=int, default=None, help="限制每个配置的最大 world 数")
     parser.add_argument("--target-worlds", type=int, default=None, help="目标总 world 数（自动折算为 max_worlds_per_config）")
     parser.add_argument("--output-dir", type=str, default=None, help="输出目录（默认自动生成）")
+    parser.add_argument(
+        "--resumable",
+        "--resume",
+        action="store_true",
+        help="启用断点续跑（复用 --output-dir；若目录内已存在配置将自动续跑）",
+    )
     parser.add_argument("--foreground", action="store_true", help="前台运行（输出到终端而非日志文件）")
     parser.add_argument("--quiet", "-q", action="store_true", help="静默模式")
     parser.add_argument("--parallelism", type=str, default="loky", help="并行模式 (parallel/serial/dask/loky)")
@@ -473,46 +557,67 @@ def main():
         action="store_true",
         help="仅追踪 PenguinAgent（其它参赛者不写 Tracker JSON，节省磁盘/解析开销）",
     )
+    parser.add_argument(
+        "--no-csv",
+        action="store_true",
+        help="尽量关闭 negmas CSV 输出（仍会保留少量必要文件，如 stats/params）",
+    )
     parser.add_argument("--no-auto-collect", action="store_true", help="禁用自动归集")
     args = parser.parse_args()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.output_dir:
-        save_path = os.path.abspath(args.output_dir)
+        save_path = Path(args.output_dir).resolve()
     else:
-        save_path = os.path.abspath(os.path.join("tournament_history", f"hrl_data_{timestamp}_std"))
-    os.makedirs(save_path, exist_ok=True)
+        save_path = Path("tournament_history") / f"hrl_data_{timestamp}_std"
+        save_path = save_path.resolve()
+    existing_root = None
+    if args.resumable:
+        existing_root = _find_existing_tournament_root(save_path)
+        if existing_root is None and save_path.exists():
+            if any(save_path.iterdir()):
+                raise RuntimeError(
+                    f"{save_path} 已存在但未发现配置文件，无法续跑。请更换 --output-dir 或手动清理。"
+                )
+    tournament_root = existing_root or save_path
+    created_now = existing_root is None
     
     # 日志文件路径
-    log_file = os.path.join(save_path, "tournament_run.log")
+    log_file = save_path / "tournament_run.log"
     
     # 如果非前台模式，重定向 stdout/stderr 到日志文件
     if not args.foreground:
-        print(f"[INFO] 比赛将在后台运行")
+        save_path.mkdir(parents=True, exist_ok=True)
+        print("[INFO] 比赛将在后台运行")
         print(f"[INFO] 输出目录: {save_path}")
         print(f"[INFO] 日志文件: {log_file}")
         print(f"[INFO] 查看进度: tail -f {log_file}")
         
         # 重定向输出到日志文件
-        log_handle = open(log_file, "w", buffering=1, encoding="utf-8")
+        log_mode = "a" if args.resumable and log_file.exists() else "w"
+        log_handle = open(log_file, log_mode, buffering=1, encoding="utf-8")
         sys.stdout = log_handle
         sys.stderr = log_handle
         print(f"[INFO] 锦标赛开始于 {timestamp}")
         print(f"[INFO] 配置: configs={args.configs}, runs={args.runs}")
+        if args.resumable:
+            print(f"[INFO] resumable=True, 目标目录: {save_path}")
+            if existing_root:
+                print(f"[INFO] 已发现可续跑目录: {existing_root}")
 
     # 配置 Tracker（必须启用）
     if not _TRACKER_AVAILABLE:
         raise RuntimeError("必须安装 scml_analyzer 以启用全量 Tracker")
-    tracker_dir = os.path.join(save_path, "tracker_logs")
-    os.makedirs(tracker_dir, exist_ok=True)
-    TrackerConfig.configure(log_dir=tracker_dir, enabled=True)
-    os.environ["SCML_TRACKER_LOG_DIR"] = tracker_dir
+    tracker_dir = _resolve_tracker_dir(save_path, Path(tournament_root))
+    tracker_dir.mkdir(parents=True, exist_ok=True)
+    TrackerConfig.configure(log_dir=str(tracker_dir), enabled=True)
+    os.environ["SCML_TRACKER_LOG_DIR"] = str(tracker_dir)
     print(f"[INFO] Tracker enabled, log dir: {tracker_dir}")
     if args.track_only_penguin:
         print("[INFO] Tracker 过滤模式：仅追踪 PenguinAgent")
 
     competitors, lita_names, external_names = build_competitors(
-        tracker_dir,
+        str(tracker_dir),
         max_top_2025=args.max_top_2025,
         max_top_2024=args.max_top_2024,
         track_only_penguin=args.track_only_penguin,
@@ -566,7 +671,10 @@ def main():
         n_sets = _estimate_competitor_sets(len(competitors), n_per_world, args.round_robin)
         approx_worlds = args.configs * args.runs * args.max_worlds_per_config * n_sets
         print(f"🧮 约束: max_worlds_per_config={args.max_worlds_per_config} (≈ {approx_worlds} worlds)")
-    print(f"🔧 选项: tracker=True, visualizer=False, auto_collect={not args.no_auto_collect}, round_robin={args.round_robin}")
+    print(
+        f"🔧 选项: tracker=True, visualizer=False, auto_collect={not args.no_auto_collect}, "
+        f"round_robin={args.round_robin}, no_csv={args.no_csv}"
+    )
     print(f"⚙️  并行: {parallelism_label}")
     print("=" * 60 + "\n")
 
@@ -574,32 +682,98 @@ def main():
     tournament_kwargs = {}
     if args.steps is not None:
         tournament_kwargs["n_steps"] = args.steps
+    if args.no_csv:
+        # 尽量关闭 negmas 侧的 CSV 输出（保留最小必要文件）
+        tournament_kwargs.update(
+            {
+                "log_ufuns": False,
+                "log_negotiations": False,
+                "save_signed_contracts": True,
+                "save_cancelled_contracts": False,
+                "save_negotiations": False,
+                "save_resolved_breaches": False,
+                "save_unresolved_breaches": False,
+                "saved_details_level": 0,
+                "log_stats_every": 0,
+            }
+        )
 
-    results = anac2024_std(
-        competitors=competitors,
-        n_configs=args.configs,
-        n_runs_per_world=args.runs,
-        n_competitors_per_world=n_per_world,
-        max_worlds_per_config=args.max_worlds_per_config,
-        tournament_path=save_path,
-        forced_logs_fraction=1.0,
-        parallelism=parallelism,
-        round_robin=args.round_robin,
-        name=f"LitaHRLData_{timestamp}",
-        verbose=not args.quiet,
-        compact=False,
-        print_exceptions=True,
-        **tournament_kwargs,
-    )
+    if args.resumable:
+        if created_now:
+            if save_path.exists():
+                save_path.mkdir(parents=True, exist_ok=True)
+            print(f"[INFO] 生成可续跑配置: {save_path}")
+            configs_path = anac2024_std(
+                competitors=competitors,
+                n_configs=args.configs,
+                n_runs_per_world=args.runs,
+                n_competitors_per_world=n_per_world,
+                max_worlds_per_config=args.max_worlds_per_config,
+                tournament_path=str(save_path.parent),
+                forced_logs_fraction=1.0,
+                parallelism=parallelism,
+                round_robin=args.round_robin,
+                name=save_path.name,
+                verbose=not args.quiet,
+                compact=False,
+                configs_only=True,
+                print_exceptions=True,
+                **tournament_kwargs,
+            )
+            try:
+                if configs_path is not None:
+                    configs_path = Path(configs_path)
+                    tournament_root = configs_path.parent
+            except Exception:
+                pass
+        done, total = _summarize_progress(Path(tournament_root))
+        if total:
+            print(f"[INFO] 进度: {done}/{total} world 已完成 ({done/total:.1%})")
+        print(f"[INFO] 启动/恢复比赛: {tournament_root}")
+        run_tournament(
+            tournament_path=str(tournament_root),
+            world_generator=anac2024_std_world_generator,
+            score_calculator=balance_calculator_std,
+            parallelism=parallelism,
+            verbose=not args.quiet,
+            compact=False,
+            print_exceptions=True,
+        )
+        print("[INFO] 汇总结果")
+        results = evaluate_tournament(
+            tournament_path=str(tournament_root),
+            metric=truncated_mean,
+            verbose=not args.quiet,
+            recursive=True,
+        )
+    else:
+        results = anac2024_std(
+            competitors=competitors,
+            n_configs=args.configs,
+            n_runs_per_world=args.runs,
+            n_competitors_per_world=n_per_world,
+            max_worlds_per_config=args.max_worlds_per_config,
+            tournament_path=str(save_path),
+            forced_logs_fraction=1.0,
+            parallelism=parallelism,
+            round_robin=args.round_robin,
+            name=f"LitaHRLData_{timestamp}",
+            verbose=not args.quiet,
+            compact=False,
+            print_exceptions=True,
+            **tournament_kwargs,
+        )
     
     print(f"[INFO] 锦标赛完成，日志保存在 {save_path}")
+    if args.resumable and Path(tournament_root) != save_path:
+        print(f"[INFO] 比赛目录: {tournament_root}")
 
     if not args.no_auto_collect:
         try:
             from scml_analyzer.postprocess import postprocess_tournament
             print("[INFO] 自动归集日志...")
             postprocess_tournament(
-                output_dir=save_path,
+                output_dir=str(save_path),
                 start_visualizer=False,
                 visualizer_port=None,
             )
