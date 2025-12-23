@@ -11,7 +11,7 @@ L3 是轮级残差执行器，基于谈判历史序列和 L2 目标，输出 (Δ
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Union
 import numpy as np
 
 # 尝试导入 PyTorch（可选依赖）
@@ -38,6 +38,7 @@ class L3Output:
         q_final: 最终数量 = q_base + delta_q
         p_final: 最终价格 = p_base + delta_p
         t_final: 最终交货时间 = delta_t
+        hidden_state: L3 的隐状态/latent（供 L4 协调使用），shape (d_model,)
         time_probs: 时间选择的概率分布
     """
     delta_q: float
@@ -46,6 +47,7 @@ class L3Output:
     q_final: float
     p_final: float
     t_final: int
+    hidden_state: Optional[np.ndarray] = None
     time_probs: Optional[np.ndarray] = None
 
 
@@ -128,6 +130,25 @@ class HeuristicL3Executor:
         time_probs = np.where(time_mask > -np.inf, 1.0, 0.0)
         if time_probs.sum() > 0:
             time_probs = time_probs / time_probs.sum()
+
+        # 为 L4 协调提供一个确定的隐状态（启发式无真实 latent，用特征拼接占位）
+        hidden_state = np.zeros(128, dtype=np.float32)
+        features = np.array(
+            [
+                q_base,
+                p_base,
+                float(t_base),
+                delta_q,
+                delta_p,
+                float(delta_t),
+                float(n_rounds),
+                1.0 if is_buying else 0.0,
+            ],
+            dtype=np.float32,
+        )
+        hidden_state[: len(features)] = features
+        if goal is not None and goal.size >= 16:
+            hidden_state[8:24] = goal[:16].astype(np.float32)
         
         return L3Output(
             delta_q=delta_q,
@@ -136,6 +157,7 @@ class HeuristicL3Executor:
             q_final=q_final,
             p_final=p_final,
             t_final=t_final,
+            hidden_state=hidden_state,
             time_probs=time_probs
         )
     
@@ -213,6 +235,7 @@ if TORCH_AVAILABLE:
             self.time_embed = nn.Embedding(horizon + 1, d_model)
             self.role_embed = nn.Embedding(2, d_model)
             self.goal_embed = nn.Linear(16, d_model)  # 完整16维目标向量
+            self.baseline_embed = nn.Linear(3, d_model)  # 基准动作 (q_base, p_base, t_base)
             
             # 位置编码
             self.pos_embed = nn.Embedding(max_seq_len + 1, d_model)  # +1 for goal token
@@ -251,8 +274,12 @@ if TORCH_AVAILABLE:
             goal: "torch.Tensor",
             role: "torch.Tensor",
             time_mask: "torch.Tensor",
-            baseline: "torch.Tensor"
-        ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+            baseline: "torch.Tensor",
+            return_latent: bool = False,
+        ) -> Union[
+            Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"],
+            Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor"],
+        ]:
             """前向传播.
             
             Args:
@@ -266,6 +293,7 @@ if TORCH_AVAILABLE:
                 delta_q: (B, 1) - 数量残差
                 delta_p: (B, 1) - 价格残差
                 time_logits: (B, H+1) - 时间分类 logits
+                (可选) latent: (B, d_model) - 最后一步的 Transformer 表征
             """
             B, T, _ = history.shape
             
@@ -281,7 +309,8 @@ if TORCH_AVAILABLE:
             tokens = tokens + role_emb.unsqueeze(1)  # 广播
             
             # 3. Goal Prompting (作为 prefix)
-            g_token = self.goal_embed(goal).unsqueeze(1)  # (B, 1, d)
+            g_token = self.goal_embed(goal) + self.baseline_embed(baseline)  # (B, d)
+            g_token = g_token.unsqueeze(1)  # (B, 1, d)
             seq = torch.cat([g_token, tokens], dim=1)  # (B, T+1, d)
             
             # 4. 位置编码
@@ -301,7 +330,9 @@ if TORCH_AVAILABLE:
             
             time_logits = self.head_t(last_feat)  # (B, H+1)
             time_logits = time_logits + time_mask  # 应用 L1 掩码
-            
+
+            if return_latent:
+                return delta_q, delta_p, time_logits, last_feat
             return delta_q, delta_p, time_logits
         
         def get_action(
@@ -468,15 +499,24 @@ class L3ResidualExecutor:
         baseline: Tuple[float, float, int]
     ) -> L3Output:
         """使用神经网络计算残差."""
-        # 构建历史张量
+        # 构建历史张量（必须与模型 max_seq_len/horizon 对齐，避免 time_embed/pos_embed 越界）
+        max_len = int(getattr(self._model, "max_seq_len", 20) or 20)
+        if max_len > 0 and len(history) > max_len:
+            history = history[-max_len:]
+
         if len(history) == 0:
             # 空历史：使用零填充
             history_arr = np.zeros((1, 1, 3), dtype=np.float32)
         else:
-            history_arr = np.array([
-                [r.quantity, r.price, r.delta_t] for r in history
-            ], dtype=np.float32)
-            history_arr = history_arr[np.newaxis, :, :]  # (1, T, 3)
+            rows = []
+            for r in history:
+                try:
+                    delta = int(r.delta_t)
+                except Exception:
+                    delta = 0
+                delta = int(max(0, min(delta, self.horizon)))
+                rows.append([float(r.quantity), float(r.price), float(delta)])
+            history_arr = np.asarray(rows, dtype=np.float32)[np.newaxis, :, :]  # (1, T, 3)
         
         # 转换为 Tensor
         history_t = torch.from_numpy(history_arr).float()
@@ -486,15 +526,21 @@ class L3ResidualExecutor:
         baseline_t = torch.tensor([[baseline[0], baseline[1], baseline[2]]], dtype=torch.float32)
         
         with torch.no_grad():
-            q_final, p_final, t_final = self._model.get_deterministic_action(
-                history_t, goal_t, role_t, time_mask_t, baseline_t
+            delta_q, delta_p, time_logits, latent = self._model.forward(
+                history_t,
+                goal_t,
+                role_t,
+                time_mask_t,
+                baseline_t,
+                return_latent=True,
             )
-            
-            # 计算时间概率分布
-            _, _, time_logits = self._model.forward(
-                history_t, goal_t, role_t, time_mask_t, baseline_t
-            )
-            time_probs = F.softmax(time_logits, dim=-1).squeeze(0).numpy()
+
+            q_final = baseline_t[:, 0:1] + delta_q
+            p_final = baseline_t[:, 1:2] + delta_p
+            t_final = time_logits.argmax(dim=-1)
+
+            time_probs = F.softmax(time_logits, dim=-1).squeeze(0).numpy().astype(np.float32)
+            hidden_state = latent.squeeze(0).numpy().astype(np.float32)
         
         q_final_val = q_final.item()
         p_final_val = p_final.item()
@@ -507,6 +553,7 @@ class L3ResidualExecutor:
             q_final=q_final_val,
             p_final=p_final_val,
             t_final=t_final_val,
+            hidden_state=hidden_state,
             time_probs=time_probs
         )
     

@@ -192,9 +192,12 @@ delta_q = q_base * 0.1 * concession # 增加供应
 
 | 参数 | 类型 | 默认值 | 文件位置 | 用途 |
 |------|------|--------|----------|------|
-| `d_model` | int | 64 | L174 | Transformer 隐藏维度 |
-| `n_heads` | int | 4 | L175 | 注意力头数 |
-| `l3_hidden_dim` | int | 128 | L177 | L3 输出的隐藏维度 |
+| `d_model` | int | 64 | L179 | Transformer 隐藏维度 |
+| `n_heads` | int | 4 | L180 | 注意力头数 |
+| `thread_feat_dim` | int | 24 | L182 | 线程显式特征维度（不再使用 L3 隐状态） |
+| `global_feat_dim` | int | 30 | L183 | 全局上下文特征维度 |
+
+> 说明：当前 L4 输入语义已调整为 `thread_feat_set + global_feat`，不再依赖 L3 的 `hidden_state/latent`，以便启发式教师与神经 L4 共享同一输入分布。
 
 ---
 

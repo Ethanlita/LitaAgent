@@ -279,8 +279,8 @@ L4解决了“并发资源耦合”问题。针对“方案B”中L4逻辑的模
 
 L4不仅要看“谁重要”，还要看“谁和谁冲突”。在期货中，冲突是基于时间的。
 
-* 输入：所有活跃L3线程的隐状态集合 $\\{h\_1, \\dots, h\_N\\}$，以及它们当前的意向交货时间 $\\{\\delta\_1, \\dots, \\delta\_N\\}$。  
-* **角色嵌入**：同样，L4输入中包含每个线程的角色（买/卖），以便分别统计资金流入（卖）和流出（买）。
+* 输入（与当前实现对齐）：所有活跃线程的**显式特征集合** `thread_feat_set`（每个线程一条，包含意向交货时间/角色、谈判进度、报价偏差、该交期的 `X_temporal[δ]` 切片、L1 baseline/约束等）与**全局上下文** `global_feat`（如 `goal_hat`、`x_static`、活跃线程数等）。  
+* **角色嵌入**：L4 仍需要区分买/卖方向（买侧资金流出、卖侧资金流入），但不再依赖 L3 的 `hidden_state/latent` 作为输入，以避免教师/学生输入分布不一致与分布漂移问题。
 
 ### **6.2 注意力机制的数学表达**
 
@@ -292,7 +292,7 @@ $$\\text{Attention}(Q, K, V) \= \\text{Softmax}\\left(\\frac{QK^T}{\\sqrt{d\_k}}
 
 ### **6.3 资源压力的双向传导**
 
-L4输出的权重 $\\alpha\_k$ 直接作用于L3的Gate：
+L4 输出的权重 $\\alpha\_k$ 用于**全局调度**，并可派生调制因子 $m\_k = 1 + \\alpha\_k$ 轻量调制 L3 residual（最终仍受 L1/L2 裁剪约束）。在方案 B 的落地实现中，$\\alpha$ 还会用于“动态预留”：买侧按 $\\alpha$ 从高到低对各线程候选动作逐一裁剪，并动态扣减剩余 `B_free/Q_safe`，从而把 L4 的作用点放到裁剪之前并减少顺序依赖。
 
 * **资金危机模式**：当 $B\_{proj}$ 显示未来某日资金断裂，L4将注意力集中在该日之前的所有 **Seller** 线程上，迫使其降价回款（Fire Sale）。  
 * **库存告急模式**：当 $I\_{proj}$ 显示未来某日缺货，L4激活该日对应的 **Buyer** 线程，允许其溢价采购。
@@ -333,32 +333,27 @@ PenguinAgent是基于规则的，其日志中没有显式的 $g\_t$。我们需�
 
 ### **8.1 训练器架构设计**
 
-Python
+> 说明：此处给出与当前实现一致的训练器分工（实现位于 `litaagent_std/hrl_xf/training.py`）。
 
-class HRLXFTrainer:  
-    def train\_step(self, macro\_batch, micro\_batch):  
-        \# 1\. L2 Update (Daily Scale)  
-        \# 输入包含 Role Embedding 和 X\_temporal  
-        \# Loss: PPO Loss (Phase 2\) or MLE (Phase 0\)  
-        with tf.GradientTape() as tape\_l2:  
-            g\_pred \= self.l2\_model(macro\_batch\['state'\], macro\_batch\['role'\])  
-            loss\_l2 \= self.ppo\_loss(g\_pred, macro\_batch\['actions'\])  
-          
-        \# 2\. L3 & L4 Update (Round Scale)  
-        \# 输入包含 Role Embedding  
-        \# Loss: Hybrid (MSE for p/q \+ CrossEntropy for time)  
-        with tf.GradientTape() as tape\_l3:  
-            weights \= self.l4\_model(micro\_batch\['hidden\_states'\], micro\_batch\['roles'\])  
-            \# L3 forward conditioned on L4 weights, L2 goals, and Role  
-            pred\_res, pred\_time \= self.l3\_model(micro\_batch\['context'\], weights, micro\_batch\['role'\])  
-              
-            loss\_res \= mse(pred\_res, micro\_batch\['target\_residuals'\])  
-            loss\_time \= cross\_entropy(pred\_time, micro\_batch\['target\_time'\])  
-            total\_loss \= loss\_res \+ loss\_time  
-              
-        \# Apply Gradients  
-        self.opt\_l2.apply(...)  
-        self.opt\_l3.apply(...)
+```python
+class HRLXFTrainer:
+    def train_phase0_bc(self, macro_samples, micro_samples):
+        # L2：BC 拟合 v2 goal（16 维）
+        #   - 标签来自 reconstruct_l2_goals()：成交 + 缺口补偿 + 活跃意图 + 软分桶 + 稳定价格
+        #
+        # L3：BC/AWR 拟合 residual（输入显式条件化）
+        #   - micro.goal 应为 goal_hat：由已训练 L2 预测并回填（load_tournament_data(goal_backfill="l2")）
+        #   - baseline/time_mask 由 L1 离线重建得到（与在线一致）
+        ...
+
+    def train_l4_distill(self, l4_samples):
+        # L4：监督蒸馏（教师=启发式 L4，学习连续 α 向量）
+        #   - 输入：thread_feat_set + global_feat（可离线重建的显式特征）
+        #   - 目标：拟合启发式教师输出的 soft α（CrossEntropy / KL）
+        ...
+```
+
+> ⚠️ 注意：L4 不再直接输入 L3 的 `hidden_state/latent`，而是使用可离线重建的显式特征，以避免教师/学生输入分布不一致与分布漂移，并允许启发式 L4 与神经 L4 共用同一输入语义。
 
 ### **8.2 详细训练阶段**
 

@@ -68,9 +68,9 @@
 
 ### 新增：LitaAgent-HRL（模式 B）
 
-- 位置：`litaagent_std/hrl_x/agent.py`
+- 位置：`litaagent_std/hrl_xf/agent.py`
 - 基类：`StdAgent`
-- 特点：L1 提炼 Penguin 微观安全/基准，L2 简易日级目标，L3 预留残差位（当前为 0），可后续接入 RL 模型。
+- 特点：HRL-XF 四层架构（L1 安全护盾 → L2 16 维分桶目标 → L3 残差执行（含 baseline 条件化）→ L4 并发协调），并用“批次统一规划 + 动态预留”降低顺序依赖。
 - Tracked 版本：`LitaAgentHRLTracked`
 
 ```python
@@ -86,6 +86,7 @@ from litaagent_std.litaagent_ys import LitaAgentYSTracked
 from litaagent_std.litaagent_n import LitaAgentNTracked
 from litaagent_std.litaagent_cir import LitaAgentCIRTracked
 from litaagent_std.litaagent_cirs import LitaAgentCIRSTracked
+from litaagent_std.hrl_xf import LitaAgentHRLTracked
 
 # 在比赛中使用 Tracked 版本
 results = anac2024_oneshot(

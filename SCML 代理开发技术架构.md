@@ -103,15 +103,15 @@ LitaAgent-HRL 由四个逻辑层级组成，自底向上分别负责安全约束
    * L2 接收宏观特征，通过 MLP 网络输出高斯分布参数。  
    * 采样得到当天的目标向量 goal\_vector（如：今日需买入 50 单位，最高价 100）。此向量被广播（Broadcast）给所有 L3 实例。  
 4. **微观编码 (L3)**：  
-   * 每个活跃线程的 L3 决策 Transformer 接收各自的历史序列 history\_seq 和 goal\_vector。  
-   * Transformer 输出当前线程的隐状态 hidden\_state。  
+   * 每个活跃线程的 L3 决策 Transformer 接收各自的历史序列 history\_seq 和 goal\_vector，并条件化 base\_action（baseline）。  
+   * Transformer 输出用于生成残差动作的线程表征（latent），但该 latent **不作为 L4 输入**（避免分布漂移/启发式教师不一致）。  
 5. **全局协调 (L4)**：  
-   * L4 接收所有线程的 hidden\_state 集合。  
-   * 通过多头自注意力（Multi-Head Self-Attention）计算各线程的注意力权重 attention\_weights。  
-   * 高权重的线程意味着其对全局目标至关重要（如急需的原料采购）。  
+   * L4 接收所有线程的**显式特征集合** `thread_feat_set`（每个线程一条、可离线重建）以及**全局上下文** `global_feat`。  
+   * 通过注意力/门控生成各线程的重要性权重 $\\alpha\_k$（连续）。  
+   * 高权重线程意味着其对全局目标更关键（如紧迫缺口、价格机会、风险更低等）。  
 6. **动作生成与合成**：  
-   * L3 结合 hidden\_state 和 L4 反馈的 attention\_weights，输出残差动作 delta\_action。  
-   * 最终动作合成：final\_action \= clip(base\_action \+ delta\_action, mask\_tensor)。  
+   * L4 的 $\\alpha\_k$ 先用于批次级调度与资源预留（在 L1 的 clip 前生效），再由 L3 产生 residual。  
+   * 最终动作合成：final\_action \= clip(base\_action \+ residual, mask\_tensor)。  
    * final\_action 被发送至 SCML 模拟器执行。
 
 ## ---
@@ -415,13 +415,13 @@ class ResidualDecisionTransformer(tf.keras.Model):
 
 **7\. L4 全局协调器：基于注意力的多线程调度**
 
-SCML 2025 的核心痛点在于并发协商中的资源冲突。L4 协调器不直接产生动作，而是通过调节 L3 的隐状态或输出权重来解决冲突 5。
+SCML 2025 的核心痛点在于并发协商中的资源冲突。L4 协调器不直接产生报价动作，而是通过对**线程集合**进行全局调度来解决冲突：在当前实现中，L4 使用可离线重建的 `thread_feat_set + global_feat` 计算连续权重 $\\alpha$，并把 $\\alpha$ 用于调度与资源预留（而非依赖 L3 的 `hidden_state/latent` 作为输入）。
 
 ### **7.1 集中式注意力机制原理**
 
-协调器接收所有活跃线程 L3 Transformer 输出的隐状态向量集合 $\\{h\_1, h\_2, \\dots, h\_K\\}$。它采用多头注意力机制来计算每个线程的重要性权重 $\\alpha\_k$：
+协调器接收所有活跃线程的显式特征集合 $\\{x\_1, x\_2, \\dots, x\_K\\}$（`thread_feat_set`），并结合全局状态 $S\_{global}$（`global_feat`）计算每个线程的重要性权重 $\\alpha\_k$：
 
-$$Q \= W\_q S\_{global}, \\quad K\_k \= W\_k h\_k$$
+$$Q \= W\_q S\_{global}, \\quad K\_k \= W\_k x\_k$$
 
 $$\\alpha \= \\text{Softmax}\\left(\\frac{Q K^T}{\\sqrt{d\_k}}\\right)$$
 
@@ -432,8 +432,11 @@ $$\\alpha \= \\text{Softmax}\\left(\\frac{Q K^T}{\\sqrt{d\_k}}\\right)$$
 
 ### **7.2 策略修正与资源倾斜**
 
-计算出的权重 $\\alpha\_k$ 如何影响决策？我们将其作为一种调制信号反馈给 L3。  
-在 L3 的 call 方法中，我们可以修改最后一步：
+计算出的权重 $\\alpha\_k$ 如何影响决策？在当前落地方案中，有两条“作用路径”：
+1) **残差调制（轻量）**：把 $m\_k = 1 + \\alpha\_k$ 作为调制因子，缩放该线程的 L3 residual；  
+2) **动态预留（关键）**：在生成报价时先收集所有活跃线程候选动作，按 $\\alpha$ 从高到低依次执行 `clip_action` 并动态扣减剩余 `B_free/Q_safe`（买侧），从而把 L4 的影响前移到裁剪之前，同时减少回调顺序依赖。  
+  
+如果只做 1），很容易被后续安全裁剪“吞掉”；2）是并发资源冲突的主要解决手段。
 
 Python
 

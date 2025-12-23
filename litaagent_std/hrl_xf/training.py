@@ -25,7 +25,7 @@ except ImportError:
     TORCH_AVAILABLE = False
     torch = None
 
-from .data_pipeline import MacroSample, MicroSample
+from .data_pipeline import L4DistillSample, MacroSample, MicroSample
 
 
 # ============== 配置 ==============
@@ -56,6 +56,12 @@ class TrainConfig:
     l3_lr: float = 1e-4
     l3_batch_size: int = 32
     l3_epochs: int = 100
+
+    # L4 蒸馏训练（监督）
+    l4_lr: float = 3e-4
+    l4_batch_size: int = 32
+    l4_epochs: int = 50
+    l4_resume_path: Optional[str] = None
     
     # PPO
     ppo_clip: float = 0.2
@@ -122,6 +128,21 @@ class L3Dataset(Dataset):
         elif len(history) < self.max_len:
             pad = np.zeros((self.max_len - len(history), 3))
             history = np.vstack([pad, history])
+
+        # 重要：delta_t 作为离散时间索引，必须落在 [0, horizon]，否则会导致 time_embed 越界
+        try:
+            history = np.asarray(history, dtype=np.float32)
+            if history.ndim == 2 and history.shape[1] >= 3:
+                history[:, 2] = np.nan_to_num(
+                    history[:, 2],
+                    nan=0.0,
+                    posinf=float(self.horizon),
+                    neginf=0.0,
+                )
+                history[:, 2] = np.clip(history[:, 2], 0.0, float(self.horizon))
+        except Exception:
+            # 极端情况下回退为全零，避免训练直接崩溃
+            history = np.zeros((self.max_len, 3), dtype=np.float32)
         
         # time_mask 动态长度：使用 horizon+1，若缺失则默认全部允许 (0.0)
         tm_len = self.horizon + 1
@@ -145,6 +166,72 @@ class L3Dataset(Dataset):
             'time_mask': torch.FloatTensor(time_mask),
             'reward': torch.FloatTensor([s.reward if s.reward else 0.0]),
         }
+
+
+class L4Dataset(Dataset):
+    """L4 蒸馏数据集（变长线程集合）。"""
+
+    def __init__(self, samples: List[L4DistillSample]):
+        self.samples = samples
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        s = self.samples[idx]
+        return {
+            "global_feat": torch.FloatTensor(np.asarray(s.global_feat, dtype=np.float32)),
+            "thread_feats": torch.FloatTensor(np.asarray(s.thread_feats, dtype=np.float32)),
+            "thread_times": torch.LongTensor(np.asarray(s.thread_times, dtype=np.int64)),
+            "thread_roles": torch.LongTensor(np.asarray(s.thread_roles, dtype=np.int64)),
+            "teacher_weights": torch.FloatTensor(np.asarray(s.teacher_weights, dtype=np.float32)),
+        }
+
+
+def collate_l4(batch: List[Dict[str, "torch.Tensor"]]) -> Dict[str, "torch.Tensor"]:
+    """将变长线程集合 padding 成固定形状，并生成 thread_mask。"""
+    if not batch:
+        raise ValueError("Empty batch")
+
+    B = len(batch)
+    max_k = max(int(item["thread_feats"].shape[0]) for item in batch)
+    d_thread = int(batch[0]["thread_feats"].shape[1])
+    d_global = int(batch[0]["global_feat"].shape[0])
+
+    global_feat = torch.zeros((B, d_global), dtype=torch.float32)
+    thread_feats = torch.zeros((B, max_k, d_thread), dtype=torch.float32)
+    thread_times = torch.zeros((B, max_k), dtype=torch.long)
+    thread_roles = torch.zeros((B, max_k), dtype=torch.long)
+    teacher_weights = torch.zeros((B, max_k), dtype=torch.float32)
+    thread_mask = torch.zeros((B, max_k), dtype=torch.bool)
+
+    for i, item in enumerate(batch):
+        gf = item["global_feat"]
+        tf = item["thread_feats"]
+        tt = item["thread_times"]
+        tr = item["thread_roles"]
+        tw = item["teacher_weights"]
+
+        k = int(tf.shape[0])
+        global_feat[i, : gf.shape[0]] = gf
+        thread_feats[i, :k, :] = tf
+        thread_times[i, :k] = tt[:k]
+        thread_roles[i, :k] = tr[:k]
+        teacher_weights[i, :k] = tw[:k]
+        thread_mask[i, :k] = True
+
+    # 归一化 teacher（防止数值误差导致 sum!=1）
+    denom = teacher_weights.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+    teacher_weights = teacher_weights / denom
+
+    return {
+        "global_feat": global_feat,
+        "thread_feats": thread_feats,
+        "thread_times": thread_times,
+        "thread_roles": thread_roles,
+        "teacher_weights": teacher_weights,
+        "thread_mask": thread_mask,
+    }
 
 
 # ============== 行为克隆 (BC) ==============
@@ -545,6 +632,87 @@ def train_l3_awr(
     return history
 
 
+def train_l4_distill(
+    model: "nn.Module",
+    samples: List[L4DistillSample],
+    config: TrainConfig,
+    resume_path: Optional[str] = None,
+) -> Dict[str, List[float]]:
+    """L4 蒸馏训练（监督：拟合启发式 soft α）。"""
+    if not TORCH_AVAILABLE:
+        raise RuntimeError("PyTorch not available")
+
+    dataset = L4Dataset(samples)
+    loader = DataLoader(
+        dataset,
+        batch_size=config.l4_batch_size,
+        shuffle=True,
+        collate_fn=collate_l4,
+    )
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.l4_lr,
+        weight_decay=config.weight_decay,
+    )
+
+    model.to(config.device)
+    model.train()
+
+    history = {"loss": [], "ce": []}
+    start_epoch = 0
+    if resume_path:
+        if os.path.exists(resume_path):
+            start_epoch, ckpt_history = load_checkpoint(model, optimizer, resume_path, device=config.device)
+            if ckpt_history:
+                history = ckpt_history
+        else:
+            print(f"[WARN] Resume path not found: {resume_path} (start fresh)")
+
+    if start_epoch >= config.l4_epochs:
+        print(f"[INFO] Resume epoch {start_epoch} >= target {config.l4_epochs}, skip training")
+        return history
+
+    for epoch in range(start_epoch, config.l4_epochs):
+        epoch_loss = 0.0
+        n_batches = 0
+
+        for batch in loader:
+            global_feat = batch["global_feat"].to(config.device)
+            thread_feats = batch["thread_feats"].to(config.device)
+            thread_times = batch["thread_times"].to(config.device)
+            thread_roles = batch["thread_roles"].to(config.device)
+            teacher = batch["teacher_weights"].to(config.device)
+            mask = batch["thread_mask"].to(config.device)
+
+            pred, _ = model(thread_feats, thread_times, thread_roles, global_feat, thread_mask=mask)
+            pred = pred.clamp_min(1e-8)
+
+            ce = -(teacher * torch.log(pred)).sum(dim=-1)
+            loss = ce.mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+            optimizer.step()
+
+            epoch_loss += float(loss.item())
+            n_batches += 1
+
+        epoch_loss = epoch_loss / max(n_batches, 1)
+        history["loss"].append(epoch_loss)
+        history["ce"].append(epoch_loss)
+
+        if (epoch + 1) % config.log_every == 0:
+            print(f"[L4][Epoch {epoch+1}/{config.l4_epochs}] loss={epoch_loss:.6f}")
+
+        if (epoch + 1) % config.save_every == 0:
+            ckpt_name = f"l4_distill_epoch_{epoch+1}.pt"
+            save_checkpoint(model, optimizer, epoch + 1, history, config.output_dir, ckpt_name)
+
+    return history
+
+
 # ============== PPO (预留) ==============
 
 class PPOBuffer:
@@ -803,6 +971,22 @@ class HRLXFTrainer:
             )
         
         return results
+
+    def train_l4_distill(self, l4_samples: List[L4DistillSample]) -> Dict[str, Any]:
+        """监督蒸馏 L4（拟合启发式 soft α）。"""
+        results: Dict[str, Any] = {}
+        if self.l4 is None or not l4_samples:
+            return results
+        print("=" * 50)
+        print("L4 Distillation (Supervised)")
+        print("=" * 50)
+        results["l4_distill"] = train_l4_distill(
+            self.l4,
+            l4_samples,
+            self.config,
+            resume_path=self.config.l4_resume_path,
+        )
+        return results
     
     def train_phase2_ppo(self) -> Dict[str, Any]:
         """Phase 2: PPO 在线微调（预留）."""
@@ -831,6 +1015,9 @@ __all__ = [
     "train_l2_bc",
     "train_l3_bc",
     "train_l3_awr",
+    "L4Dataset",
+    "collate_l4",
+    "train_l4_distill",
     "compute_advantages",
     "ppo_loss",
     "PPOBuffer",

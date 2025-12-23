@@ -32,7 +32,7 @@ except ImportError:
 class ThreadState:
     """谈判线程状态."""
     thread_id: str
-    hidden_state: np.ndarray  # L3 隐状态
+    thread_feat: np.ndarray  # 线程显式特征（手工构建/可离线重建）
     target_time: int  # 意向交货时间
     role: int  # 0=Buyer, 1=Seller
     priority: float = 1.0  # 线程优先级
@@ -43,10 +43,12 @@ class L4Output:
     """L4 协调层的输出.
     
     Attributes:
+        thread_ids: 线程 ID 列表，与 weights/modulation_factors 对齐
         weights: 各线程的权重，shape (K,)
         modulation_factors: 调制因子，shape (K,)
         conflict_scores: 冲突得分矩阵，shape (K, K)
     """
+    thread_ids: Optional[List[str]]
     weights: np.ndarray
     modulation_factors: np.ndarray
     conflict_scores: Optional[np.ndarray] = None
@@ -76,13 +78,13 @@ class HeuristicL4Coordinator:
     def compute(
         self,
         threads: List[ThreadState],
-        goal: np.ndarray
+        global_feat: np.ndarray
     ) -> L4Output:
         """计算线程权重.
         
         Args:
             threads: 活跃的谈判线程列表
-            goal: L2 目标向量，shape (16,)
+            global_feat: 全局上下文特征（可选，启发式默认不使用）
             
         Returns:
             L4Output
@@ -91,6 +93,7 @@ class HeuristicL4Coordinator:
         
         if K == 0:
             return L4Output(
+                thread_ids=[],
                 weights=np.array([]),
                 modulation_factors=np.array([]),
                 conflict_scores=None
@@ -121,6 +124,7 @@ class HeuristicL4Coordinator:
         modulation_factors = 1.0 + weights
         
         return L4Output(
+            thread_ids=[t.thread_id for t in threads],
             weights=weights,
             modulation_factors=modulation_factors,
             conflict_scores=conflict_scores
@@ -155,8 +159,8 @@ if TORCH_AVAILABLE:
         使用多头注意力和时间偏置处理线程间的协调。
         
         架构：
-        - 全局状态编码：L2 目标作为上下文
-        - 线程状态投影：L3 隐状态投影
+        - 全局上下文编码：global_feat 作为上下文
+        - 线程状态投影：thread_feat 投影
         - 时间嵌入：交货时间嵌入
         - 角色嵌入：买卖角色嵌入
         - 多头注意力：带时间偏置的注意力
@@ -166,7 +170,8 @@ if TORCH_AVAILABLE:
             d_model: 模型维度
             n_heads: 注意力头数
             horizon: 规划视界
-            l3_hidden_dim: L3 隐状态维度
+            thread_feat_dim: 线程特征维度
+            global_feat_dim: 全局特征维度
         """
         
         def __init__(
@@ -174,7 +179,8 @@ if TORCH_AVAILABLE:
             d_model: int = 64,
             n_heads: int = 4,
             horizon: int = 40,
-            l3_hidden_dim: int = 128,
+            thread_feat_dim: int = 24,
+            global_feat_dim: int = 30,
         ):
             super().__init__()
             
@@ -182,11 +188,11 @@ if TORCH_AVAILABLE:
             self.horizon = horizon
             self.n_heads = n_heads
             
-            # 全局状态编码
-            self.global_encoder = nn.Linear(16, d_model)  # L2 目标
-            
+            # 全局上下文编码
+            self.global_encoder = nn.Linear(global_feat_dim, d_model)
+             
             # 线程隐状态投影
-            self.thread_proj = nn.Linear(l3_hidden_dim, d_model)
+            self.thread_proj = nn.Linear(thread_feat_dim, d_model)
             
             # 时间嵌入 (H+1 维，支持 δt ∈ {0, 1, ..., H})
             self.time_embed = nn.Embedding(horizon + 1, d_model)
@@ -211,28 +217,30 @@ if TORCH_AVAILABLE:
         
         def forward(
             self,
-            thread_states: "torch.Tensor",
+            thread_feats: "torch.Tensor",
             thread_times: "torch.Tensor",
             thread_roles: "torch.Tensor",
-            global_state: "torch.Tensor"
+            global_state: "torch.Tensor",
+            thread_mask: Optional["torch.Tensor"] = None,
         ) -> Tuple["torch.Tensor", "torch.Tensor"]:
             """前向传播.
             
             Args:
-                thread_states: (B, K, l3_hidden_dim) - K 个线程的 L3 隐状态
+                thread_feats: (B, K, thread_feat_dim) - K 个线程的线程特征
                 thread_times: (B, K) - 每个线程的意向交货时间
                 thread_roles: (B, K) - 每个线程的角色
-                global_state: (B, 16) - L2 目标向量
+                global_state: (B, global_feat_dim) - 全局上下文特征
+                thread_mask: (B, K) - True=有效线程，False=padding（可选）
                 
             Returns:
                 weights: (B, K) - 线程重要性权重
                 attn_output: (B, K, d_model) - 注意力输出
             """
-            B, K, _ = thread_states.shape
+            B, K, _ = thread_feats.shape
             n_heads = self.mha.num_heads
             
             # 1. 投影线程状态
-            h = self.thread_proj(thread_states)  # (B, K, d)
+            h = self.thread_proj(thread_feats)  # (B, K, d)
             
             # 2. 添加时间嵌入
             # 确保时间在有效范围内
@@ -254,6 +262,10 @@ if TORCH_AVAILABLE:
             
             # 时间距离越近 -> 偏置越大（需要更多协调）
             attn_bias = -time_diff  # (B, K, K)
+            if thread_mask is not None:
+                # 将 padding key 屏蔽掉，避免其参与任何 query 的注意力计算
+                pad_keys = ~thread_mask.bool()  # (B, K)
+                attn_bias = attn_bias.masked_fill(pad_keys.unsqueeze(1), float("-inf"))
             
             # 扩展到多头格式
             attn_bias = attn_bias.unsqueeze(1).expand(-1, n_heads, -1, -1)
@@ -264,6 +276,8 @@ if TORCH_AVAILABLE:
             
             # 7. 计算门控权重
             gate_values = self.gate(attn_output).squeeze(-1)  # (B, K)
+            if thread_mask is not None:
+                gate_values = gate_values.masked_fill(~thread_mask.bool(), float("-inf"))
             
             # 8. 归一化权重
             weights = F.softmax(gate_values, dim=-1)  # (B, K)
@@ -327,17 +341,25 @@ class L4ThreadCoordinator:
         self,
         mode: str = "heuristic",
         horizon: int = 40,
-        model_path: Optional[str] = None
+        model_path: Optional[str] = None,
+        thread_feat_dim: int = 24,
+        global_feat_dim: int = 30,
     ):
         self.mode = mode
         self.horizon = horizon
+        self.thread_feat_dim = thread_feat_dim
+        self.global_feat_dim = global_feat_dim
         
         if mode == "heuristic":
             self._impl = HeuristicL4Coordinator(horizon=horizon)
         elif mode == "neural":
             if not TORCH_AVAILABLE:
                 raise ImportError("PyTorch is required for neural mode")
-            self._model = GlobalCoordinator(horizon=horizon)
+            self._model = GlobalCoordinator(
+                horizon=horizon,
+                thread_feat_dim=thread_feat_dim,
+                global_feat_dim=global_feat_dim,
+            )
             if model_path:
                 self._load_model(model_path)
             self._impl = None
@@ -347,51 +369,52 @@ class L4ThreadCoordinator:
     def compute(
         self,
         threads: List[ThreadState],
-        goal: np.ndarray
+        global_feat: np.ndarray
     ) -> L4Output:
         """计算线程权重.
         
         Args:
             threads: 活跃的谈判线程列表
-            goal: L2 目标向量，shape (16,)
+            global_feat: 全局上下文特征，shape (G,)
             
         Returns:
             L4Output
         """
         if self.mode == "heuristic":
-            return self._impl.compute(threads, goal)
+            return self._impl.compute(threads, global_feat)
         else:
-            return self._compute_neural(threads, goal)
+            return self._compute_neural(threads, global_feat)
     
     def _compute_neural(
         self,
         threads: List[ThreadState],
-        goal: np.ndarray
+        global_feat: np.ndarray
     ) -> L4Output:
         """使用神经网络计算权重."""
         K = len(threads)
         
         if K == 0:
             return L4Output(
+                thread_ids=[],
                 weights=np.array([]),
                 modulation_factors=np.array([]),
                 conflict_scores=None
             )
         
         # 构建张量
-        hidden_states = np.stack([t.hidden_state for t in threads])  # (K, hidden_dim)
+        thread_feats = np.stack([t.thread_feat for t in threads]).astype(np.float32)  # (K, feat_dim)
         times = np.array([t.target_time for t in threads])
         roles = np.array([t.role for t in threads])
         
         # 添加批次维度
-        thread_states_t = torch.from_numpy(hidden_states).float().unsqueeze(0)  # (1, K, d)
+        thread_feats_t = torch.from_numpy(thread_feats).float().unsqueeze(0)  # (1, K, d)
         thread_times_t = torch.from_numpy(times).long().unsqueeze(0)  # (1, K)
         thread_roles_t = torch.from_numpy(roles).long().unsqueeze(0)  # (1, K)
-        goal_t = torch.from_numpy(goal).float().unsqueeze(0)  # (1, 16)
+        global_t = torch.from_numpy(global_feat).float().unsqueeze(0)  # (1, G)
         
         with torch.no_grad():
             weights, _ = self._model.forward(
-                thread_states_t, thread_times_t, thread_roles_t, goal_t
+                thread_feats_t, thread_times_t, thread_roles_t, global_t
             )
         
         weights_np = weights.squeeze(0).numpy()
@@ -403,6 +426,7 @@ class L4ThreadCoordinator:
         np.fill_diagonal(conflict_scores, 0)
         
         return L4Output(
+            thread_ids=[t.thread_id for t in threads],
             weights=weights_np,
             modulation_factors=modulation_factors,
             conflict_scores=conflict_scores

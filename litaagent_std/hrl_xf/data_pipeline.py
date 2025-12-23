@@ -17,7 +17,7 @@ import os
 import multiprocessing as mp
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -100,6 +100,19 @@ class MicroSample:
     reward: Optional[float] = None
 
 
+@dataclass
+class L4DistillSample:
+    """用于 L4 蒸馏训练的样本（每条样本对应一次“批次/集合”决策）。"""
+
+    day: int
+    global_feat: np.ndarray  # (G,)
+    thread_feats: np.ndarray  # (K, D)
+    thread_times: np.ndarray  # (K,)
+    thread_roles: np.ndarray  # (K,) 0=Buyer, 1=Seller
+    teacher_weights: np.ndarray  # (K,) soft α（归一化）
+    thread_ids: Optional[List[str]] = None
+
+
 # ============== 桶定义 ==============
 
 BUCKET_RANGES = [(0, 2), (3, 7), (8, 14), (15, 40)]
@@ -113,7 +126,121 @@ def delta_to_bucket(delta: int) -> int:
     return 3  # 默认长期
 
 
+def delta_to_bucket_soft(delta: float, *, smooth_width: float = 1.0) -> List[Tuple[int, float]]:
+    """将交货时间 delta 软分配到桶（最多两个桶非零），缓解硬分桶边界效应。
+
+    规则：
+    - 默认落在硬分桶；
+    - 若 delta 靠近相邻桶边界（|delta - boundary| <= smooth_width），则按线性权重分摊到两侧桶。
+    """
+    if smooth_width <= 0:
+        idx = delta_to_bucket(int(round(delta)))
+        return [(idx, 1.0)]
+
+    d = float(delta)
+    idx = delta_to_bucket(int(round(d)))
+
+    # 与左边界的软分配
+    if idx > 0:
+        left_hi = BUCKET_RANGES[idx - 1][1]
+        right_lo = BUCKET_RANGES[idx][0]
+        boundary = (float(left_hi) + float(right_lo)) / 2.0
+        if abs(d - boundary) <= smooth_width:
+            w_left = (boundary + smooth_width - d) / (2.0 * smooth_width)
+            w_left = float(np.clip(w_left, 0.0, 1.0))
+            w_right = 1.0 - w_left
+            return [(idx - 1, w_left), (idx, w_right)]
+
+    # 与右边界的软分配
+    if idx < len(BUCKET_RANGES) - 1:
+        left_hi = BUCKET_RANGES[idx][1]
+        right_lo = BUCKET_RANGES[idx + 1][0]
+        boundary = (float(left_hi) + float(right_lo)) / 2.0
+        if abs(d - boundary) <= smooth_width:
+            w_left = (boundary + smooth_width - d) / (2.0 * smooth_width)
+            w_left = float(np.clip(w_left, 0.0, 1.0))
+            w_right = 1.0 - w_left
+            return [(idx, w_left), (idx + 1, w_right)]
+
+    return [(idx, 1.0)]
+
+
+def _weighted_median(values: List[Tuple[float, float]]) -> Optional[float]:
+    """加权中位数（values=(x, w)）。"""
+    if not values:
+        return None
+    pairs = [(float(x), float(w)) for x, w in values if w is not None and w > 0]
+    if not pairs:
+        return None
+    pairs.sort(key=lambda t: t[0])
+    total_w = sum(w for _, w in pairs)
+    if total_w <= 0:
+        return None
+    acc = 0.0
+    for x, w in pairs:
+        acc += w
+        if acc >= 0.5 * total_w:
+            return x
+    return pairs[-1][0]
+
+
 # ============== L1 Time Mask 离线计算 ==============
+
+def compute_q_safe_offline(
+    state_dict: Dict[str, Any],
+    horizon: int = 40,
+) -> np.ndarray:
+    """从日志状态离线计算 L1 Q_safe（与 l1_safety.py 一致）。"""
+    temporal_len = horizon + 1
+
+    inventory = state_dict.get('inventory', {})
+    n_lines = int(state_dict.get('n_lines', 1) or 1)
+
+    commitments = state_dict.get('commitments', {})
+    Q_in = np.array(commitments.get('Q_in', np.zeros(temporal_len)), dtype=np.float32)
+    Q_out = np.array(commitments.get('Q_out', np.zeros(temporal_len)), dtype=np.float32)
+
+    if len(Q_in) < temporal_len:
+        Q_in = np.pad(Q_in, (0, temporal_len - len(Q_in)))
+    else:
+        Q_in = Q_in[:temporal_len]
+    if len(Q_out) < temporal_len:
+        Q_out = np.pad(Q_out, (0, temporal_len - len(Q_out)))
+    else:
+        Q_out = Q_out[:temporal_len]
+
+    Q_in_h = Q_in[:horizon]
+    Q_out_h = Q_out[:horizon]
+
+    if isinstance(inventory, dict):
+        I_now = float(inventory.get('input', 0) or 0.0)
+    else:
+        I_now = float(inventory) if inventory else 0.0
+
+    Q_prod = np.full(horizon, n_lines, dtype=np.float32)
+    net_flow = Q_in_h - Q_out_h - Q_prod
+    L = I_now + np.cumsum(net_flow)
+
+    n_steps = int(state_dict.get('n_steps', 100) or 100)
+    current_step = int(state_dict.get('current_step', 0) or 0)
+
+    C_total = np.zeros(horizon, dtype=np.float32)
+    for k in range(horizon):
+        remaining_days = n_steps - (current_step + k)
+        C_total[k] = n_lines * max(0, remaining_days)
+
+    raw_free = C_total - L
+    reversed_free = raw_free[::-1]
+    reversed_cummin = np.minimum.accumulate(reversed_free)
+    Q_safe_h = reversed_cummin[::-1]
+    Q_safe_h = np.maximum(Q_safe_h, 0)
+
+    Q_safe = np.zeros(temporal_len, dtype=np.float32)
+    if horizon > 0 and len(Q_safe_h) > 0:
+        Q_safe[:horizon] = Q_safe_h
+        Q_safe[horizon] = Q_safe_h[-1]
+    return Q_safe.astype(np.float32)
+
 
 def compute_time_mask_offline(
     state_dict: Dict[str, Any],
@@ -138,64 +265,7 @@ def compute_time_mask_offline(
     Returns:
         time_mask: shape (H+1,)，值为 0 或 -inf
     """
-    temporal_len = horizon + 1
-    
-    # ========== 1. 提取状态 ==========
-    inventory = state_dict.get('inventory', {})
-    n_lines = int(state_dict.get('n_lines', 1))
-    
-    # ========== 2. 提取承诺量 ==========
-    commitments = state_dict.get('commitments', {})
-    Q_in = np.array(commitments.get('Q_in', np.zeros(temporal_len)), dtype=np.float32)
-    Q_out = np.array(commitments.get('Q_out', np.zeros(temporal_len)), dtype=np.float32)
-    
-    # 补齐长度
-    if len(Q_in) < temporal_len:
-        Q_in = np.pad(Q_in, (0, temporal_len - len(Q_in)))
-    else:
-        Q_in = Q_in[:temporal_len]
-    if len(Q_out) < temporal_len:
-        Q_out = np.pad(Q_out, (0, temporal_len - len(Q_out)))
-    else:
-        Q_out = Q_out[:temporal_len]
-    
-    # 截断为 horizon（用于轨迹计算）
-    Q_in_h = Q_in[:horizon]
-    Q_out_h = Q_out[:horizon]
-    
-    # ========== 3. 计算库存轨迹 L ==========
-    if isinstance(inventory, dict):
-        I_now = float(inventory.get('input', 0))
-    else:
-        I_now = float(inventory) if inventory else 0.0
-    
-    # 生产消耗（保守：假设满负荷）
-    Q_prod = np.full(horizon, n_lines, dtype=np.float32)
-    
-    # 库存轨迹：I[k+1] = I[k] + Q_in[k] - Q_out[k] - Q_prod[k]
-    net_flow = Q_in_h - Q_out_h - Q_prod
-    L = I_now + np.cumsum(net_flow)
-    
-    # ========== 4. 计算库容 C_total ==========
-    n_steps = int(state_dict.get('n_steps', 100))
-    current_step = int(state_dict.get('current_step', 0))
-    
-    C_total = np.zeros(horizon, dtype=np.float32)
-    for k in range(horizon):
-        remaining_days = n_steps - (current_step + k)
-        C_total[k] = n_lines * max(0, remaining_days)
-    
-    # ========== 5. 计算 Q_safe（逆向累积最小值） ==========
-    raw_free = C_total - L
-    reversed_free = raw_free[::-1]
-    reversed_cummin = np.minimum.accumulate(reversed_free)
-    Q_safe_h = reversed_cummin[::-1]
-    Q_safe_h = np.maximum(Q_safe_h, 0)
-    
-    # 扩展为 H+1 维
-    Q_safe = np.zeros(temporal_len, dtype=np.float32)
-    Q_safe[:horizon] = Q_safe_h
-    Q_safe[horizon] = Q_safe_h[-1] if len(Q_safe_h) > 0 else 0.0
+    Q_safe = compute_q_safe_offline(state_dict, horizon=horizon)
     
     # ========== 6. 生成 time_mask ==========
     time_mask = np.where(Q_safe >= min_tradable_qty, 0.0, -np.inf)
@@ -962,57 +1032,203 @@ def reconstruct_l2_goals(
     Returns:
         MacroSample 列表
     """
-    samples = []
-    
+    if n_buckets != len(BUCKET_RANGES):
+        raise ValueError(f"n_buckets={n_buckets} must match BUCKET_RANGES={len(BUCKET_RANGES)}")
+
+    # v2 标签超参（保持 16 维，尽量降低稀疏/噪声）
+    W_SIGNED = 0.65
+    W_ACTIVE = 0.25
+    W_SPOT = 0.10
+    SMOOTH_WIDTH = 1.0
+    GAP_ALPHA_BUY = 0.6
+    GAP_BETA_SELL = 0.6
+    INTENT_SCALE = 0.15  # “活跃未成交”弱意图注入系数
+    BUY_FALLBACK_MARGIN = 0.95
+    SELL_FALLBACK_MARGIN = 1.05
+
+    # 将缺口分摊到桶：按桶代表交期的紧迫度（越近越大）
+    rep_deltas = [0.5 * (lo + hi) for lo, hi in BUCKET_RANGES]
+    rep_urg = np.array([1.0 / (d + 1.0) for d in rep_deltas], dtype=np.float32)
+    rep_urg = rep_urg / max(float(rep_urg.sum()), 1e-6)
+
+    samples: List[MacroSample] = []
+
     for day_log in daily_logs:
         state_static, state_temporal = extract_macro_state(day_log)
-        
-        # 初始化 16 维目标
-        goal = np.zeros(16, dtype=np.float32)
-        
-        # 按交货日期分类统计成交
-        deals = day_log.get('deals', [])
-        current_step = day_log.get('current_step', 0)
-        
-        for deal in deals:
-            delta = deal.get('delivery_time', 0) - current_step
-            bucket_idx = delta_to_bucket(delta)
-            
-            base = bucket_idx * 4
-            if deal.get('is_buying', True):
-                goal[base + 0] += deal.get('quantity', 0)  # Q_buy
-                goal[base + 1] = max(goal[base + 1], deal.get('price', 0))  # P_buy
-            else:
-                goal[base + 2] += deal.get('quantity', 0)  # Q_sell
-                if goal[base + 3] == 0:
-                    goal[base + 3] = deal.get('price', 0)
-                else:
-                    goal[base + 3] = min(goal[base + 3], deal.get('price', 0))  # P_sell
-        
-        # 计算回报（如果有）
-        value = day_log.get('daily_reward', None)
-        
-        # 计算 x_role: Multi-Hot 编码表示代理的"谈判能力"
-        # x_role = [can_negotiate_buy, can_negotiate_sell]
-        # 
-        # SCML 2025 Standard 规则：
-        # - 第一层 (is_first_level): 采购来自外生合约(SELLER)，只能谈判销售 → [0, 1]
-        # - 最后一层 (is_last_level): 销售来自外生合约(BUYER)，只能谈判采购 → [1, 0]
-        # - 中间层: 买卖都需要谈判 → [1, 1]
-        # - 单层世界 (既是第一层又是最后层): 理论上无谈判 → [0, 0]
-        #
-        my_input_product = day_log.get('my_input_product', 0)
-        my_output_product = day_log.get('my_output_product', 1)
-        n_products = day_log.get('n_products', my_output_product + 1)
-        
+
+        current_step = int(day_log.get('current_step', 0) or 0)
+        spot_price_in = float(day_log.get('spot_price_in', 10.0) or 10.0)
+        spot_price_out = float(day_log.get('spot_price_out', 20.0) or 20.0)
+
+        # ============== x_role（Multi-Hot：谈判能力） ==============
+        my_input_product = int(day_log.get('my_input_product', 0) or 0)
+        my_output_product = int(day_log.get('my_output_product', 1) or 1)
+        n_products = int(day_log.get('n_products', my_output_product + 1) or (my_output_product + 1))
+
         is_first_level = (my_input_product == 0)
         is_last_level = (my_output_product == n_products - 1)
-        
-        # Multi-Hot 编码：[can_negotiate_buy, can_negotiate_sell]
-        can_buy = 0.0 if is_first_level else 1.0   # 第一层不能谈判采购
-        can_sell = 0.0 if is_last_level else 1.0  # 最后层不能谈判销售
+        can_buy = 0.0 if is_first_level else 1.0
+        can_sell = 0.0 if is_last_level else 1.0
         x_role = np.array([can_buy, can_sell], dtype=np.float32)
-        
+
+        # ============== 统计成交（软分桶） ==============
+        signed_buy_qty = np.zeros(n_buckets, dtype=np.float32)
+        signed_buy_value = np.zeros(n_buckets, dtype=np.float32)
+        signed_sell_qty = np.zeros(n_buckets, dtype=np.float32)
+        signed_sell_value = np.zeros(n_buckets, dtype=np.float32)
+
+        deals = day_log.get('deals', []) or []
+        for deal in deals:
+            try:
+                qty = float(deal.get('quantity', 0) or 0)
+                price = float(deal.get('price', 0) or 0)
+                delivery_time = int(deal.get('delivery_time', current_step) or current_step)
+            except Exception:
+                continue
+            if qty <= 0 or price <= 0:
+                continue
+
+            delta = float(max(0, delivery_time - current_step))
+            for bidx, w in delta_to_bucket_soft(delta, smooth_width=SMOOTH_WIDTH):
+                if w <= 0:
+                    continue
+                if deal.get('is_buying', True):
+                    signed_buy_qty[bidx] += qty * w
+                    signed_buy_value[bidx] += qty * price * w
+                else:
+                    signed_sell_qty[bidx] += qty * w
+                    signed_sell_value[bidx] += qty * price * w
+
+        # ============== 统计活跃报价（用于价格稳定 + 活跃未成交意图） ==============
+        offers_snapshot = day_log.get('offers_snapshot', None) or {'buy': [], 'sell': []}
+
+        active_buy_qty = np.zeros(n_buckets, dtype=np.float32)
+        active_buy_value = np.zeros(n_buckets, dtype=np.float32)
+        active_buy_prices: List[List[Tuple[float, float]]] = [[] for _ in range(n_buckets)]
+
+        active_sell_qty = np.zeros(n_buckets, dtype=np.float32)
+        active_sell_value = np.zeros(n_buckets, dtype=np.float32)
+        active_sell_prices: List[List[Tuple[float, float]]] = [[] for _ in range(n_buckets)]
+
+        def _consume_offers(
+            side: str,
+            qty_acc: np.ndarray,
+            val_acc: np.ndarray,
+            prices_acc: List[List[Tuple[float, float]]],
+        ) -> None:
+            for offer in offers_snapshot.get(side, []) or []:
+                try:
+                    delivery_time = int(offer[0])
+                    qty = float(offer[1])
+                    price = float(offer[2])
+                    w_offer = float(offer[3]) if len(offer) > 3 else 1.0
+                except Exception:
+                    continue
+                if qty <= 0 or price <= 0 or w_offer <= 0:
+                    continue
+                delta = float(max(0, delivery_time - current_step))
+                for bidx, w_bucket in delta_to_bucket_soft(delta, smooth_width=SMOOTH_WIDTH):
+                    # qty_acc 用于“活跃未成交”意图（不带 qty 二次加权），val/median 用于价格聚合
+                    qty_acc[bidx] += float(qty) * float(w_bucket) * float(w_offer)
+
+                    w_price = float(w_bucket) * float(w_offer) * float(max(qty, 1e-6))
+                    val_acc[bidx] += float(price) * w_price
+                    prices_acc[bidx].append((float(price), float(w_price)))
+
+        _consume_offers('buy', active_buy_qty, active_buy_value, active_buy_prices)
+        _consume_offers('sell', active_sell_qty, active_sell_value, active_sell_prices)
+
+        # ============== 缺口补偿（减少“无成交全 0”稀疏） ==============
+        gap_buy = float(day_log.get('needed_supplies', 0) or 0)
+        gap_sell = float(day_log.get('needed_sales', 0) or 0)
+        gap_buy = float(max(0.0, gap_buy))
+        gap_sell = float(max(0.0, gap_sell))
+
+        gap_buy_by_bucket = gap_buy * rep_urg
+        gap_sell_by_bucket = gap_sell * rep_urg
+
+        # ============== 组装 16 维目标（Q=成交+缺口补偿+活跃意图，P=成交VWAP+活跃报价+spot 回退） ==============
+        goal = np.zeros(16, dtype=np.float32)
+
+        total_signed_buy = float(signed_buy_qty.sum())
+        total_signed_sell = float(signed_sell_qty.sum())
+        total_active_buy = float(active_buy_qty.sum())
+        total_active_sell = float(active_sell_qty.sum())
+
+        for b in range(n_buckets):
+            base = b * 4
+
+            # Q 目标
+            q_buy = float(signed_buy_qty[b]) + GAP_ALPHA_BUY * float(gap_buy_by_bucket[b])
+            q_sell = float(signed_sell_qty[b]) + GAP_BETA_SELL * float(gap_sell_by_bucket[b])
+
+            # “活跃未成交”弱意图：仅在该侧当天无成交但活跃时注入
+            if total_signed_buy <= 0 and total_active_buy > 0:
+                q_buy += INTENT_SCALE * float(active_buy_qty[b])
+            if total_signed_sell <= 0 and total_active_sell > 0:
+                q_sell += INTENT_SCALE * float(active_sell_qty[b])
+
+            # 价格：成交 VWAP + 活跃报价加权均值（或中位数回退）+ spot
+            deal_vwap_buy = (float(signed_buy_value[b]) / float(signed_buy_qty[b])) if signed_buy_qty[b] > 0 else None
+            deal_vwap_sell = (float(signed_sell_value[b]) / float(signed_sell_qty[b])) if signed_sell_qty[b] > 0 else None
+
+            active_avg_buy = (float(active_buy_value[b]) / float(active_buy_qty[b])) if active_buy_qty[b] > 0 else None
+            active_avg_sell = (float(active_sell_value[b]) / float(active_sell_qty[b])) if active_sell_qty[b] > 0 else None
+
+            if deal_vwap_buy is None and active_avg_buy is not None:
+                active_med = _weighted_median(active_buy_prices[b])
+                if active_med is not None:
+                    active_avg_buy = 0.5 * float(active_avg_buy) + 0.5 * float(active_med)
+
+            if deal_vwap_sell is None and active_avg_sell is not None:
+                active_med = _weighted_median(active_sell_prices[b])
+                if active_med is not None:
+                    active_avg_sell = 0.5 * float(active_avg_sell) + 0.5 * float(active_med)
+
+            # 买侧价格
+            if deal_vwap_buy is not None and active_avg_buy is not None:
+                p_buy = W_SIGNED * deal_vwap_buy + W_ACTIVE * active_avg_buy + W_SPOT * spot_price_in
+            elif deal_vwap_buy is not None:
+                p_buy = (W_SIGNED + W_ACTIVE / 2.0) * deal_vwap_buy + (W_SPOT + W_ACTIVE / 2.0) * spot_price_in
+            elif active_avg_buy is not None:
+                p_buy = (W_ACTIVE + W_SIGNED / 2.0) * active_avg_buy + (W_SPOT + W_SIGNED / 2.0) * spot_price_in
+            else:
+                p_buy = spot_price_in * BUY_FALLBACK_MARGIN
+
+            # 卖侧价格
+            if deal_vwap_sell is not None and active_avg_sell is not None:
+                p_sell = W_SIGNED * deal_vwap_sell + W_ACTIVE * active_avg_sell + W_SPOT * spot_price_out
+            elif deal_vwap_sell is not None:
+                p_sell = (W_SIGNED + W_ACTIVE / 2.0) * deal_vwap_sell + (W_SPOT + W_ACTIVE / 2.0) * spot_price_out
+            elif active_avg_sell is not None:
+                p_sell = (W_ACTIVE + W_SIGNED / 2.0) * active_avg_sell + (W_SPOT + W_SIGNED / 2.0) * spot_price_out
+            else:
+                p_sell = spot_price_out * SELL_FALLBACK_MARGIN
+
+            q_buy = float(max(0.0, q_buy))
+            q_sell = float(max(0.0, q_sell))
+            p_buy = float(max(0.0, p_buy))
+            p_sell = float(max(0.0, p_sell))
+
+            goal[base + 0] = q_buy
+            goal[base + 1] = p_buy
+            goal[base + 2] = q_sell
+            goal[base + 3] = p_sell
+
+        # 不可谈判侧压零（避免学到“不可谈判”的假目标）
+        if can_buy <= 0:
+            for b in range(n_buckets):
+                base = b * 4
+                goal[base + 0] = 0.0
+                goal[base + 1] = 0.0
+        if can_sell <= 0:
+            for b in range(n_buckets):
+                base = b * 4
+                goal[base + 2] = 0.0
+                goal[base + 3] = 0.0
+
+        value = day_log.get('daily_reward', None)
+
         samples.append(MacroSample(
             day=current_step,
             state_static=state_static,
@@ -1021,7 +1237,7 @@ def reconstruct_l2_goals(
             goal=goal,
             value=value
         ))
-    
+
     return samples
 
 
@@ -1067,6 +1283,16 @@ def extract_l3_residuals(
             [h.get('quantity', 0), h.get('price', 0), h.get('delta_t', 0)]
             for h in offer_history
         ], dtype=np.float32)
+
+        # 重要：delta_t 用作离散索引（0..H），必须裁剪到有效范围，避免训练/推理 embedding 越界
+        if history.ndim == 2 and history.shape[1] >= 3:
+            history[:, 2] = np.nan_to_num(
+                history[:, 2],
+                nan=0.0,
+                posinf=float(horizon),
+                neginf=0.0,
+            )
+            history[:, 2] = np.clip(history[:, 2], 0.0, float(horizon))
         
         # 角色
         is_buyer = neg.get('is_buyer', True)
@@ -1150,7 +1376,10 @@ def extract_l3_residuals(
         final_action = neg.get('final_action', {})
         expert_q = final_action.get('quantity', baseline[0])
         expert_p = final_action.get('price', baseline[1])
-        expert_t = final_action.get('delta_t', int(baseline[2]))
+        try:
+            expert_t = int(final_action.get('delta_t', int(baseline[2])) or baseline[2])
+        except Exception:
+            expert_t = int(baseline[2]) if len(baseline) > 2 else 1
         
         # 残差 = 专家动作 - L1 基准
         residual = np.array([
@@ -1250,17 +1479,22 @@ def _find_world_dirs(tournament_dir: str) -> List[str]:
             world_*/              # 如 world_0001
                 agent_*.json      # tracker 事件日志
     """
-    world_dirs = []
+    world_dirs: List[str] = []
+    seen: set[str] = set()
     
     # 模式 1: tracker_logs 目录（hrl_data_runner 默认输出）
-    # 递归搜索所有 tracker_logs 目录
+    # 注意：tracker_logs 目录通常包含多个 world/run 的 agent_*.json。
+    # 为了避免跨 world 混合并提升并行度，这里直接把每个 agent_*.json 当作一个“world 单元”。
+    # 这也与后续 _process_world_dir 对单文件的处理路径对齐。
     tracker_log_dirs = glob.glob(os.path.join(tournament_dir, "**", "tracker_logs"), recursive=True)
     for tracker_dir in tracker_log_dirs:
         if os.path.isdir(tracker_dir):
             # 检查是否包含 agent_*.json
             agent_files = glob.glob(os.path.join(tracker_dir, "agent_*.json"))
-            if agent_files and tracker_dir not in world_dirs:
-                world_dirs.append(tracker_dir)
+            for f in agent_files:
+                if f not in seen:
+                    world_dirs.append(f)
+                    seen.add(f)
     
     # 模式 2: run_default_std 格式（嵌套目录，包含 stats.csv）
     for parent in os.listdir(tournament_dir):
@@ -1275,27 +1509,561 @@ def _find_world_dirs(tournament_dir: str) -> List[str]:
                 # 检查是否有 stats.csv 或 negotiations.csv
                 if (os.path.exists(os.path.join(child_path, "stats.csv")) or
                     os.path.exists(os.path.join(child_path, "negotiations.csv"))):
-                    if child_path not in world_dirs:
+                    if child_path not in seen:
                         world_dirs.append(child_path)
+                        seen.add(child_path)
     
     # 模式 3: 传统 world_* 格式（JSON）
     pattern_dirs = glob.glob(os.path.join(tournament_dir, "**", "world_*"), recursive=True)
     for d in pattern_dirs:
-        if os.path.isdir(d) and d not in world_dirs:
+        if os.path.isdir(d) and d not in seen:
             world_dirs.append(d)
+            seen.add(d)
     
     # 模式 4: 目录根部直接包含 agent_*.json
     agent_files = glob.glob(os.path.join(tournament_dir, "agent_*.json"))
-    if agent_files and tournament_dir not in world_dirs:
-        world_dirs.append(tournament_dir)
+    if agent_files:
+        if os.path.basename(tournament_dir).lower() == "tracker_logs":
+            for f in agent_files:
+                if f not in seen:
+                    world_dirs.append(f)
+                    seen.add(f)
+        else:
+            if tournament_dir not in seen:
+                world_dirs.append(tournament_dir)
+                seen.add(tournament_dir)
     
     return world_dirs
 
+
+_L2_INFER_CACHE: Dict[Tuple[str, int], Any] = {}
+
+
+def _load_l2_model_for_backfill(model_path: str, horizon: int):
+    """加载 L2 模型用于 goal_hat 回填（进程内缓存）。"""
+    key = (os.path.abspath(model_path), int(horizon))
+    if key in _L2_INFER_CACHE:
+        return _L2_INFER_CACHE[key]
+
+    try:
+        import torch  # 延迟导入，避免无 torch 环境下影响数据管道
+    except Exception as exc:
+        raise RuntimeError("goal_hat 回填需要 PyTorch") from exc
+
+    from .l2_manager import HorizonManagerPPO  # 延迟导入，避免循环依赖
+
+    model = HorizonManagerPPO(horizon=int(horizon))
+    state = torch.load(model_path, map_location="cpu")
+    if isinstance(state, dict) and "model_state" in state:
+        state = state["model_state"]
+    model.load_state_dict(state)
+    model.eval()
+
+    _L2_INFER_CACHE[key] = model
+    return model
+
+
+def _predict_goal_hat_by_day(
+    macro_samples: List[MacroSample],
+    *,
+    model_path: str,
+) -> Dict[int, np.ndarray]:
+    """用已训练 L2 对每个 day 的宏观状态预测 goal_hat（16 维）。"""
+    if not macro_samples:
+        return {}
+
+    try:
+        import torch  # 延迟导入
+    except Exception as exc:
+        raise RuntimeError("goal_hat 回填需要 PyTorch") from exc
+
+    horizon = int(macro_samples[0].state_temporal.shape[0] - 1)
+    model = _load_l2_model_for_backfill(model_path, horizon=horizon)
+
+    goal_hat_by_day: Dict[int, np.ndarray] = {}
+    with torch.no_grad():
+        for s in macro_samples:
+            x_static_t = torch.from_numpy(np.asarray(s.state_static, dtype=np.float32)).unsqueeze(0)
+            x_temporal_t = torch.from_numpy(np.asarray(s.state_temporal, dtype=np.float32)).unsqueeze(0)
+            x_role_t = torch.from_numpy(np.asarray(s.x_role, dtype=np.float32)).unsqueeze(0)
+
+            action = model.get_deterministic_action(x_static_t, x_temporal_t, x_role_t)
+            goal_hat = action.squeeze(0).cpu().numpy().astype(np.float32)
+
+            # 与训练掩码一致：不可谈判侧压零，避免将噪声回填给 L3
+            can_buy = float(s.x_role[0]) if hasattr(s.x_role, "__len__") else 1.0
+            can_sell = float(s.x_role[1]) if hasattr(s.x_role, "__len__") else 1.0
+            if can_buy <= 0:
+                goal_hat[[0, 1, 4, 5, 8, 9, 12, 13]] = 0.0
+            if can_sell <= 0:
+                goal_hat[[2, 3, 6, 7, 10, 11, 14, 15]] = 0.0
+
+            goal_hat_by_day[int(s.day)] = goal_hat
+
+    return goal_hat_by_day
+
+
+def _backfill_negotiation_goals(
+    neg_logs: List[Dict[str, Any]],
+    macro_samples: List[MacroSample],
+    *,
+    goal_backfill: str,
+    l2_model_path: Optional[str],
+) -> None:
+    """将 L2 目标回填到谈判日志（用于生成 micro.goal）。"""
+    mode = (goal_backfill or "none").lower().strip()
+    if mode in ("none", "off", "false", "0", ""):
+        return
+    if not neg_logs or not macro_samples:
+        return
+
+    if mode in ("v2", "macro"):
+        by_day = {int(s.day): np.asarray(s.goal, dtype=np.float32) for s in macro_samples}
+    elif mode in ("l2", "goal_hat", "model"):
+        if not l2_model_path:
+            raise ValueError("goal_backfill='l2' 需要提供 l2_model_path")
+        by_day = _predict_goal_hat_by_day(macro_samples, model_path=l2_model_path)
+    else:
+        raise ValueError(f"Unknown goal_backfill mode: {goal_backfill}")
+
+    for neg in neg_logs:
+        try:
+            day = int(neg.get("sim_step", neg.get("day", 0)) or 0)
+        except Exception:
+            day = 0
+        g = by_day.get(day)
+        if g is None:
+            continue
+        neg["l2_goal"] = np.asarray(g, dtype=np.float32).reshape(-1).tolist()
+
+
+def _build_l4_global_feat(
+    goal: np.ndarray,
+    x_static: np.ndarray,
+    *,
+    n_buy: int,
+    n_sell: int,
+    global_feat_dim: int = 30,
+) -> np.ndarray:
+    counts = np.array([n_buy / 10.0, n_sell / 10.0], dtype=np.float32)
+    global_feat = np.concatenate(
+        [np.asarray(goal, dtype=np.float32).reshape(-1), np.asarray(x_static, dtype=np.float32).reshape(-1), counts],
+        axis=0,
+    )
+    if global_feat.shape[0] != global_feat_dim:
+        padded = np.zeros(global_feat_dim, dtype=np.float32)
+        n = min(global_feat_dim, int(global_feat.shape[0]))
+        padded[:n] = global_feat[:n]
+        return padded
+    return global_feat
+
+
+def _extract_l4_distill_samples_for_world(
+    *,
+    daily_states: Dict[int, Dict[str, Any]],
+    neg_logs: List[Dict[str, Any]],
+    macro_samples: List[MacroSample],
+    goal_source: str,
+    l2_model_path: Optional[str],
+    horizon: int = 40,
+    thread_feat_dim: int = 24,
+    global_feat_dim: int = 30,
+) -> List[L4DistillSample]:
+    """从单个 world 的日志中构建 L4 蒸馏样本（按 day 聚合线程集合）。"""
+    if not daily_states or not macro_samples or not neg_logs:
+        return []
+
+    mode = (goal_source or "v2").lower().strip()
+    if mode in ("v2", "macro"):
+        goal_by_day = {int(s.day): np.asarray(s.goal, dtype=np.float32) for s in macro_samples}
+    elif mode in ("l2", "goal_hat", "model"):
+        if not l2_model_path:
+            raise ValueError("goal_source='l2' 需要提供 l2_model_path")
+        goal_by_day = _predict_goal_hat_by_day(macro_samples, model_path=l2_model_path)
+    else:
+        raise ValueError(f"Unknown goal_source: {goal_source}")
+
+    macro_by_day: Dict[int, MacroSample] = {int(s.day): s for s in macro_samples}
+
+    from collections import defaultdict
+
+    negs_by_day: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for neg in neg_logs:
+        if not neg.get("offer_history"):
+            continue
+        try:
+            day = int(neg.get("sim_step", neg.get("day", 0)) or 0)
+        except Exception:
+            day = 0
+        negs_by_day[day].append(neg)
+
+    if not negs_by_day:
+        return []
+
+    from .l4_coordinator import HeuristicL4Coordinator, ThreadState
+
+    l4_teacher = HeuristicL4Coordinator(horizon=horizon)
+    samples: List[L4DistillSample] = []
+
+    for day in sorted(negs_by_day.keys()):
+        if day not in macro_by_day or day not in daily_states:
+            continue
+
+        macro = macro_by_day[day]
+        state = daily_states[day]
+        goal = goal_by_day.get(day)
+        if goal is None:
+            continue
+        goal = np.asarray(goal, dtype=np.float32).reshape(-1)
+        if goal.size != 16 or np.any(np.isnan(goal)):
+            continue
+
+        # day 级公共量：L1 约束、baseline、归一化分母
+        time_mask = compute_time_mask_offline(state, horizon=horizon)
+        Q_safe = compute_q_safe_offline(state, horizon=horizon)
+
+        baseline_buy = compute_l1_baseline_offline(state, is_buying=True, horizon=horizon)
+        baseline_sell = compute_l1_baseline_offline(state, is_buying=False, horizon=horizon)
+
+        n_lines = int(state.get("n_lines", 1) or 1)
+        n_steps = int(state.get("n_steps", 100) or 100)
+        max_inv = max(float(n_lines * n_steps), 1.0)
+        max_price = float(DEFAULT_MAX_PRICE)
+
+        # 构建线程特征（与 agent.py:_build_l4_thread_state 对齐）
+        thread_feats: List[np.ndarray] = []
+        thread_times: List[int] = []
+        thread_roles: List[int] = []
+        thread_ids: List[str] = []
+        thread_states: List[ThreadState] = []
+
+        day_negs = sorted(negs_by_day[day], key=lambda x: str(x.get("id", "")))
+        for idx, neg in enumerate(day_negs):
+            nid = str(neg.get("id", f"{day}_{idx}"))
+            is_buyer = bool(neg.get("is_buyer", True))
+            role = 0 if is_buyer else 1
+            history = neg.get("offer_history", []) or []
+            if not history:
+                continue
+
+            baseline_q, baseline_p, baseline_t = baseline_buy if is_buyer else baseline_sell
+
+            last_delta = None
+            try:
+                last_delta = int(history[-1].get("delta_t", None))
+            except Exception:
+                last_delta = None
+            target_delta = int(last_delta) if last_delta is not None else int(baseline_t)
+            target_delta = int(max(0, min(target_delta, horizon)))
+
+            bucket = delta_to_bucket(target_delta)
+            offset = bucket * 4
+            q_goal = float(goal[offset + (0 if is_buyer else 2)])
+            p_goal = float(goal[offset + (1 if is_buyer else 3)])
+
+            # 从宏观状态取该交期切片（已归一化）
+            X = np.asarray(macro.state_temporal, dtype=np.float32)
+            x_t = X[target_delta] if X.ndim == 2 and target_delta < X.shape[0] else np.zeros((10,), dtype=np.float32)
+
+            n_rounds = len(history)
+            n_rounds_norm = float(min(n_rounds, 20) / 20.0)
+
+            rounds = [h.get("round") for h in history if h.get("round") is not None]
+            if rounds:
+                max_round = max(int(r) for r in rounds if r is not None)
+                rel_time = float(np.clip(max_round / max(max_round + 1, 1), 0.0, 1.0))
+            else:
+                rel_time = float(np.clip(n_rounds_norm, 0.0, 1.0))
+
+            last_price_gap = 0.0
+            last_qty_gap = 0.0
+            last = history[-1]
+            try:
+                last_price = float(last.get("price", 0) or 0)
+                last_qty = float(last.get("quantity", 0) or 0)
+            except Exception:
+                last_price = 0.0
+                last_qty = 0.0
+            if p_goal > 0:
+                last_price_gap = (last_price - p_goal) / max(max_price, 1.0)
+            if q_goal > 0:
+                last_qty_gap = (last_qty - q_goal) / max(max_inv, 1.0)
+
+            urgency = 1.0 / (target_delta + 1.0)
+            market_pressure = float(x_t[9] if is_buyer else x_t[8])
+            closeness = 1.0 / (1.0 + abs(last_price_gap) * 5.0)
+            priority = 1.0 + 0.5 * urgency + 0.5 * market_pressure + 0.5 * rel_time + 0.5 * closeness
+            priority = float(np.clip(priority, 0.1, 3.0))
+
+            feat = np.zeros(thread_feat_dim, dtype=np.float32)
+            feat[0] = float(priority)
+            feat[1] = float(target_delta / max(horizon, 1))
+            feat[2] = 1.0 if target_delta < len(time_mask) and float(time_mask[target_delta]) > -np.inf else 0.0
+            feat[3] = float((Q_safe[target_delta] / max_inv) if is_buyer and target_delta < len(Q_safe) else 0.0)
+            feat[4] = float(float(baseline_q) / max_inv)
+            feat[5] = float(float(baseline_p) / max(max_price, 1.0))
+            feat[6] = float(float(goal[offset + 0]) / max_inv)
+            feat[7] = float(float(goal[offset + 2]) / max_inv)
+            feat[8] = float(float(goal[offset + 1]) / max(max_price, 1.0))
+            feat[9] = float(float(goal[offset + 3]) / max(max_price, 1.0))
+            feat[10] = float(n_rounds_norm)
+            feat[11] = float(rel_time)
+            feat[12] = float(np.clip(last_price_gap, -2.0, 2.0))
+            feat[13] = float(np.clip(last_qty_gap, -2.0, 2.0))
+            feat[14:24] = x_t[:10].astype(np.float32)
+
+            thread_ids.append(nid)
+            thread_feats.append(feat)
+            thread_times.append(target_delta)
+            thread_roles.append(role)
+            thread_states.append(
+                ThreadState(
+                    thread_id=nid,
+                    thread_feat=feat,
+                    target_time=target_delta,
+                    role=role,
+                    priority=priority,
+                )
+            )
+
+        if not thread_states:
+            continue
+
+        n_buy = sum(1 for r in thread_roles if r == 0)
+        n_sell = len(thread_roles) - n_buy
+        global_feat = _build_l4_global_feat(goal, macro.state_static, n_buy=n_buy, n_sell=n_sell, global_feat_dim=global_feat_dim)
+
+        l4_out = l4_teacher.compute(thread_states, global_feat)
+        teacher = np.asarray(l4_out.weights, dtype=np.float32).reshape(-1)
+        if teacher.size != len(thread_states) or not np.isfinite(teacher).all():
+            continue
+        s = float(teacher.sum())
+        if s <= 0:
+            teacher = np.full_like(teacher, 1.0 / max(len(teacher), 1))
+
+        samples.append(
+            L4DistillSample(
+                day=int(day),
+                global_feat=global_feat.astype(np.float32),
+                thread_feats=np.stack(thread_feats).astype(np.float32),
+                thread_times=np.asarray(thread_times, dtype=np.int64),
+                thread_roles=np.asarray(thread_roles, dtype=np.int64),
+                teacher_weights=teacher.astype(np.float32),
+                thread_ids=thread_ids,
+            )
+        )
+
+    return samples
+
+
+def _process_world_dir_l4(
+    world_dir: str,
+    agent_name: str,
+    strict_json_only: bool,
+    goal_source: str = "l2",
+    l2_model_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """处理单个 world 目录，提取 L4 蒸馏数据（用于多进程并行）。"""
+    result: Dict[str, Any] = {
+        "world_dir": world_dir,
+        "l4_samples": [],
+        "used_tracker": False,
+        "used_csv": False,
+        "skipped_csv": False,
+        "has_tracker": False,
+        "has_csv": False,
+        "error": None,
+    }
+    try:
+        # 模式 1：直接传入单个 Tracker JSON 文件（常见于 hrl_data_runner 的 tracker_logs 拆分）
+        if (
+            os.path.isfile(world_dir)
+            and os.path.basename(world_dir).lower().startswith("agent_")
+            and world_dir.lower().endswith(".json")
+        ):
+            result["has_tracker"] = True
+            result["has_csv"] = False
+
+            try:
+                with open(world_dir, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as exc:
+                result["error"] = f"{type(exc).__name__}: {exc}"
+                return result
+
+            agent_aliases = _extract_agent_type_aliases(data)
+            if not _agent_type_matches_any(agent_name, agent_aliases):
+                return result
+
+            daily_states = _extract_daily_states_from_tracker_data(data)
+            entries = data.get("entries", []) or []
+            neg_logs = _parse_tracker_entries(entries, agent_name) if entries else []
+            offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+            if daily_states:
+                daily_logs = _daily_states_to_logs(
+                    daily_states,
+                    agent_name,
+                    offers_snapshot_by_day=offers_snapshot_by_day,
+                )
+                macro_samples = reconstruct_l2_goals(daily_logs)
+            else:
+                macro_samples = []
+
+            result["l4_samples"] = _extract_l4_distill_samples_for_world(
+                daily_states=daily_states,
+                neg_logs=neg_logs,
+                macro_samples=macro_samples,
+                goal_source=goal_source,
+                l2_model_path=l2_model_path,
+            )
+            result["used_tracker"] = True
+            return result
+
+        has_tracker = len(glob.glob(os.path.join(world_dir, "agent_*.json"))) > 0
+        has_csv = os.path.exists(os.path.join(world_dir, "stats.csv"))
+        result["has_tracker"] = has_tracker
+        result["has_csv"] = has_csv
+
+        if has_tracker:
+            # 同 load_tournament_data：tracker_logs 可能包含多个 world/run，按文件拆分，避免跨 world 混合。
+            if os.path.basename(world_dir).lower() == "tracker_logs":
+                l4_samples: List[L4DistillSample] = []
+                for _, data in _iter_tracker_json_files(world_dir, agent_name):
+                    daily_states = _extract_daily_states_from_tracker_data(data)
+                    entries = data.get("entries", []) or []
+                    neg_logs = _parse_tracker_entries(entries, agent_name) if entries else []
+                    offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+                    if daily_states:
+                        daily_logs = _daily_states_to_logs(
+                            daily_states,
+                            agent_name,
+                            offers_snapshot_by_day=offers_snapshot_by_day,
+                        )
+                        macro_samples = reconstruct_l2_goals(daily_logs)
+                    else:
+                        macro_samples = []
+
+                    l4_samples.extend(
+                        _extract_l4_distill_samples_for_world(
+                            daily_states=daily_states,
+                            neg_logs=neg_logs,
+                            macro_samples=macro_samples,
+                            goal_source=goal_source,
+                            l2_model_path=l2_model_path,
+                        )
+                    )
+
+                result["l4_samples"] = l4_samples
+                result["used_tracker"] = True
+
+            else:
+                daily_states = _load_daily_states_from_tracker(world_dir, agent_name)
+                neg_logs = _load_negotiation_logs(world_dir, agent_name)
+                offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+                if daily_states:
+                    daily_logs = _daily_states_to_logs(
+                        daily_states,
+                        agent_name,
+                        offers_snapshot_by_day=offers_snapshot_by_day,
+                    )
+                    macro_samples = reconstruct_l2_goals(daily_logs)
+                else:
+                    macro_samples = []
+
+                result["l4_samples"] = _extract_l4_distill_samples_for_world(
+                    daily_states=daily_states,
+                    neg_logs=neg_logs,
+                    macro_samples=macro_samples,
+                    goal_source=goal_source,
+                    l2_model_path=l2_model_path,
+                )
+                result["used_tracker"] = True
+        elif has_csv:
+            if strict_json_only:
+                result["skipped_csv"] = True
+                return result
+            stats = load_stats_csv(world_dir, agent_name)
+            contracts = load_contracts(world_dir)
+            daily_logs = _organize_by_day(stats, contracts, agent_name)
+            macro_samples = reconstruct_l2_goals(daily_logs)
+            daily_states = {int(d["current_step"]): d for d in daily_logs}
+            neg_logs = _load_negotiation_logs_csv(world_dir, agent_name)
+            result["l4_samples"] = _extract_l4_distill_samples_for_world(
+                daily_states=daily_states,
+                neg_logs=neg_logs,
+                macro_samples=macro_samples,
+                goal_source=goal_source,
+                l2_model_path=l2_model_path,
+            )
+            result["used_csv"] = True
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def load_l4_distill_data(
+    tournament_dir: str,
+    agent_name: str = "LitaAgent",
+    strict_json_only: bool = True,
+    num_workers: Optional[int] = None,
+    goal_source: str = "l2",
+    l2_model_path: Optional[str] = None,
+) -> List[L4DistillSample]:
+    """从锦标赛目录加载 L4 蒸馏训练数据。"""
+    world_dirs = _find_world_dirs(tournament_dir)
+    if not world_dirs:
+        print(f"[WARN] No world directories found in {tournament_dir}")
+        return []
+
+    if num_workers is None:
+        cpu_cnt = os.cpu_count() or 1
+        num_workers = max(1, cpu_cnt - 1)
+    num_workers = min(num_workers, len(world_dirs))
+
+    l4_samples: List[L4DistillSample] = []
+    errors: List[Tuple[str, str]] = []
+
+    def _merge(result: Dict[str, Any]) -> None:
+        l4_samples.extend(result.get("l4_samples", []))
+        if result.get("error"):
+            errors.append((result.get("world_dir", ""), result["error"]))
+
+    if num_workers <= 1:
+        for world_dir in world_dirs:
+            _merge(_process_world_dir_l4(world_dir, agent_name, strict_json_only, goal_source=goal_source, l2_model_path=l2_model_path))
+    else:
+        print(f"[INFO] Using {num_workers} workers for L4 distill data pipeline")
+        ctx = mp.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
+            results_iter = executor.map(
+                _process_world_dir_l4,
+                world_dirs,
+                itertools.repeat(agent_name),
+                itertools.repeat(strict_json_only),
+                itertools.repeat(goal_source),
+                itertools.repeat(l2_model_path),
+                chunksize=1,
+            )
+            for r in results_iter:
+                _merge(r)
+
+    if errors:
+        print(f"[WARN] {len(errors)} world(s) failed to parse for L4 distill")
+        for world_dir, err in errors[:10]:
+            print(f"  - {world_dir}: {err}")
+
+    print(f"[INFO] Extracted {len(l4_samples)} L4 distill samples")
+    return l4_samples
 
 def _process_world_dir(
     world_dir: str,
     agent_name: str,
     strict_json_only: bool,
+    goal_backfill: str = "none",
+    l2_model_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """处理单个 world 目录（用于多进程并行）."""
     result: Dict[str, Any] = {
@@ -1310,6 +2078,53 @@ def _process_world_dir(
         'error': None,
     }
     try:
+        # 模式 1：直接传入单个 Tracker JSON 文件（常见于 hrl_data_runner 的 tracker_logs 拆分）
+        if (
+            os.path.isfile(world_dir)
+            and os.path.basename(world_dir).lower().startswith("agent_")
+            and world_dir.lower().endswith(".json")
+        ):
+            result["has_tracker"] = True
+            result["has_csv"] = False
+
+            try:
+                with open(world_dir, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as exc:
+                result["error"] = f"{type(exc).__name__}: {exc}"
+                return result
+
+            agent_aliases = _extract_agent_type_aliases(data)
+            if not _agent_type_matches_any(agent_name, agent_aliases):
+                return result
+
+            daily_states = _extract_daily_states_from_tracker_data(data)
+            entries = data.get("entries", []) or []
+            neg_logs = _parse_tracker_entries(entries, agent_name) if entries else []
+            offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+            if daily_states:
+                daily_logs = _daily_states_to_logs(
+                    daily_states,
+                    agent_name,
+                    offers_snapshot_by_day=offers_snapshot_by_day,
+                )
+                macro_samples = reconstruct_l2_goals(daily_logs)
+            else:
+                macro_samples = []
+
+            _backfill_negotiation_goals(
+                neg_logs,
+                macro_samples,
+                goal_backfill=goal_backfill,
+                l2_model_path=l2_model_path,
+            )
+
+            result["macro_samples"].extend(macro_samples)
+            result["micro_samples"].extend(extract_l3_residuals(neg_logs, daily_states=daily_states))
+            result["used_tracker"] = True
+            return result
+
         # 判断数据格式优先级：Tracker JSON > CSV
         # 注意：弃用 world_stats.json/negotiations.json，因为没有生成器
         # Tracker JSON 提供完整精确的状态和谈判数据
@@ -1321,20 +2136,58 @@ def _process_world_dir(
         
         if has_tracker:
             # Tracker JSON 优先（完整精确的状态数据）
-            daily_states = _load_daily_states_from_tracker(world_dir, agent_name)
-            neg_logs = _load_negotiation_logs(world_dir, agent_name)
-            offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
-            
-            if daily_states:
-                daily_logs = _daily_states_to_logs(
-                    daily_states,
-                    agent_name,
-                    offers_snapshot_by_day=offers_snapshot_by_day,
+            # hrl_data_runner 的 tracker_logs 目录可能包含多个 world/run 的 agent_*.json，必须按文件拆分处理。
+            if os.path.basename(world_dir).lower() == "tracker_logs":
+                for _, data in _iter_tracker_json_files(world_dir, agent_name):
+                    daily_states = _extract_daily_states_from_tracker_data(data)
+                    entries = data.get("entries", []) or []
+                    neg_logs = _parse_tracker_entries(entries, agent_name) if entries else []
+                    offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+                    if daily_states:
+                        daily_logs = _daily_states_to_logs(
+                            daily_states,
+                            agent_name,
+                            offers_snapshot_by_day=offers_snapshot_by_day,
+                        )
+                        macro_samples = reconstruct_l2_goals(daily_logs)
+                    else:
+                        macro_samples = []
+
+                    _backfill_negotiation_goals(
+                        neg_logs,
+                        macro_samples,
+                        goal_backfill=goal_backfill,
+                        l2_model_path=l2_model_path,
+                    )
+
+                    result["macro_samples"].extend(macro_samples)
+                    result["micro_samples"].extend(extract_l3_residuals(neg_logs, daily_states=daily_states))
+
+                result["used_tracker"] = True
+
+            else:
+                daily_states = _load_daily_states_from_tracker(world_dir, agent_name)
+                neg_logs = _load_negotiation_logs(world_dir, agent_name)
+                offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+                if daily_states:
+                    daily_logs = _daily_states_to_logs(
+                        daily_states,
+                        agent_name,
+                        offers_snapshot_by_day=offers_snapshot_by_day,
+                    )
+                    result["macro_samples"].extend(reconstruct_l2_goals(daily_logs))
+
+                _backfill_negotiation_goals(
+                    neg_logs,
+                    result["macro_samples"],
+                    goal_backfill=goal_backfill,
+                    l2_model_path=l2_model_path,
                 )
-                result['macro_samples'].extend(reconstruct_l2_goals(daily_logs))
-            
-            result['micro_samples'].extend(extract_l3_residuals(neg_logs, daily_states=daily_states))
-            result['used_tracker'] = True
+
+                result["micro_samples"].extend(extract_l3_residuals(neg_logs, daily_states=daily_states))
+                result["used_tracker"] = True
         elif has_csv:
             if strict_json_only:
                 result['skipped_csv'] = True
@@ -1360,6 +2213,14 @@ def _process_world_dir(
                 }
             
             neg_logs = _load_negotiation_logs_csv(world_dir, agent_name)
+
+            _backfill_negotiation_goals(
+                neg_logs,
+                result['macro_samples'],
+                goal_backfill=goal_backfill,
+                l2_model_path=l2_model_path,
+            )
+
             result['micro_samples'].extend(extract_l3_residuals(neg_logs, daily_states=daily_states))
             result['used_csv'] = True
     except Exception as exc:
@@ -1372,6 +2233,8 @@ def load_tournament_data(
     agent_name: str = "LitaAgent",
     strict_json_only: bool = True,
     num_workers: Optional[int] = None,
+    goal_backfill: str = "none",
+    l2_model_path: Optional[str] = None,
 ) -> Tuple[List[MacroSample], List[MicroSample]]:
     """从锦标赛目录加载训练数据.
     
@@ -1388,6 +2251,11 @@ def load_tournament_data(
             - True: 跳过所有 CSV 目录，确保训练数据质量
             - False: 允许 CSV 降级（仅用于调试）
         num_workers: 并行进程数（默认自动，<=1 则串行）
+        goal_backfill: micro.goal 的回填来源（默认 "none"）
+            - "none": 不回填，依赖日志自带 l2_goal（通常为空/旧版本为 0）
+            - "v2": 用 reconstruct_l2_goals() 的 v2 标签按 day 回填到谈判日志
+            - "l2": 用已训练 L2 模型预测 goal_hat 后按 day 回填到谈判日志（推荐）
+        l2_model_path: 当 goal_backfill="l2" 时使用的 L2 权重路径（torch state_dict 或 checkpoint）
         
     Returns:
         (macro_samples, micro_samples)
@@ -1432,7 +2300,13 @@ def load_tournament_data(
     
     if num_workers <= 1:
         for world_dir in world_dirs:
-            result = _process_world_dir(world_dir, agent_name, strict_json_only)
+            result = _process_world_dir(
+                world_dir,
+                agent_name,
+                strict_json_only,
+                goal_backfill=goal_backfill,
+                l2_model_path=l2_model_path,
+            )
             _merge_result(result)
     else:
         print(f"[INFO] Using {num_workers} workers for data pipeline")
@@ -1446,6 +2320,8 @@ def load_tournament_data(
                 world_dirs,
                 itertools.repeat(agent_name),
                 itertools.repeat(strict_json_only),
+                itertools.repeat(goal_backfill),
+                itertools.repeat(l2_model_path),
                 chunksize=1,
             )
             for result in results_iter:
@@ -1720,6 +2596,113 @@ def _load_daily_states_from_tracker(
     return merged_daily_states
 
 
+def _iter_tracker_json_files(
+    world_dir: str,
+    agent_name: str,
+) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """遍历目录下匹配的 Tracker JSON 文件并返回 (path, json_data)。"""
+    tracker_files = glob.glob(os.path.join(world_dir, "agent_*.json"))
+    for tracker_file in tracker_files:
+        try:
+            with open(tracker_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        agent_aliases = _extract_agent_type_aliases(data)
+        if not _agent_type_matches_any(agent_name, agent_aliases):
+            continue
+
+        yield tracker_file, data
+
+
+def _extract_daily_states_from_tracker_data(data: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+    """从单个 Tracker JSON（单次仿真运行）中提取 daily_states（按 day）。
+
+    注意：hrl_data_runner 的 tracker_logs 目录可能包含多个 world/run 的 `agent_*.json`。
+    对这种目录必须按文件（run）拆分处理，不能把多个文件合并到同一个 daily_states，
+    否则会发生跨 world 的 day 覆盖与数据混合。
+    """
+    daily_states: Dict[int, Dict[str, Any]] = {}
+    contract_events: List[Dict[str, Any]] = []
+
+    entries = data.get("entries", []) or []
+    for entry in entries:
+        category = entry.get("category", "")
+        event_type = entry.get("event", "")
+
+        if event_type == "daily_status":
+            day = int(entry.get("day", 0) or 0)
+            entry_data = entry.get("data", {}) or {}
+
+            daily_states[day] = {
+                "balance": float(entry_data.get("balance", 10000)),
+                "initial_balance": float(entry_data.get("initial_balance", 10000)),
+                "inventory": {
+                    "input": int(entry_data.get("inventory_input", 0)),
+                    "output": int(entry_data.get("inventory_output", 0)),
+                },
+                "n_steps": int(entry_data.get("n_steps", 100)),
+                "current_step": day,
+                "n_lines": int(entry_data.get("n_lines", 1)),
+                "spot_price_in": float(entry_data.get("spot_price_in", 10.0)),
+                "spot_price_out": float(entry_data.get("spot_price_out", 20.0)),
+                "trading_prices": entry_data.get("trading_prices", []),
+                "my_input_product": int(entry_data.get("my_input_product", 0)),
+                "my_output_product": int(entry_data.get("my_output_product", 1)),
+                "n_products": int(entry_data.get("n_products", entry_data.get("my_output_product", 1) + 1)),
+                "commitments": entry_data.get("commitments", {}),
+                "production_cost": float(entry_data.get("production_cost", 1.0)),
+                "disposal_cost": float(entry_data.get("disposal_cost", 0)),
+                "shortfall_penalty": float(entry_data.get("shortfall_penalty", 0)),
+                "storage_cost": float(entry_data.get("storage_cost", 0)),
+                "needed_supplies": int(entry_data.get("needed_supplies", 0)),
+                "needed_sales": int(entry_data.get("needed_sales", 0)),
+                "total_supplies": int(entry_data.get("total_supplies", 0)),
+                "total_sales": int(entry_data.get("total_sales", 0)),
+                "offers_snapshot": entry_data.get("offers_snapshot", {"buy": [], "sell": []}),
+                "deals": [],
+            }
+
+        elif event_type == "contract_signed" or (category == "contract" and event_type == "signed"):
+            entry_data = entry.get("data", {}) or {}
+            role = entry_data.get("role", None)
+            if role in ("seller", "buyer"):
+                is_seller = (role == "seller")
+            else:
+                is_seller = bool(entry_data.get("is_seller", False))
+            contract_events.append(
+                {
+                    "day": int(entry.get("day", 0) or 0),
+                    "quantity": int(entry_data.get("quantity", 0) or 0),
+                    "price": float(entry_data.get("price", 0) or 0),
+                    "delivery_time": int(
+                        entry_data.get(
+                            "delivery_day",
+                            entry_data.get("delivery_time", entry_data.get("time", 0)),
+                        )
+                        or 0
+                    ),
+                    "is_seller": is_seller,
+                }
+            )
+
+    for contract in contract_events:
+        day = int(contract["day"])
+        if day not in daily_states:
+            continue
+        daily_states[day]["deals"].append(
+            {
+                "quantity": contract["quantity"],
+                "price": contract["price"],
+                "delivery_time": contract["delivery_time"],
+                "is_buying": not contract["is_seller"],
+            }
+        )
+
+    return daily_states
+
+
 def _daily_states_to_logs(
     daily_states: Dict[int, Dict[str, Any]],
     agent_name: str,
@@ -1773,6 +2756,11 @@ def _daily_states_to_logs(
             'production_cost': state.get('production_cost', 1.0),
             'spot_price_in': state.get('spot_price_in', 10.0),
             'spot_price_out': state.get('spot_price_out', 20.0),
+            # 需求/缺口信号（用于 L2 v2 标签缺口补偿）
+            'needed_supplies': state.get('needed_supplies', 0),
+            'needed_sales': state.get('needed_sales', 0),
+            'total_supplies': state.get('total_supplies', 0),
+            'total_sales': state.get('total_sales', 0),
             'commitments': commitments,
             'pending_contracts': {
                 'buy_qty': pending_buy_qty,
@@ -2517,16 +3505,83 @@ def load_samples(
     return macro_samples, micro_samples
 
 
+def save_l4_samples(
+    l4_samples: List[L4DistillSample],
+    output_dir: str,
+) -> None:
+    """保存 L4 蒸馏样本到文件（变长 K 使用 object 数组）。"""
+    os.makedirs(output_dir, exist_ok=True)
+    if not l4_samples:
+        return
+
+    l4_data = {
+        "days": np.array([s.day for s in l4_samples], dtype=np.int32),
+        "global_feats": np.stack([np.asarray(s.global_feat, dtype=np.float32) for s in l4_samples]),
+        "thread_feats": np.array([np.asarray(s.thread_feats, dtype=np.float32) for s in l4_samples], dtype=object),
+        "thread_times": np.array([np.asarray(s.thread_times, dtype=np.int64) for s in l4_samples], dtype=object),
+        "thread_roles": np.array([np.asarray(s.thread_roles, dtype=np.int64) for s in l4_samples], dtype=object),
+        "teacher_weights": np.array([np.asarray(s.teacher_weights, dtype=np.float32) for s in l4_samples], dtype=object),
+        "thread_ids": np.array([s.thread_ids for s in l4_samples], dtype=object),
+    }
+    np.savez(os.path.join(output_dir, "l4_samples.npz"), **l4_data)
+
+
+def load_l4_samples(data_dir: str) -> List[L4DistillSample]:
+    """从文件加载 L4 蒸馏样本。"""
+    path = os.path.join(data_dir, "l4_samples.npz")
+    if not os.path.exists(path):
+        return []
+
+    data = np.load(path, allow_pickle=True)
+    days = data.get("days", np.array([], dtype=np.int32))
+    global_feats = data.get("global_feats", None)
+    thread_feats = data.get("thread_feats", None)
+    thread_times = data.get("thread_times", None)
+    thread_roles = data.get("thread_roles", None)
+    teacher_weights = data.get("teacher_weights", None)
+    thread_ids = data.get("thread_ids", None)
+
+    samples: List[L4DistillSample] = []
+    for i in range(len(days)):
+        gf = global_feats[i] if global_feats is not None else np.zeros((30,), dtype=np.float32)
+        tf = thread_feats[i] if thread_feats is not None else np.zeros((1, 24), dtype=np.float32)
+        tt = thread_times[i] if thread_times is not None else np.zeros((tf.shape[0],), dtype=np.int64)
+        tr = thread_roles[i] if thread_roles is not None else np.zeros((tf.shape[0],), dtype=np.int64)
+        tw = teacher_weights[i] if teacher_weights is not None else np.full((tf.shape[0],), 1.0 / max(tf.shape[0], 1), dtype=np.float32)
+        ids = thread_ids[i] if thread_ids is not None else None
+
+        samples.append(
+            L4DistillSample(
+                day=int(days[i]),
+                global_feat=np.asarray(gf, dtype=np.float32),
+                thread_feats=np.asarray(tf, dtype=np.float32),
+                thread_times=np.asarray(tt, dtype=np.int64),
+                thread_roles=np.asarray(tr, dtype=np.int64),
+                teacher_weights=np.asarray(tw, dtype=np.float32),
+                thread_ids=list(ids) if ids is not None else None,
+            )
+        )
+
+    return samples
+
+
 __all__ = [
     "MacroSample",
     "MicroSample",
+    "L4DistillSample",
     "reconstruct_l2_goals",
     "extract_l3_residuals",
     "load_tournament_data",
+    "load_l4_distill_data",
     "save_samples",
     "load_samples",
+    "save_l4_samples",
+    "load_l4_samples",
     "extract_macro_state",
     "delta_to_bucket",
+    "delta_to_bucket_soft",
+    "compute_q_safe_offline",
+    "compute_time_mask_offline",
     "compute_l1_baseline_offline",
     "build_role_embedding",
 ]

@@ -357,8 +357,8 @@ class L1Output:
     C_total: np.ndarray         # 库容向量
 
 
-class TemporalSafetyShield:
-    """L1 时序安全护盾"""
+class L1SafetyLayer:
+    """L1 安全层（时序 ATP + clip_action）"""
     
     def __init__(self, horizon: int = 40, reserve: float = 1000.0):
         self.horizon = horizon
@@ -820,7 +820,10 @@ class TemporalDecisionTransformer(nn.Module):
 
 ### 8.1 核心职责
 
-L4 是**并发协调器**，处理多个谈判线程之间的资源冲突，通过注意力权重调节各 L3 实例的激进程度。
+L4 是**并发协调器**，处理多个谈判线程之间的资源冲突。与“只做残差缩放”的旧设想相比，当前实现更强调 **作用点前移** 与 **顺序无关**：
+- 输出连续权重 $\\alpha$（softmax，线程数可变）作为**全局调度信号**；
+- 在生成报价时（尤其买侧）按 $\\alpha$ 从高到低对各线程候选动作逐一做 `clip_action`，并动态扣减剩余 `B_free/Q_safe`（动态预留，不做固定切块），避免单线程独占全局资源；
+- 每次决策先收集全部活跃线程特征，统一计算一次 L4 并缓存复用，减少回调顺序导致的差异。
 
 ### 8.2 时空注意力机制
 
@@ -834,6 +837,10 @@ Attention(Q, K, V) = Softmax((QK^T / √d_k) + M_time) V
 
 ### 8.3 PyTorch 实现
 
+> 说明（与代码实现对齐）：L4 不再直接输入 L3 的 latent/隐状态，而是输入**可离线重建的显式特征**：  
+> - `thread_feat`：每个 negotiation 的线程特征（交期切片的 `X_temporal[δ]`、L1/L2 约束、谈判进度/报价偏差等）  
+> - `global_feat`：全局上下文（如 `goal_hat`、`x_static`、活跃线程数等）
+
 ```python
 class GlobalCoordinator(nn.Module):
     """L4 全局协调层 - 时空注意力网络"""
@@ -843,6 +850,8 @@ class GlobalCoordinator(nn.Module):
         d_model: int = 64,
         n_heads: int = 4,
         horizon: int = 40,
+        thread_feat_dim: int = 24,
+        global_feat_dim: int = 30,
     ):
         super().__init__()
         
@@ -850,10 +859,10 @@ class GlobalCoordinator(nn.Module):
         self.horizon = horizon
         
         # 全局状态编码
-        self.global_encoder = nn.Linear(16, d_model)  # L2 目标作为全局上下文
+        self.global_encoder = nn.Linear(global_feat_dim, d_model)  # 全局上下文特征
         
-        # 线程隐状态投影
-        self.thread_proj = nn.Linear(128, d_model)  # 假设 L3 输出 128 维
+        # 线程特征投影
+        self.thread_proj = nn.Linear(thread_feat_dim, d_model)
         
         # 时间嵌入 (H+1 维，支持 δt ∈ {0, 1, ..., H})
         self.time_embed = nn.Embedding(horizon + 1, d_model)
@@ -876,23 +885,24 @@ class GlobalCoordinator(nn.Module):
             nn.Sigmoid()
         )
     
-    def forward(self, thread_states, thread_times, thread_roles, global_state):
+    def forward(self, thread_feats, thread_times, thread_roles, global_feat, thread_mask=None):
         """
         Args:
-            thread_states: (B, K, 128) - K 个线程的 L3 隐状态
+            thread_feats: (B, K, thread_feat_dim) - K 个线程的线程特征
             thread_times: (B, K) - 每个线程的意向交货时间
             thread_roles: (B, K) - 每个线程的角色
-            global_state: (B, 16) - L2 目标向量
+            global_feat: (B, global_feat_dim) - 全局上下文特征
+            thread_mask: (B, K) - True=有效线程，False=padding（可选）
         
         Returns:
             weights: (B, K) - 线程重要性权重
             gated_states: (B, K, d_model) - 门控后的状态
         """
-        B, K, _ = thread_states.shape
+        B, K, _ = thread_feats.shape
         n_heads = self.mha.num_heads
         
         # 1. 投影线程状态
-        h = self.thread_proj(thread_states)  # (B, K, d)
+        h = self.thread_proj(thread_feats)  # (B, K, d)
         
         # 2. 添加时间嵌入
         t_emb = self.time_embed(thread_times.long())  # (B, K, d)
@@ -903,7 +913,7 @@ class GlobalCoordinator(nn.Module):
         h = h + r_emb
         
         # 4. 全局上下文作为 Query
-        q = self.global_encoder(global_state).unsqueeze(1)  # (B, 1, d)
+        q = self.global_encoder(global_feat).unsqueeze(1)  # (B, 1, d)
         q = q.expand(-1, K, -1)  # (B, K, d)
         
         # 5. 构建时间偏置掩码
@@ -1032,96 +1042,50 @@ def composite_reward(
 
 ## 10. 数据工程与取证流水线
 
-### 10.1 时序目标重构 (L2 标签)
+### 10.1 时序目标重构（L2 标签，v2 口径）
 
 ```python
-def reconstruct_l2_goals(daily_logs: List[dict], n_buckets: int = 4) -> List[dict]:
+def reconstruct_l2_goals(daily_logs: List[dict], n_buckets: int = 4) -> List["MacroSample"]:
     """
-    从日志中反推 L2 的 16 维目标向量
-    
-    Returns:
-        List of {state, goal_16d}
+    从日志中反推 L2 的 16 维目标向量（v2，保持 16 维，降低稀疏/噪声）。
+
+    v2 标签要点：
+    - 交易量目标 Q = 成交（软分桶） + 缺口补偿（needed_supplies/needed_sales） + “活跃未成交”弱意图（offers_snapshot）
+    - 价格目标 P = 成交 VWAP + 活跃报价加权均值/中位数 + spot 回退（买 0.95、卖 1.05），避免 max/min 噪声
+    - 不可谈判侧（x_role）目标压零，避免生成“不可谈判”的假目标
+
+    说明：
+    - daily_logs 需包含：deals、offers_snapshot、needed_supplies/needed_sales、spot_price_in/out 等字段
+    - 详见实现：litaagent_std/hrl_xf/data_pipeline.py:reconstruct_l2_goals
     """
-    bucket_ranges = [(0, 2), (3, 7), (8, 14), (15, 40)]
-    samples = []
-    
-    for day_log in daily_logs:
-        state = extract_macro_state(day_log)
-        
-        # 初始化 16 维目标
-        goal = np.zeros(16, dtype=np.float32)
-        
-        # 按交货日期分类统计成交
-        for deal in day_log['deals']:
-            delta = deal['delivery_time'] - day_log['current_step']
-            
-            # 确定桶索引
-            bucket_idx = 3  # 默认长期
-            for i, (lo, hi) in enumerate(bucket_ranges):
-                if lo <= delta <= hi:
-                    bucket_idx = i
-                    break
-            
-            # 更新目标
-            base = bucket_idx * 4
-            if deal['is_buying']:
-                goal[base + 0] += deal['quantity']  # Q_buy
-                goal[base + 1] = max(goal[base + 1], deal['price'])  # P_buy (max)
-            else:
-                goal[base + 2] += deal['quantity']  # Q_sell
-                if goal[base + 3] == 0:
-                    goal[base + 3] = deal['price']
-                else:
-                    goal[base + 3] = min(goal[base + 3], deal['price'])  # P_sell (min)
-        
-        samples.append({'state': state, 'goal': goal})
-    
-    return samples
+    ...
 ```
 
 ### 10.2 L3 残差标签提取
 
 ```python
 def compute_time_mask_offline(
-    current_step: int,
-    horizon: int,
-    inventory: int,
-    pending_delivery: np.ndarray,
-    pending_commitments: np.ndarray,
+    state_dict: dict,
+    horizon: int = 40,
     min_tradable_qty: float = 1.0,
 ) -> np.ndarray:
     """
-    离线计算 time_mask，基于 Q_safe 公式重建 L1 安全约束。
-    
-    Args:
-        current_step: 当前步骤
-        horizon: 总步数 (H)
-        inventory: 当前库存
-        pending_delivery: 未来采购到货数组
-        pending_commitments: 未来销售承诺数组
-        min_tradable_qty: 最小可交易量阈值
-    
-    Returns:
-        time_mask: (H+1,) 形状，0.0 表示允许，-inf 表示禁止
+    从日志状态离线计算 time_mask（与 L1SafetyLayer 逻辑一致）。
+
+    实现要点：
+    - 先用 compute_q_safe_offline(state_dict, horizon) 得到 Q_safe（H+1）
+    - 再用阈值生成 mask：time_mask = 0 / -inf（用于 L3 的 Masked Softmax）
+
+    详见实现：litaagent_std/hrl_xf/data_pipeline.py:compute_time_mask_offline
     """
-    H_plus_1 = horizon - current_step + 1
-    time_mask = np.zeros(H_plus_1, dtype=np.float32)
-    
-    for delta in range(H_plus_1):
-        # Q_safe = inventory + sum(pending_delivery[:delta]) - sum(pending_commitments[:delta])
-        cumulative_delivery = np.sum(pending_delivery[:delta]) if delta > 0 else 0
-        cumulative_commitment = np.sum(pending_commitments[:delta]) if delta > 0 else 0
-        Q_safe = inventory + cumulative_delivery - cumulative_commitment
-        
-        if Q_safe < min_tradable_qty:
-            time_mask[delta] = -np.inf
-    
-    return time_mask
+    Q_safe = compute_q_safe_offline(state_dict, horizon=horizon)
+    return np.where(Q_safe >= min_tradable_qty, 0.0, -np.inf).astype(np.float32)
 
 
 def fix_invalid_time_label(
     time_label: int,
     time_mask: np.ndarray,
+    t_base: int = 1,
 ) -> int:
     """
     修复无效的 time_label：若被 L1 禁止，则投影到最近的合法 delta。
@@ -1133,19 +1097,27 @@ def fix_invalid_time_label(
     Returns:
         修复后的 time_label
     """
-    if time_mask[time_label] == 0.0:
+    if time_label < len(time_mask) and time_mask[time_label] == 0.0:
         return time_label  # 原本合法
     
     # 找最近的合法位置
     valid_indices = np.where(time_mask == 0.0)[0]
     if len(valid_indices) == 0:
-        return 0  # 全部禁止则返回 0
+        # 全部禁止：回退到 baseline 时间（若合法）或 0
+        if t_base < len(time_mask) and time_mask[t_base] == 0.0:
+            return int(t_base)
+        return 0
     
     distances = np.abs(valid_indices - time_label)
     return int(valid_indices[np.argmin(distances)])
 
 
-def extract_l3_residuals(negotiation_logs: List[dict], l1_shield: TemporalSafetyShield):
+def extract_l3_residuals(
+    negotiation_logs: List[dict],
+    *,
+    daily_states: Dict[int, dict],
+    horizon: int = 40,
+):
     """
     从谈判日志中提取 L3 残差标签
     
@@ -1166,19 +1138,15 @@ def extract_l3_residuals(negotiation_logs: List[dict], l1_shield: TemporalSafety
         # 角色
         role = 0 if neg['is_buyer'] else 1
         
-        # L1 基准
-        baseline = l1_shield.compute(neg['awi_snapshot'], neg['is_buyer']).baseline_action
-        baseline = np.array(baseline)
-        
-        # 离线重建 time_mask
-        awi = neg['awi_snapshot']
-        time_mask = compute_time_mask_offline(
-            current_step=awi['current_step'],
-            horizon=awi['n_steps'],
-            inventory=awi['inventory'],
-            pending_delivery=awi['pending_delivery'],
-            pending_commitments=awi['pending_commitments'],
-        )
+        day = int(neg.get('sim_step', neg.get('day', 0)) or 0)
+        state = daily_states[day]
+
+        # L1 基准（离线重建，训练/推理一致）
+        baseline = compute_l1_baseline_offline(state, is_buying=neg['is_buyer'], horizon=horizon)
+        baseline = np.array(baseline, dtype=np.float32)
+
+        # time_mask（离线重建，训练/推理一致）
+        time_mask = compute_time_mask_offline(state, horizon=horizon)
         
         # 专家动作
         expert_action = np.array(neg['final_action'])  # (q, p, t)
@@ -1188,8 +1156,8 @@ def extract_l3_residuals(negotiation_logs: List[dict], l1_shield: TemporalSafety
         
         # 时间标签 (分类) - 修复无效值
         time_label = int(expert_action[2])
-        if time_mask[time_label] != 0.0:
-            time_label = fix_invalid_time_label(time_label, time_mask)
+        if time_label >= len(time_mask) or time_mask[time_label] != 0.0:
+            time_label = fix_invalid_time_label(time_label, time_mask, t_base=int(baseline[2]))
             fix_count += 1
         
         samples.append({
@@ -1288,10 +1256,10 @@ class HRLXFTrainer:
         with torch.enable_grad():
             # L4 协调
             weights, _ = self.l4(
-                batch['thread_states'],
+                batch['thread_feats'],
                 batch['thread_times'],
                 batch['thread_roles'],
-                batch['l2_goals']
+                batch['global_feat']
             )
             
             # L3 前向 - 使用真实 time_mask (由 compute_time_mask_offline 计算)
@@ -1332,26 +1300,18 @@ class HRLXFTrainer:
 litaagent_std/
 └── hrl_xf/
     ├── __init__.py
-    ├── README.md
     │
     ├── # 核心模块
-    ├── agent.py              # HRL-XF Agent 主类
-    ├── l1_temporal_shield.py # L1 时序安全护盾
-    ├── l2_horizon_manager.py # L2 战略规划层
-    ├── l3_decision_transformer.py  # L3 残差执行层
-    ├── l4_global_coordinator.py    # L4 全局协调层
-    │
-    ├── # 状态与动作
-    ├── state_builder.py      # 状态张量构建器
-    ├── action_decoder.py     # 动作解码与合成
-    │
-    ├── # 训练相关
-    ├── rewards.py            # 奖励函数
-    ├── data_pipeline.py      # 数据处理流水线
-    ├── trainer.py            # 训练器
-    │
-    └── # 工具
-    └── utils.py              # 辅助函数
+    ├── agent.py            # HRL-XF Agent 主类（StdAgent 逐线程接口）
+    ├── batch_planner.py    # 批次统一规划（动态预留，减少顺序依赖）
+    ├── l1_safety.py        # L1 安全层（Q_safe/time_mask + clip_action）
+    ├── l2_manager.py       # L2 日级目标层（启发式/神经）
+    ├── l3_executor.py      # L3 残差执行层（启发式/神经）
+    ├── l4_coordinator.py   # L4 并发协调层（启发式/神经，输出连续 α）
+    ├── state_builder.py    # 状态张量构建器（在线）
+    ├── rewards.py          # 奖励函数（在线 RL 预留）
+    ├── data_pipeline.py    # 数据流水线（离线：宏/微/L4 蒸馏样本）
+    └── training.py         # 训练（BC/AWR + L4 蒸馏；在线 PPO/MAPPO 预留）
 ```
 
 ---
@@ -1359,56 +1319,51 @@ litaagent_std/
 ## 13. 实施检查清单
 
 ### Phase 0: 基础设施
-- [ ] 创建 `hrl_xf/` 目录结构
-- [ ] 确认 `awi.profile.storage_capacity` 是否存在
-- [ ] 实现 `get_capacity_vector()` 函数
-- [ ] 实现 `extract_commitments()` 函数
+- [x] 创建 `hrl_xf/` 目录结构
+- [x] 适配 `awi.profile.storage_capacity`（缺失时回退经济容量）
+- [x] 实现 `get_capacity_vector()` / `extract_commitments()`
 
 ### Phase 1: L1 安全护盾
-- [ ] 实现 `TemporalSafetyShield` 类
-- [ ] 实现库存轨迹投影
-- [ ] 实现 $Q_{safe}[\delta]$ 计算
-- [ ] 实现时间掩码生成
-- [ ] 单元测试：边界情况（爆仓、缺货）
+- [x] 实现 `L1SafetyLayer`（在线）与 `compute_l1_baseline_offline()`（离线对齐）
+- [x] 实现库存轨迹投影与 $Q_{safe}[\delta]$ 计算
+- [x] 实现时间掩码生成与 `clip_action`
+- [ ] 单元测试：极端边界（爆仓、缺货）完整覆盖（目前仅基础/接口测试）
 
 ### Phase 2: L2 战略规划
-- [ ] 实现 `HorizonManagerPPO` 类
-- [ ] 实现 1D-CNN 时序特征提取
-- [ ] 实现 16 维分桶输出
-- [ ] 实现角色嵌入
-- [ ] 单元测试：目标向量解码
+- [x] 实现 `HorizonManagerPPO`（L2 模型骨架）
+- [x] 实现 1D-CNN 时序特征提取与 16 维分桶输出
+- [x] 实现角色嵌入（`x_role`）
+- [ ] 单元测试：目标向量解码完整覆盖（当前仅最小接口/闭环测试）
 
 ### Phase 3: L3 残差执行
-- [ ] 实现 `TemporalDecisionTransformer` 类
-- [ ] 实现时间嵌入（离散）
-- [ ] 实现 Goal Prompting
-- [ ] 实现混合输出头（连续 + 分类）
-- [ ] 实现 Masked Softmax
-- [ ] 单元测试：因果掩码正确性
+- [x] 实现 `TemporalDecisionTransformer`
+- [x] 实现时间嵌入（离散）与 Goal Prompting
+- [x] 实现混合输出头（连续 residual + 时间分类）与 Masked Softmax
+- [ ] 单元测试：因果掩码/边界情况完整覆盖（当前仅最小接口测试）
 
 ### Phase 4: L4 全局协调
-- [ ] 实现 `GlobalCoordinator` 类
-- [ ] 实现时空注意力机制
-- [ ] 实现门控调制
-- [ ] 单元测试：多线程场景
+- [x] 实现 `GlobalCoordinator`（启发式 + 神经网络）
+- [x] L4 输入语义对齐：`thread_feat_set + global_feat`（不依赖 L3 latent）
+- [x] 实现买侧“动态预留”（按 α 排序逐线程裁剪并扣减 `B_free/Q_safe`）
+- [ ] 单元测试：更复杂的多线程冲突场景（当前仅覆盖核心接口/动态预留）
 
 ### Phase 5: 数据工程
-- [ ] 实现 L2 目标重构
-- [ ] 实现 L3 残差提取
-- [ ] 实现状态张量构建器
-- [ ] 运行 PenguinAgent 采集日志
+- [x] 实现 L2 v2 目标重构（`reconstruct_l2_goals()`）
+- [x] 实现 goal_hat 回填（`load_tournament_data(goal_backfill="l2")`）
+- [x] 实现 L3 残差提取（`extract_l3_residuals()`，含 baseline/time_mask 离线对齐）
+- [x] 实现状态张量构建器（在线/离线语义对齐）
+- [x] 提供 `hrl_data_runner` 采集专家日志（推荐配合 `--track-only-penguin`）
 
 ### Phase 6: 训练
-- [ ] 实现势能奖励函数
-- [ ] 实现复合奖励函数
-- [ ] 实现 BC 预训练
-- [ ] 实现 PPO 在线微调
-- [ ] 实现自博弈
+- [x] 实现离线 BC（L2/L3）与 L3 AWR
+- [x] 实现 L4 启发式蒸馏训练（监督学习）
+- [ ] 实现势能/复合奖励的在线采样接入（PPO/MAPPO，后续里程碑）
+- [ ] 实现自博弈训练流水线（后续里程碑）
 
 ### Phase 7: 集成测试
+- [x] 基础单元测试（`tests/test_hrlxf_*`）
 - [ ] 端到端测试（模拟器运行）
-- [ ] 对抗 PenguinAgent 评估
-- [ ] 性能调优
+- [ ] 对抗 PenguinAgent 评估与性能调优
 
 ---
 
