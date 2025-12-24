@@ -29,7 +29,8 @@ MPLCONFIGDIR=./.mpl_cache .venv/bin/python -m runners.hrl_data_runner \
 - `--steps`：固定步数（用于快速验证）  
 - `--track-only-penguin`：仅追踪 `PenguinAgent`（适合只用 Penguin 做专家示范时，显著降低 `tracker_logs` 体积与 pipeline 解析开销）  
 - `--no-csv`：尽量减少 negmas CSV 输出（仍会保留必要文件，如 contracts/negotiations/stats）  
-- `--resumable`：启用断点续跑（复用 `--output-dir`）  
+- `--forced-logs-fraction`：强制保留详细日志的 world 比例（默认 0.1；即使 `--no-csv` 也会保留这部分详细日志）  
+- `--resumable`：启用断点续跑（复用 `--output-dir`；比赛完成后会自动清理 resumable 中间数据）  
 - `--output-dir`：输出目录  
 - `--parallelism`：并行后端（推荐 `loky`）  
 - `--foreground`：前台输出
@@ -43,6 +44,7 @@ MPLCONFIGDIR=./.mpl_cache .venv/bin/python -m runners.hrl_data_runner \
   --resumable --output-dir tournament_history/hrl_data_resume_std
 ```
 中断后再执行同一命令即可继续（已完成的 world 会被跳过）。
+注意：比赛完成后会自动清理 resumable 中间数据，因此**完成后无法再继续追加**。
 
 如果想分批采集数据：  
 - 仍可跑到**新的输出目录**  
