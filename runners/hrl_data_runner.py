@@ -36,9 +36,12 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib
+import itertools
 import math
 import os
+import random
 import shutil
 import sys
 from datetime import datetime
@@ -49,17 +52,30 @@ from typing import List, Tuple, Type
 from runners.loky_patch import enable_loky_executor
 enable_loky_executor()
 
-from negmas.helpers.inout import load
+from negmas.helpers import get_full_type_name, shortest_unique_names, unique_name
+from negmas.helpers.inout import dump, load
 from negmas.helpers.numeric import truncated_mean
 from negmas.tournaments.tournaments import (
     ASSIGNED_CONFIGS_JSON_FILE,
     ASSIGNED_CONFIGS_PICKLE_FILE,
+    PARAMS_FILE,
     RESULTS_FILE,
+    _hash,
+    _divide_into_sets,
+    _run_id,
     evaluate_tournament,
     run_tournament,
+    to_file,
 )
 import scml_agents
-from scml.utils import anac2024_std, anac2024_std_world_generator, balance_calculator_std
+from scml.utils import (
+    DefaultAgentsOneShot,
+    anac2024_config_generator_std,
+    anac2024_std,
+    anac2024_std_world_generator,
+    anac_assigner_std,
+    balance_calculator_std,
+)
 from scml.std.agents import RandomStdAgent, SyncRandomStdAgent
 
 # LitaAgent 基类（不使用硬编码的 *Tracked 版本，改用动态创建）
@@ -216,6 +232,339 @@ def _is_penguin_agent(cls: Type) -> bool:
     module_l = module.lower()
     name_l = name.lower()
     return ("team_penguin" in module_l) and ("penguin" in name_l)
+
+
+def _is_penguin_type_name(type_name: str) -> bool:
+    if not type_name:
+        return False
+    name_l = type_name.lower()
+    return ("penguinagent" in name_l) or ("team_penguin" in name_l)
+
+
+def _build_penguin_only_competitor_sets(
+    competitor_info: List[Tuple[str, dict]],
+    n_competitors_per_world: int,
+    round_robin: bool,
+):
+    penguin_info = None
+    for info in competitor_info:
+        if _is_penguin_type_name(info[0]):
+            penguin_info = info
+            break
+    if penguin_info is None:
+        return None
+
+    if n_competitors_per_world <= 1:
+        return [(penguin_info,)]
+
+    others = [info for info in competitor_info if info is not penguin_info]
+    if n_competitors_per_world - 1 > len(others):
+        raise RuntimeError(
+            f"n_competitors_per_world={n_competitors_per_world} 超过可用参赛者数量"
+        )
+
+    if round_robin:
+        return (
+            (penguin_info,) + comb
+            for comb in itertools.combinations(others, n_competitors_per_world - 1)
+        )
+
+    comp_ind = list(range(len(competitor_info)))
+    random.shuffle(comp_ind)
+    competitor_sets = _divide_into_sets(comp_ind, n_competitors_per_world)
+    competitor_sets = [[competitor_info[i] for i in lst] for lst in competitor_sets]
+    return [
+        cset
+        for cset in competitor_sets
+        if any(_is_penguin_type_name(info[0]) for info in cset)
+    ]
+
+
+def _create_penguin_only_tournament(
+    tournament_path: Path,
+    *,
+    competitors: List[Type],
+    competitor_params: List[dict] | None,
+    n_competitors_per_world: int,
+    round_robin: bool,
+    n_configs: int,
+    max_worlds_per_config: int | None,
+    n_runs_per_world: int,
+    config_generator,
+    config_assigner,
+    world_generator,
+    score_calculator,
+    total_timeout: int | None,
+    parallelism: str,
+    scheduler_ip: str | None,
+    scheduler_port: str | None,
+    non_competitors,
+    non_competitor_params,
+    dynamic_non_competitors,
+    dynamic_non_competitor_params,
+    exclude_competitors_from_reassignment: bool,
+    verbose: bool,
+    compact: bool,
+    forced_logs_fraction: float,
+    **kwargs,
+) -> Path:
+    tournament_path = tournament_path.resolve()
+    if tournament_path.exists():
+        raise ValueError(f"tournament path {tournament_path} exists. You cannot create two tournaments in the same place")
+    tournament_path.mkdir(parents=True, exist_ok=True)
+    if verbose:
+        print(f"Results of Tournament {tournament_path.name} will be saved to {tournament_path}")
+
+    if competitor_params is None:
+        competitor_params = [dict() for _ in range(len(competitors))]
+    competitors = [get_full_type_name(_) for _ in competitors]
+    non_competitors = (
+        None
+        if non_competitors is None
+        else tuple(get_full_type_name(_) for _ in non_competitors)
+    )
+
+    params = dict(
+        competitors=competitors,
+        competitor_params=competitor_params,
+        non_competitors=non_competitors,
+        non_competitor_params=non_competitor_params,
+        n_agents_per_competitor=1,
+        tournament_path=str(tournament_path),
+        total_timeout=total_timeout,
+        parallelism=parallelism,
+        scheduler_ip=scheduler_ip,
+        scheduler_port=scheduler_port,
+        name=tournament_path.name,
+        n_configs=n_configs,
+        n_world_per_config=max_worlds_per_config,
+        n_runs_per_world=n_runs_per_world,
+        n_worlds=None,
+        compact=compact,
+        n_competitors_per_world=n_competitors_per_world,
+        penguin_only=True,
+    )
+    params.update(kwargs)
+    dump(params, tournament_path / PARAMS_FILE)
+
+    configs = [
+        config_generator(
+            n_competitors=n_competitors_per_world,
+            n_agents_per_competitor=1,
+            agent_names_reveal_type=False,
+            non_competitors=non_competitors,
+            non_competitor_params=non_competitor_params,
+            compact=compact,
+            **kwargs,
+        )
+        for _ in range(n_configs)
+    ]
+    for i, cs in enumerate(configs):
+        for c in cs:
+            name_ = c["world_params"].get("name", "")
+            c["config_id"] = f"{i:04d}" + (
+                name_ if name_ else unique_name("", add_time=False, sep="", rand_digits=2)
+            )
+            c["world_params"]["name"] = c["config_id"]
+    to_file(configs, tournament_path / "base_configs")
+    if verbose:
+        print(
+            f"Will run {len(configs)}  different base world configurations ({parallelism})",
+            flush=True,
+        )
+
+    competitor_info = list(zip(competitors, competitor_params))
+    competitor_sets = _build_penguin_only_competitor_sets(
+        competitor_info, n_competitors_per_world, round_robin
+    )
+    if competitor_sets is None:
+        print("[WARN] 未找到 PenguinAgent，退回原有组合逻辑")
+        if round_robin:
+            competitor_sets = itertools.combinations(
+                competitor_info, n_competitors_per_world
+            )
+        else:
+            comp_ind = list(range(len(competitor_info)))
+            random.shuffle(comp_ind)
+            competitor_sets = _divide_into_sets(comp_ind, n_competitors_per_world)
+            competitor_sets = [
+                [competitor_info[_] for _ in lst] for lst in competitor_sets
+            ]
+
+    assigned = []
+    for effective_competitor_infos in competitor_sets:
+        effective_competitors = [_[0] for _ in effective_competitor_infos]
+        effective_params = [_[1] for _ in effective_competitor_infos]
+        effective_names = [
+            a + _hash(b)[:4] if b else a for a, b in effective_competitor_infos
+        ]
+        effective_names = shortest_unique_names(effective_names, max_compression=True)
+        if verbose:
+            print(
+                f"Running {'|'.join(effective_competitors)} together ({'|'.join(effective_names)})"
+            )
+        myconfigs = copy.deepcopy(configs)
+        for conf in myconfigs:
+            for c in conf:
+                c["world_params"]["name"] += (
+                    "_"
+                    + "-".join(effective_names)
+                    + unique_name("", add_time=False, rand_digits=3, sep=".")
+                )
+        this_assigned = list(
+            itertools.chain(
+                *(
+                    config_assigner(
+                        config=c,
+                        max_n_worlds=max_worlds_per_config,
+                        n_agents_per_competitor=1,
+                        competitors=effective_competitors,
+                        params=effective_params,
+                        dynamic_non_competitors=dynamic_non_competitors,
+                        dynamic_non_competitor_params=dynamic_non_competitor_params,
+                        exclude_competitors_from_reassignment=exclude_competitors_from_reassignment,
+                    )
+                    for c in myconfigs
+                )
+            )
+        )
+        for i, config_set in enumerate(this_assigned):
+            for c in config_set:
+                c["world_params"]["name"] += f".{i:02d}"
+        assigned += this_assigned
+
+    for config_set in assigned:
+        run_id = _run_id(config_set)
+        for c in config_set:
+            c["world_params"].update(
+                {
+                    "log_folder": str(
+                        (tournament_path / run_id / c["world_params"]["name"]).absolute()
+                    ),
+                    "log_to_file": not compact,
+                }
+            )
+
+    score_calculator_name = (
+        get_full_type_name(score_calculator)
+        if not isinstance(score_calculator, str)
+        else score_calculator
+    )
+    world_generator_name = (
+        get_full_type_name(world_generator)
+        if not isinstance(world_generator, str)
+        else world_generator
+    )
+    params["n_worlds"] = len(assigned) * n_runs_per_world
+    params["world_generator_name"] = world_generator_name
+    params["score_calculator_name"] = score_calculator_name
+    dump(params, tournament_path / PARAMS_FILE)
+
+    if verbose:
+        print(
+            f"Will run {len(assigned)}  different agent assignments ({parallelism})",
+            flush=True,
+        )
+
+    if n_runs_per_world > 1:
+        n_before_duplication = len(assigned)
+        all_assigned = []
+        for r in range(n_runs_per_world):
+            for a_ in assigned:
+                all_assigned.append([])
+                for w_ in a_:
+                    cpy = copy.deepcopy(w_)
+                    cpy["world_params"]["name"] += f"_{r+1}"
+                    if cpy["world_params"]["log_folder"]:
+                        cpy["world_params"]["log_folder"] += f"_{r+1}"
+                    all_assigned[-1].append(cpy)
+        assigned = all_assigned
+        assert n_before_duplication * n_runs_per_world == len(assigned), (
+            f"Got {len(assigned)} assigned worlds for {n_before_duplication} "
+            f"initial set with {n_runs_per_world} runs/world"
+        )
+
+    for config_set in assigned:
+        run_id = _run_id(config_set)
+        for config in config_set:
+            dir_name = tournament_path / run_id / config["world_params"]["name"]
+            config.update(
+                {
+                    "log_file_name": str(dir_name / "log.txt"),
+                    "__dir_name": str(dir_name),
+                }
+            )
+            config["world_params"].update(
+                {"log_file_name": "log.txt", "log_folder": str(dir_name)}
+            )
+
+    if forced_logs_fraction > 1e-5:
+        n_logged = max(1, int(len(assigned) * forced_logs_fraction))
+        for cs in assigned[:n_logged]:
+            run_id = _run_id(cs)
+            for _ in cs:
+                for subkey in ("world_params",):
+                    if subkey not in _.keys():
+                        continue
+                    _[subkey].update(
+                        dict(
+                            compact=False,
+                            save_negotiations=True,
+                            log_to_file=True,
+                            no_logs=False,
+                        )
+                    )
+                    if _[subkey].get("log_folder", None) is None:
+                        _[subkey].update(
+                            dict(
+                                log_folder=str(
+                                    (tournament_path / run_id / _[subkey]["name"]).absolute()
+                                )
+                            )
+                        )
+
+                _.update(
+                    dict(
+                        compact=False,
+                        save_negotiations=True,
+                        log_to_file=True,
+                        no_logs=False,
+                    )
+                )
+                if _.get("log_folder", None) is None:
+                    _.update(
+                        dict(
+                            log_folder=str(
+                                (tournament_path / run_id / _["world_params"]["name"]).absolute()
+                            )
+                        )
+                    )
+
+    saved_configs = []
+    for cs in assigned:
+        for _ in cs:
+            saved_configs.append(
+                {
+                    k: copy.copy(v)
+                    if k != "competitors"
+                    else [
+                        get_full_type_name(c) if not isinstance(c, str) else c
+                        for c in v
+                    ]
+                    for k, v in _.items()
+                }
+            )
+
+    config_path = tournament_path / "configs"
+    config_path.mkdir(exist_ok=True, parents=True)
+    for i, conf in enumerate(saved_configs):
+        f_name = config_path / f"{i:06}"
+        to_file(conf, f_name)
+
+    to_file(assigned, tournament_path / "assigned_configs")
+    dump(assigned, tournament_path / ASSIGNED_CONFIGS_PICKLE_FILE)
+
+    return tournament_path
 
 
 def _maybe_track_agent(
@@ -547,7 +896,13 @@ def main():
     parser.add_argument("--runs", type=int, default=2, help="每配置运行次数 (default: 2)")
     parser.add_argument("--max-top-2025", type=int, default=5, help="2025 Top Agents 数量上限")
     parser.add_argument("--max-top-2024", type=int, default=5, help="2024 Top Agents 数量上限")
-    parser.add_argument("--n-competitors-per-world", type=int, default=None, help="每个 world 参赛者数量（默认使用全部参赛者）")
+    parser.add_argument(
+        "--n-competitors-per-world",
+        type=int,
+        choices=[2, 3, 4],
+        default=None,
+        help="每个 world 参赛者数量（2/3/4；不指定则按默认随机 2~4）",
+    )
     parser.add_argument("--max-worlds-per-config", type=int, default=None, help="限制每个配置的最大 world 数")
     parser.add_argument("--target-worlds", type=int, default=None, help="目标总 world 数（自动折算为 max_worlds_per_config）")
     parser.add_argument("--output-dir", type=str, default=None, help="输出目录（默认自动生成）")
@@ -609,6 +964,12 @@ def main():
                 )
     tournament_root = existing_root or save_path
     created_now = existing_root is None
+    penguin_stage_root = None
+    if args.track_only_penguin and created_now:
+        if args.resumable:
+            penguin_stage_root = save_path.parent / f"{save_path.name}-stage-0001"
+        else:
+            penguin_stage_root = save_path / f"LitaHRLData_{timestamp}-stage-0001"
     
     # 日志文件路径
     log_file = save_path / "tournament_run.log"
@@ -727,71 +1088,194 @@ def main():
             }
         )
 
-    if args.resumable:
-        if created_now:
-            if save_path.exists():
-                save_path.mkdir(parents=True, exist_ok=True)
-            print(f"[INFO] 生成可续跑配置: {save_path}")
-            configs_path = anac2024_std(
+    if args.track_only_penguin:
+        effective_n_per_world = n_per_world
+        if effective_n_per_world is None:
+            effective_n_per_world = random.randint(2, min(4, len(competitors)))
+            print(
+                f"[INFO] track_only_penguin=True，自动选择 n_competitors_per_world={effective_n_per_world}"
+            )
+
+        penguin_kwargs = dict(tournament_kwargs)
+        penguin_kwargs.update(
+            {
+                "std_world": True,
+                "publish_exogenous_summary": True,
+                "publish_trading_prices": True,
+            }
+        )
+        penguin_kwargs.pop("n_competitors_per_world", None)
+
+        non_competitors = DefaultAgentsOneShot
+        non_competitor_params = [dict() for _ in non_competitors]
+
+        if args.resumable:
+            if created_now:
+                if save_path.exists():
+                    save_path.mkdir(parents=True, exist_ok=True)
+                print(f"[INFO] 生成可续跑配置: {save_path}")
+                if penguin_stage_root is None:
+                    penguin_stage_root = save_path.parent / f"{save_path.name}-stage-0001"
+                tournament_root = _create_penguin_only_tournament(
+                    penguin_stage_root,
+                    competitors=competitors,
+                    competitor_params=None,
+                    n_competitors_per_world=effective_n_per_world,
+                    round_robin=args.round_robin,
+                    n_configs=args.configs,
+                    max_worlds_per_config=args.max_worlds_per_config,
+                    n_runs_per_world=args.runs,
+                    config_generator=anac2024_config_generator_std,
+                    config_assigner=anac_assigner_std,
+                    world_generator=anac2024_std_world_generator,
+                    score_calculator=balance_calculator_std,
+                    total_timeout=None,
+                    parallelism=parallelism,
+                    scheduler_ip=None,
+                    scheduler_port=None,
+                    non_competitors=non_competitors,
+                    non_competitor_params=non_competitor_params,
+                    dynamic_non_competitors=None,
+                    dynamic_non_competitor_params=None,
+                    exclude_competitors_from_reassignment=False,
+                    verbose=not args.quiet,
+                    compact=False,
+                    forced_logs_fraction=args.forced_logs_fraction,
+                    **penguin_kwargs,
+                )
+            done, total = _summarize_progress(Path(tournament_root))
+            if total:
+                print(f"[INFO] 进度: {done}/{total} world 已完成 ({done/total:.1%})")
+            print(f"[INFO] 启动/恢复比赛: {tournament_root}")
+            run_tournament(
+                tournament_path=str(tournament_root),
+                world_generator=anac2024_std_world_generator,
+                score_calculator=balance_calculator_std,
+                parallelism=parallelism,
+                verbose=not args.quiet,
+                compact=False,
+                print_exceptions=True,
+            )
+            print("[INFO] 汇总结果")
+            results = evaluate_tournament(
+                tournament_path=str(tournament_root),
+                metric=truncated_mean,
+                verbose=not args.quiet,
+                recursive=True,
+            )
+        else:
+            if penguin_stage_root is None:
+                penguin_stage_root = save_path / f"LitaHRLData_{timestamp}-stage-0001"
+            tournament_root = _create_penguin_only_tournament(
+                penguin_stage_root,
+                competitors=competitors,
+                competitor_params=None,
+                n_competitors_per_world=effective_n_per_world,
+                round_robin=args.round_robin,
+                n_configs=args.configs,
+                max_worlds_per_config=args.max_worlds_per_config,
+                n_runs_per_world=args.runs,
+                config_generator=anac2024_config_generator_std,
+                config_assigner=anac_assigner_std,
+                world_generator=anac2024_std_world_generator,
+                score_calculator=balance_calculator_std,
+                total_timeout=None,
+                parallelism=parallelism,
+                scheduler_ip=None,
+                scheduler_port=None,
+                non_competitors=non_competitors,
+                non_competitor_params=non_competitor_params,
+                dynamic_non_competitors=None,
+                dynamic_non_competitor_params=None,
+                exclude_competitors_from_reassignment=False,
+                verbose=not args.quiet,
+                compact=False,
+                forced_logs_fraction=args.forced_logs_fraction,
+                **penguin_kwargs,
+            )
+            print(f"[INFO] 启动比赛: {tournament_root}")
+            run_tournament(
+                tournament_path=str(tournament_root),
+                world_generator=anac2024_std_world_generator,
+                score_calculator=balance_calculator_std,
+                parallelism=parallelism,
+                verbose=not args.quiet,
+                compact=False,
+                print_exceptions=True,
+            )
+            print("[INFO] 汇总结果")
+            results = evaluate_tournament(
+                tournament_path=str(tournament_root),
+                metric=truncated_mean,
+                verbose=not args.quiet,
+                recursive=True,
+            )
+    else:
+        if args.resumable:
+            if created_now:
+                if save_path.exists():
+                    save_path.mkdir(parents=True, exist_ok=True)
+                print(f"[INFO] 生成可续跑配置: {save_path}")
+                configs_path = anac2024_std(
+                    competitors=competitors,
+                    n_configs=args.configs,
+                    n_runs_per_world=args.runs,
+                    n_competitors_per_world=n_per_world,
+                    max_worlds_per_config=args.max_worlds_per_config,
+                    tournament_path=str(save_path.parent),
+                    forced_logs_fraction=args.forced_logs_fraction,
+                    parallelism=parallelism,
+                    round_robin=args.round_robin,
+                    name=save_path.name,
+                    verbose=not args.quiet,
+                    compact=False,
+                    configs_only=True,
+                    print_exceptions=True,
+                    **tournament_kwargs,
+                )
+                try:
+                    if configs_path is not None:
+                        configs_path = Path(configs_path)
+                        tournament_root = configs_path.parent
+                except Exception:
+                    pass
+            done, total = _summarize_progress(Path(tournament_root))
+            if total:
+                print(f"[INFO] 进度: {done}/{total} world 已完成 ({done/total:.1%})")
+            print(f"[INFO] 启动/恢复比赛: {tournament_root}")
+            run_tournament(
+                tournament_path=str(tournament_root),
+                world_generator=anac2024_std_world_generator,
+                score_calculator=balance_calculator_std,
+                parallelism=parallelism,
+                verbose=not args.quiet,
+                compact=False,
+                print_exceptions=True,
+            )
+            print("[INFO] 汇总结果")
+            results = evaluate_tournament(
+                tournament_path=str(tournament_root),
+                metric=truncated_mean,
+                verbose=not args.quiet,
+                recursive=True,
+            )
+        else:
+            results = anac2024_std(
                 competitors=competitors,
                 n_configs=args.configs,
                 n_runs_per_world=args.runs,
                 n_competitors_per_world=n_per_world,
                 max_worlds_per_config=args.max_worlds_per_config,
-                tournament_path=str(save_path.parent),
+                tournament_path=str(save_path),
                 forced_logs_fraction=args.forced_logs_fraction,
                 parallelism=parallelism,
                 round_robin=args.round_robin,
-                name=save_path.name,
+                name=f"LitaHRLData_{timestamp}",
                 verbose=not args.quiet,
                 compact=False,
-                configs_only=True,
                 print_exceptions=True,
                 **tournament_kwargs,
             )
-            try:
-                if configs_path is not None:
-                    configs_path = Path(configs_path)
-                    tournament_root = configs_path.parent
-            except Exception:
-                pass
-        done, total = _summarize_progress(Path(tournament_root))
-        if total:
-            print(f"[INFO] 进度: {done}/{total} world 已完成 ({done/total:.1%})")
-        print(f"[INFO] 启动/恢复比赛: {tournament_root}")
-        run_tournament(
-            tournament_path=str(tournament_root),
-            world_generator=anac2024_std_world_generator,
-            score_calculator=balance_calculator_std,
-            parallelism=parallelism,
-            verbose=not args.quiet,
-            compact=False,
-            print_exceptions=True,
-        )
-        print("[INFO] 汇总结果")
-        results = evaluate_tournament(
-            tournament_path=str(tournament_root),
-            metric=truncated_mean,
-            verbose=not args.quiet,
-            recursive=True,
-        )
-    else:
-        results = anac2024_std(
-            competitors=competitors,
-            n_configs=args.configs,
-            n_runs_per_world=args.runs,
-            n_competitors_per_world=n_per_world,
-            max_worlds_per_config=args.max_worlds_per_config,
-            tournament_path=str(save_path),
-            forced_logs_fraction=args.forced_logs_fraction,
-            parallelism=parallelism,
-            round_robin=args.round_robin,
-            name=f"LitaHRLData_{timestamp}",
-            verbose=not args.quiet,
-            compact=False,
-            print_exceptions=True,
-            **tournament_kwargs,
-        )
     
     print(f"[INFO] 锦标赛完成，日志保存在 {save_path}")
     if args.resumable and Path(tournament_root) != save_path:

@@ -32,7 +32,7 @@ MPLCONFIGDIR=./.mpl_cache .venv/bin/python -m runners.hrl_data_runner \
 常见参数：
 - `--configs` / `--runs`：配置数 / 每配置运行次数  
 - `--max-top-2025` / `--max-top-2024`：Top Agents 数量上限  
-- `--n-competitors-per-world`：每个 world 的参赛者数量（默认：全部参赛者）
+- `--n-competitors-per-world`：每个 world 的参赛者数量（仅支持 2/3/4；不指定则按默认随机 2~4）
 - `--max-worlds-per-config`：限制每个配置的最大 world 数  
 - `--target-worlds`：目标总 world 数（自动折算为 `max_worlds_per_config`，需同时指定 `--n-competitors-per-world`）
 - `--round-robin` / `--no-round-robin`：是否启用 round-robin（默认启用；禁用可更快但分配更随机）
