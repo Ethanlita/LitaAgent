@@ -59,6 +59,10 @@ class L4Output:
 class HeuristicL4Coordinator:
     """启发式 L4 协调器（无需训练）.
     
+    ⚠️ 警告：此类仅用于开发调试和冷启动 fallback。
+    生产环境中 L2-L4 层应使用 neural 模式，heuristic 模式
+    的参数未经调优，可能导致次优决策。
+    
     基于规则分配线程权重，作为神经网络 L4 的基线。
     
     策略：

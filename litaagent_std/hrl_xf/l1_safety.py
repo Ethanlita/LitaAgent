@@ -25,26 +25,33 @@ class L1Output:
     
     Attributes:
         Q_safe: 每个交货日的最大安全买入量，shape (H+1,)，δt ∈ {0, 1, ..., H}
+        Q_safe_sell: 每个交货日的最大安全卖出量，shape (H+1,)，δt ∈ {0, 1, ..., H}
         B_free: 可用资金上限
         time_mask: 时间掩码 (0 或 -inf)，shape (H+1,)，用于 L3 的 Masked Softmax
         baseline_action: 基准动作 (q_base, p_base, t_base)
         L_trajectory: 库存轨迹，shape (H,)
         C_total: 库容向量，shape (H,)
+        raw_free: 原始可用空间向量 (C_total - L)，shape (H+1,)，用于动态预留
     """
     Q_safe: np.ndarray
+    Q_safe_sell: np.ndarray
     B_free: float
     time_mask: np.ndarray
     baseline_action: Tuple[float, float, int]
     L_trajectory: np.ndarray
     C_total: np.ndarray
+    raw_free: Optional[np.ndarray] = None
 
 
 def get_capacity_vector(awi: "StdAWI", horizon: int) -> np.ndarray:
-    """获取未来 H 天的库容上限向量.
+    """获取未来 H 天的库容上限向量（经济容量）.
     
-    决策逻辑：
-    1. 优先使用 awi.profile.storage_capacity（如存在）
-    2. 否则使用动态公式 C[k] = n_lines × (T_max - (t+k))
+    注意：SCML 2025 Standard 世界不存在 storage_capacity 属性，
+    采用"经济容量" = n_lines × 剩余天数 作为产能约束。
+    
+    逻辑解释：买入的是原材料，需要加工才能出售。超出剩余可加工
+    天数的原材料会因无法及时加工而被浪费，因此动态库容本质上是
+    "可有效利用的原材料容量"。
     
     Args:
         awi: Agent World Interface
@@ -53,13 +60,7 @@ def get_capacity_vector(awi: "StdAWI", horizon: int) -> np.ndarray:
     Returns:
         C_total: shape (H,)
     """
-    # 尝试使用 API 提供的静态容量
-    static_cap = getattr(awi.profile, 'storage_capacity', None)
-    
-    if static_cap is not None:
-        return np.full(horizon, static_cap, dtype=np.float32)
-    
-    # 动态容量：基于剩余天数 × 日产能
+    # SCML 无 storage_capacity，使用经济容量
     n_lines = awi.profile.n_lines
     t_current = awi.current_step
     t_max = awi.n_steps
@@ -72,11 +73,33 @@ def get_capacity_vector(awi: "StdAWI", horizon: int) -> np.ndarray:
     return C_total
 
 
+def _sum_mapping_values(mapping) -> float:
+    """对字典值求和（兼容 None 和空值）."""
+    if mapping is None:
+        return 0.0
+    if isinstance(mapping, dict):
+        return sum(float(v) for v in mapping.values() if v is not None)
+    return 0.0
+
+
+def _fill_future_values(future_map, current_step: int, target: np.ndarray) -> None:
+    """从 future_* 字典填充目标数组."""
+    if not isinstance(future_map, dict):
+        return
+    for step, per_partner in future_map.items():
+        try:
+            delta = int(step) - current_step
+        except Exception:
+            continue
+        if 0 <= delta < len(target):
+            target[delta] += _sum_mapping_values(per_partner)
+
+
 def extract_commitments(awi: "StdAWI", horizon: int) -> Tuple[np.ndarray, np.ndarray]:
-    """从已签合约中提取未来 H 天的入库和出库承诺.
+    """从 AWI 提取未来 H 天的入库和出库承诺.
     
-    注意：仅使用 signed_contracts，不含 unsigned_contracts。
-    未签署合约可能不会成交，纳入计算会导致过度保守。
+    优先使用 AWI 的 supplies/sales/future_supplies/future_sales 接口，
+    与 tracker_mixin.py 保持一致，确保线上/离线数据口径相同。
     
     Args:
         awi: Agent World Interface
@@ -90,9 +113,28 @@ def extract_commitments(awi: "StdAWI", horizon: int) -> Tuple[np.ndarray, np.nda
     Q_out = np.zeros(horizon, dtype=np.float32)
     
     t_current = awi.current_step
-    agent_id = awi.agent.id
     
-    # 仅遍历已签署的合约
+    # 优先使用 AWI 的 supplies/sales/future_* 接口（与 tracker_mixin 一致）
+    supplies = getattr(awi, 'supplies', None)
+    sales = getattr(awi, 'sales', None)
+    future_supplies = getattr(awi, 'future_supplies', None)
+    future_sales = getattr(awi, 'future_sales', None)
+    
+    has_awi_future = any(x is not None for x in (supplies, sales, future_supplies, future_sales))
+    
+    if has_awi_future:
+        # 当前日 (delta=0)
+        Q_in[0] = _sum_mapping_values(supplies)
+        Q_out[0] = _sum_mapping_values(sales)
+        
+        # 未来日 (delta>0)
+        _fill_future_values(future_supplies, t_current, Q_in)
+        _fill_future_values(future_sales, t_current, Q_out)
+        
+        return Q_in, Q_out
+    
+    # 回退：使用 signed_contracts（兼容旧版本 negmas）
+    agent_id = awi.agent.id
     signed_contracts = getattr(awi, 'signed_contracts', []) or []
     
     for contract in signed_contracts:
@@ -129,27 +171,32 @@ def extract_commitments(awi: "StdAWI", horizon: int) -> Tuple[np.ndarray, np.nda
 def compute_inventory_trajectory(
     I_now: float,
     Q_in: np.ndarray,
-    Q_out: np.ndarray,
     Q_prod: np.ndarray,
     horizon: int
 ) -> np.ndarray:
-    """计算未来 H 天的库存水位轨迹.
+    """计算未来 H 天的原材料库存水位轨迹.
     
-    公式：L[k] = I_now + Σ_{j=0}^{k} (Q_in[j] - Q_out[j] - Q_prod[j])
+    公式：L[k] = I_now + Σ_{j=0}^{k} (Q_in[j] - Q_prod[j])
     
-    采用方案B（适度保守）：扣减 Q_out
+    纯原材料模型：
+    - I_now: 当前原材料库存
+    - Q_in: 原材料采购入库
+    - Q_prod: 原材料被生产消耗
+    - Q_out 是成品出库，不影响原材料库存，故不包含
     
     Args:
-        I_now: 当前库存
+        I_now: 当前原材料库存
         Q_in: 入库承诺向量，shape (H,)
-        Q_out: 出库承诺向量，shape (H,)
         Q_prod: 生产消耗向量，shape (H,)
         horizon: 规划视界
         
     Returns:
-        L: shape (H,) - 每天的预计库存
+        L: shape (H,) - 每天的预计原材料库存
     """
-    net_flow = Q_in - Q_out - Q_prod  # shape (H,)
+    # 物理模型：纯原材料轨迹
+    # Q_out 是成品出库（不消耗原材料），故不在此扣减
+    # 详见 HRL-XF 期货市场代理重构.md §3.2.2
+    net_flow = Q_in - Q_prod  # shape (H,)
     cumulative_flow = np.cumsum(net_flow)  # shape (H,)
     L = I_now + cumulative_flow
     return L
@@ -177,6 +224,91 @@ def compute_safe_buy_mask(
     raw_free = C_total - L  # shape (H,)
     
     # 逆向累积最小值
+    reversed_free = raw_free[::-1]
+    reversed_cummin = np.minimum.accumulate(reversed_free)
+    Q_safe = reversed_cummin[::-1]
+    
+    # 非负约束
+    Q_safe = np.maximum(Q_safe, 0)
+    
+    return Q_safe
+
+
+def compute_safe_sell_mask(
+    I_output_now: float,
+    Q_prod: np.ndarray,
+    Q_out: np.ndarray,
+    horizon: int
+) -> np.ndarray:
+    """计算每个交货日 delta 的最大安全卖出量.
+    
+    卖侧约束：在交货日 δ 能交付的最大成品数量，且不能影响后续已签合约。
+    
+    算法分两步：
+    1. 计算每天的"净可交付量"（成品轨迹）：
+       S[k] = I_output_now + Σ_{j=0}^{k-1} Q_prod[j] - Σ_{j=0}^{k-1} Q_out[j]
+    2. 使用逆向累积最小值确保不挤爆后续交付：
+       Q_safe_sell[δ] = min_{k>=δ} S[k]
+    
+    与买侧 Q_safe 对称：如果在 δ 卖出 q，会影响从 δ 到 H 的所有可交付量。
+    
+    Args:
+        I_output_now: 当前成品库存
+        Q_prod: 每日产能向量，shape (H,)
+        Q_out: 已承诺的出库量向量，shape (H,)
+        horizon: 规划视界
+        
+    Returns:
+        Q_safe_sell: shape (H,)
+    """
+    # 步骤1: 计算成品轨迹 S[k]（每天的可交付量）
+    # S[k] = I_output + Σ_{j=0}^{k-1} (Q_prod[j] - Q_out[j])
+    net_flow = Q_prod - Q_out  # 每天净产出
+    
+    S = np.zeros(horizon, dtype=np.float32)
+    S[0] = I_output_now  # 第0天只有当前成品
+    if horizon > 1:
+        cumulative_net = np.cumsum(net_flow[:-1])  # 前 k-1 天的累计净产出
+        S[1:] = I_output_now + cumulative_net
+    
+    # 步骤2: 逆向累积最小值
+    # Q_safe_sell[δ] = min_{k>=δ} S[k]
+    reversed_S = S[::-1]
+    reversed_cummin = np.minimum.accumulate(reversed_S)
+    Q_safe_sell = reversed_cummin[::-1]
+    
+    # 非负约束
+    Q_safe_sell = np.maximum(Q_safe_sell, 0)
+    
+    return Q_safe_sell
+
+
+def recompute_q_safe_after_reservation(
+    raw_free: np.ndarray,
+    delta_t: int,
+    reserved_qty: float
+) -> np.ndarray:
+    """在动态预留后重新计算 Q_safe.
+    
+    Q_safe[δ] = min_{k>=δ}(raw_free[k]) 是逆向累积最小值。
+    当在 delta_t 预留 reserved_qty 时，需要对所有 k >= delta_t 扣减，
+    然后重新计算 Q_safe。
+    
+    Args:
+        raw_free: 原始可用空间向量 (C_total - L)，shape (H,) 或 (H+1,)
+        delta_t: 预留的交货日
+        reserved_qty: 预留的数量
+        
+    Returns:
+        Q_safe: 重新计算后的安全量向量
+    """
+    raw_free = raw_free.copy()
+    
+    # 对所有 k >= delta_t 扣减预留量（因为货物从 delta_t 开始占用空间）
+    for k in range(delta_t, len(raw_free)):
+        raw_free[k] -= reserved_qty
+    
+    # 重新计算逆向累积最小值
     reversed_free = raw_free[::-1]
     reversed_cummin = np.minimum.accumulate(reversed_free)
     Q_safe = reversed_cummin[::-1]
@@ -242,7 +374,7 @@ class L1SafetyLayer:
             is_buying: 当前是买入还是卖出角色
             
         Returns:
-            L1Output: 包含 Q_safe, B_free, time_mask, baseline_action 等
+            L1Output: 包含 Q_safe, Q_safe_sell, B_free, time_mask, baseline_action 等
         """
         # 1. 获取库容向量
         C_total = get_capacity_vector(awi, self.horizon)
@@ -254,12 +386,12 @@ class L1SafetyLayer:
         n_lines = getattr(awi.profile, 'n_lines', 1)
         Q_prod = np.full(self.horizon, n_lines, dtype=np.float32)
         
-        # 4. 计算库存轨迹
+        # 4. 计算库存轨迹（原材料）
         # 重要：使用原材料库存（current_inventory_input），而非总库存
         # 因为采购入库的是原材料，库容约束针对原材料存储空间
-        # 成品（current_inventory_output）是独立的存储空间，不影响采购决策
-        I_now = float(getattr(awi, 'current_inventory_input', 0) or 0)
-        L = compute_inventory_trajectory(I_now, Q_in, Q_out, Q_prod, self.horizon)
+        # 注意：Q_out 是成品出库，不影响原材料库存，故不参与此计算
+        I_input_now = float(getattr(awi, 'current_inventory_input', 0) or 0)
+        L = compute_inventory_trajectory(I_input_now, Q_in, Q_prod, self.horizon)
         
         # 5. 计算安全买入量掩码 (H 维)
         Q_safe_h = compute_safe_buy_mask(C_total, L, self.horizon)
@@ -270,19 +402,39 @@ class L1SafetyLayer:
         Q_safe[:self.horizon] = Q_safe_h
         Q_safe[self.horizon] = Q_safe_h[-1] if len(Q_safe_h) > 0 else 0.0
         
-        # 7. 计算资金约束
+        # 6.1 计算 raw_free 用于动态预留
+        raw_free_h = C_total - L  # shape (H,)
+        raw_free = np.zeros(self.horizon + 1, dtype=np.float32)
+        raw_free[:self.horizon] = raw_free_h
+        raw_free[self.horizon] = raw_free_h[-1] if len(raw_free_h) > 0 else 0.0
+        
+        # 7. 计算卖侧安全量（成品可交付量）
+        I_output_now = float(getattr(awi, 'current_inventory_output', 0) or 0)
+        Q_safe_sell_h = compute_safe_sell_mask(I_output_now, Q_prod, Q_out, self.horizon)
+        
+        # 扩展为 H+1 维
+        Q_safe_sell = np.zeros(self.horizon + 1, dtype=np.float32)
+        Q_safe_sell[:self.horizon] = Q_safe_sell_h
+        Q_safe_sell[self.horizon] = Q_safe_sell_h[-1] if len(Q_safe_sell_h) > 0 else 0.0
+        
+        # 8. 计算资金约束
         Payables = self._extract_payables(awi)
         wallet = getattr(awi, 'wallet', 0.0) or 0.0
         B_free = compute_budget_limit(wallet, Payables, self.reserve)
         
-        # 8. 生成时间掩码 (用于 L3 的 Masked Softmax)，H+1 维
-        time_mask = np.where(Q_safe >= self.min_tradable_qty, 0.0, -np.inf)
+        # 9. 生成时间掩码 (用于 L3 的 Masked Softmax)，H+1 维
+        # 根据角色选择对应的安全量
+        if is_buying:
+            time_mask = np.where(Q_safe >= self.min_tradable_qty, 0.0, -np.inf)
+        else:
+            time_mask = np.where(Q_safe_sell >= self.min_tradable_qty, 0.0, -np.inf)
         
-        # 9. 生成基准动作
-        baseline_action = self._compute_baseline(awi, Q_safe, B_free, is_buying)
+        # 10. 生成基准动作
+        baseline_action = self._compute_baseline(awi, Q_safe, Q_safe_sell, B_free, is_buying)
         
         return L1Output(
             Q_safe=Q_safe,
+            Q_safe_sell=Q_safe_sell,
             B_free=B_free,
             time_mask=time_mask,
             baseline_action=baseline_action,
@@ -291,34 +443,43 @@ class L1SafetyLayer:
         )
     
     def _extract_payables(self, awi: "StdAWI") -> np.ndarray:
-        """提取未来的应付款项."""
+        """提取未来的应付款项.
+        
+        优先使用 AWI 的 supplies_cost/future_supplies_cost 接口。
+        注意：StdAWI 不提供 signed_contracts 属性。
+        """
         Payables = np.zeros(self.horizon, dtype=np.float32)
         t_current = awi.current_step
-        agent_id = awi.agent.id
         
-        signed_contracts = getattr(awi, 'signed_contracts', []) or []
+        # 辅助函数：求和 mapping 的值
+        def sum_mapping(mapping) -> float:
+            if mapping is None:
+                return 0.0
+            if isinstance(mapping, dict):
+                return sum(float(v) for v in mapping.values() if v is not None)
+            return 0.0
         
-        for contract in signed_contracts:
-            if getattr(contract, 'executed', False):
-                continue
-            
-            annotation = getattr(contract, 'annotation', {}) or {}
-            seller_id = annotation.get('seller')
-            
-            if seller_id != agent_id:
-                # 我是买方，需要付款
-                agreement = getattr(contract, 'agreement', {}) or {}
-                delivery_time = agreement.get('time', getattr(contract, 'time', None))
-                
-                if delivery_time is None:
+        # 辅助函数：填充未来值
+        def fill_from_future(future_map, target: np.ndarray):
+            if not isinstance(future_map, dict):
+                return
+            for step, per_partner in future_map.items():
+                try:
+                    delta = int(step) - t_current
+                except Exception:
                     continue
-                    
-                delta = delivery_time - t_current
-                
-                if 0 <= delta < self.horizon:
-                    quantity = agreement.get('quantity', 0)
-                    unit_price = agreement.get('unit_price', 0)
-                    Payables[delta] += quantity * unit_price
+                if 0 <= delta < len(target):
+                    target[delta] += sum_mapping(per_partner)
+        
+        # 使用 AWI 接口获取应付款
+        supplies_cost = getattr(awi, 'supplies_cost', None)
+        future_supplies_cost = getattr(awi, 'future_supplies_cost', None)
+        
+        # 当日应付款 (delta=0)
+        Payables[0] = sum_mapping(supplies_cost)
+        
+        # 未来应付款 (delta>0)
+        fill_from_future(future_supplies_cost, Payables)
         
         return Payables
     
@@ -326,6 +487,7 @@ class L1SafetyLayer:
         self,
         awi: "StdAWI",
         Q_safe: np.ndarray,
+        Q_safe_sell: np.ndarray,
         B_free: float,
         is_buying: bool
     ) -> Tuple[float, float, int]:
@@ -336,6 +498,7 @@ class L1SafetyLayer:
         Args:
             awi: Agent World Interface
             Q_safe: 安全买入量向量，shape (H+1,)
+            Q_safe_sell: 安全卖出量向量，shape (H+1,)
             B_free: 可用资金
             is_buying: 是否为买入角色
             
@@ -387,11 +550,15 @@ class L1SafetyLayer:
                 output_product = output_product[0]
             market_price = get_price(output_product, 20.0)
             
-            # 对于卖出，使用成品库存（current_inventory_output）
-            available = float(getattr(awi, 'current_inventory_output', 0) or 0)
+            # 找到最早可行的交货日（有足够可交付成品）
+            best_delta = 1  # 默认明天
+            for delta in range(self.horizon + 1):
+                if Q_safe_sell[delta] >= self.min_tradable_qty:
+                    best_delta = delta
+                    break
             
-            best_delta = 1
-            q_base = max(1.0, available / 2)
+            # 基准数量：安全量的一半（保守）
+            q_base = max(1.0, Q_safe_sell[best_delta] / 2)
             
             # 基准价格：略高于市场价（卖方希望贵）
             p_base = market_price * 1.05
@@ -407,7 +574,8 @@ class L1SafetyLayer:
         B_free: float,
         is_buying: bool,
         min_price: float = 0.0,
-        max_price: float = float('inf')
+        max_price: float = float('inf'),
+        Q_safe_sell: Optional[np.ndarray] = None
     ) -> Tuple[int, float, int]:
         """裁剪动作到安全范围.
         
@@ -420,6 +588,7 @@ class L1SafetyLayer:
             is_buying: 是否为买入角色
             min_price: 最小价格（卖方底价）
             max_price: 最大价格（买方顶价）
+            Q_safe_sell: 安全卖出量向量，shape (H+1,)，卖侧必须提供
             
         Returns:
             (quantity, price, delivery_time): 裁剪后的动作
@@ -444,6 +613,11 @@ class L1SafetyLayer:
             if price > 0:
                 max_qty = min(max_qty, B_free / price)
             quantity = min(quantity, max_qty)
+        else:
+            # 卖侧：不超过安全卖出量（可交付成品量）
+            if Q_safe_sell is not None:
+                max_qty = Q_safe_sell[delivery_time] if delivery_time < len(Q_safe_sell) else 0.0
+                quantity = min(quantity, max_qty)
         
         quantity = max(0, int(quantity))
         
@@ -462,5 +636,7 @@ __all__ = [
     "extract_commitments",
     "compute_inventory_trajectory",
     "compute_safe_buy_mask",
+    "compute_safe_sell_mask",
     "compute_budget_limit",
+    "recompute_q_safe_after_reservation",
 ]

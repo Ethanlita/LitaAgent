@@ -65,6 +65,10 @@ class NegotiationRound:
 class HeuristicL3Executor:
     """启发式 L3 执行器（无需训练）.
     
+    ⚠️ 警告：此类仅用于开发调试和冷启动 fallback。
+    生产环境中 L2-L4 层应使用 neural 模式，heuristic 模式
+    的参数未经调优，可能导致次优决策。
+    
     基于规则生成残差，作为神经网络 L3 的基线。
     
     策略：

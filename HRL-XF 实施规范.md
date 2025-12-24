@@ -1,4 +1,4 @@
-# HRL-XF 实施规范文档
+ # HRL-XF 实施规范文档
 
 > **生成日期**：2025年12月13日  
 > **文档版本**：1.0  
@@ -28,7 +28,7 @@ HRL-XF (Hybrid Residual Learner - Extended Framework, **Futures Edition**) 是�
 以下决策已获用户确认：
 
 1. **$C_{total}$ 定义**：优先使用 `awi.profile.storage_capacity`（如存在）；否则使用动态公式 $C_{total}[k] = n\_lines \times (T_{max} - (t+k))$
-2. **库存轨迹计算**：采用方案B（适度保守），扣减 $Q_{out}$
+2. **库存轨迹计算**：纯原材料模型，$L = I_{input} + \sum(Q_{in} - Q_{prod})$；$Q_{out}$ 是成品出库，不影响原材料库存
 3. **L2 输出维度**：16维（4桶 × 4分量：$Q_{buy}, P_{buy}, Q_{sell}, P_{sell}$）
 4. **L4 实现方式**：Transformer Encoder + 时间偏置掩码
 5. **$Q_{safe}[\delta]$ 公式**：向量化版本 $Q_{safe}[\delta] = \min_{k=\delta}^{H} (C_{total}[k] - L(k))$
@@ -272,21 +272,20 @@ def extract_commitments(awi, horizon: int) -> Tuple[np.ndarray, np.ndarray]:
 def compute_inventory_trajectory(
     I_now: float,
     Q_in: np.ndarray,
-    Q_out: np.ndarray,
     Q_prod: np.ndarray,
     horizon: int
 ) -> np.ndarray:
     """
-    计算未来 H 天的库存水位轨迹。
+    计算未来 H 天的原材料库存水位轨迹。
     
-    公式：L[k] = I_now + Σ_{j=0}^{k} (Q_in[j] - Q_out[j] - Q_prod[j])
+    公式：L[k] = I_now + Σ_{j=0}^{k} (Q_in[j] - Q_prod[j])
     
-    采用方案B（适度保守）：扣减 Q_out
+    纯原材料模型：Q_out 是成品出库，不影响原材料库存
     
     Returns:
-        L: shape (H,) - 每天的预计库存
+        L: shape (H,) - 每天的预计原材料库存
     """
-    net_flow = Q_in - Q_out - Q_prod  # shape (H,)
+    net_flow = Q_in - Q_prod  # shape (H,)
     cumulative_flow = np.cumsum(net_flow)  # shape (H,)
     L = I_now + cumulative_flow
     return L
@@ -384,9 +383,11 @@ class L1SafetyLayer:
         # 3. 估计生产消耗（保守：假设满负荷）
         Q_prod = np.full(self.horizon, awi.profile.n_lines, dtype=np.float32)
         
-        # 4. 计算库存轨迹
-        I_now = sum(awi.current_inventory.values())
-        L = compute_inventory_trajectory(I_now, Q_in, Q_out, Q_prod, self.horizon)
+        # 4. 计算库存轨迹（原材料）
+        # 重要：使用原材料库存（current_inventory_input），而非总库存
+        # Q_out 是成品出库，不影响原材料库存，故不参与此计算
+        I_now = float(getattr(awi, 'current_inventory_input', 0) or 0)
+        L = compute_inventory_trajectory(I_now, Q_in, Q_prod, self.horizon)
         
         # 5. 计算安全买入量掩码 (H 维)
         Q_safe_h = compute_safe_buy_mask(C_total, L, self.horizon)

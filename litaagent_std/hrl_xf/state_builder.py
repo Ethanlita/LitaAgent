@@ -260,41 +260,86 @@ class StateBuilder:
         signed_buy_contracts_by_delta: Dict[int, list] = {}
         signed_sell_contracts_by_delta: Dict[int, list] = {}
         
-        signed_contracts = getattr(awi, 'signed_contracts', []) or []
+        # 优先使用 AWI 的 supplies/sales/future_* 接口（与 l1_safety 和 tracker_mixin 一致）
+        supplies = getattr(awi, 'supplies', None)
+        sales = getattr(awi, 'sales', None)
+        future_supplies = getattr(awi, 'future_supplies', None)
+        future_sales = getattr(awi, 'future_sales', None)
+        supplies_cost = getattr(awi, 'supplies_cost', None)
+        sales_cost = getattr(awi, 'sales_cost', None)
+        future_supplies_cost = getattr(awi, 'future_supplies_cost', None)
+        future_sales_cost = getattr(awi, 'future_sales_cost', None)
         
-        for contract in signed_contracts:
-            if getattr(contract, 'executed', False):
-                continue
+        has_awi_future = any(x is not None for x in (supplies, sales, future_supplies, future_sales))
+        
+        if has_awi_future:
+            # 使用 AWI 接口
+            def sum_mapping(mapping):
+                if mapping is None:
+                    return 0.0
+                if isinstance(mapping, dict):
+                    return sum(float(v) for v in mapping.values() if v is not None)
+                return 0.0
             
-            agreement = getattr(contract, 'agreement', {}) or {}
-            delivery_time = agreement.get('time', getattr(contract, 'time', None))
+            def fill_from_future(future_map, target):
+                if not isinstance(future_map, dict):
+                    return
+                for step, per_partner in future_map.items():
+                    try:
+                        delta = int(step) - t_current
+                    except Exception:
+                        continue
+                    if 0 <= delta < len(target):
+                        target[delta] += sum_mapping(per_partner)
             
-            if delivery_time is None:
-                continue
-                
-            delta = delivery_time - t_current
+            # 当前日 (delta=0)
+            Q_in[0] = sum_mapping(supplies)
+            Q_out[0] = sum_mapping(sales)
+            Payables[0] = sum_mapping(supplies_cost)
+            Receivables[0] = sum_mapping(sales_cost)
             
-            if 0 <= delta <= self.horizon:  # 包含 δ=H
-                quantity = agreement.get('quantity', 0)
-                unit_price = agreement.get('unit_price', 0)
+            # 未来日 (delta>0)
+            fill_from_future(future_supplies, Q_in)
+            fill_from_future(future_sales, Q_out)
+            fill_from_future(future_supplies_cost, Payables)
+            fill_from_future(future_sales_cost, Receivables)
+        else:
+            # 回退：使用 signed_contracts（兼容旧版本）
+            signed_contracts = getattr(awi, 'signed_contracts', []) or []
+            
+            for contract in signed_contracts:
+                if getattr(contract, 'executed', False):
+                    continue
                 
-                annotation = getattr(contract, 'annotation', {}) or {}
-                seller_id = annotation.get('seller')
+                agreement = getattr(contract, 'agreement', {}) or {}
+                delivery_time = agreement.get('time', getattr(contract, 'time', None))
                 
-                if seller_id != agent_id:
-                    # 我是买方 -> 入库，付款
-                    Q_in[delta] += quantity
-                    Payables[delta] += quantity * unit_price
-                    if delta not in signed_buy_contracts_by_delta:
-                        signed_buy_contracts_by_delta[delta] = []
-                    signed_buy_contracts_by_delta[delta].append((quantity, unit_price))
-                else:
-                    # 我是卖方 -> 出库，收款
-                    Q_out[delta] += quantity
-                    Receivables[delta] += quantity * unit_price
-                    if delta not in signed_sell_contracts_by_delta:
-                        signed_sell_contracts_by_delta[delta] = []
-                    signed_sell_contracts_by_delta[delta].append((quantity, unit_price))
+                if delivery_time is None:
+                    continue
+                    
+                delta = delivery_time - t_current
+                
+                if 0 <= delta <= self.horizon:  # 包含 δ=H
+                    quantity = agreement.get('quantity', 0)
+                    unit_price = agreement.get('unit_price', 0)
+                    
+                    annotation = getattr(contract, 'annotation', {}) or {}
+                    seller_id = annotation.get('seller')
+                    
+                    if seller_id != agent_id:
+                        # 我是买方 -> 入库，付款
+                        Q_in[delta] += quantity
+                        Payables[delta] += quantity * unit_price
+                        if delta not in signed_buy_contracts_by_delta:
+                            signed_buy_contracts_by_delta[delta] = []
+                        signed_buy_contracts_by_delta[delta].append((quantity, unit_price))
+                    else:
+                        # 我是卖方 -> 出库，收款
+                        Q_out[delta] += quantity
+                        Receivables[delta] += quantity * unit_price
+                        if delta not in signed_sell_contracts_by_delta:
+                            signed_sell_contracts_by_delta[delta] = []
+                        signed_sell_contracts_by_delta[delta].append((quantity, unit_price))
         
         # 生产消耗（保守估计：满负荷）
         n_lines = getattr(awi.profile, 'n_lines', 1)
@@ -303,10 +348,11 @@ class StateBuilder:
         # 生产成本（从 profile 获取）
         production_cost = float(getattr(awi.profile, 'cost', 0.0) or 0.0)
         
-        # 库存投影
-        # 注意：使用原材料库存作为库存投影的起点，因为采购入库的是原材料
+        # 库存投影（原材料）
+        # 注意：使用原材料库存，因为采购入库的是原材料
+        # Q_out 是成品出库，不影响原材料库存，故不参与此计算
         I_now = float(getattr(awi, 'current_inventory_input', 0) or 0)
-        net_flow = Q_in - Q_out - Q_prod
+        net_flow = Q_in - Q_prod
         I_proj = I_now + np.cumsum(net_flow)
         
         # 库容投影（经济容量：基于剩余可加工天数）

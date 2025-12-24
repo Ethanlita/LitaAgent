@@ -217,8 +217,9 @@ def compute_q_safe_offline(
     else:
         I_now = float(inventory) if inventory else 0.0
 
+    # 纯原材料模型：Q_out 是成品出库，不影响原材料库存
     Q_prod = np.full(horizon, n_lines, dtype=np.float32)
-    net_flow = Q_in_h - Q_out_h - Q_prod
+    net_flow = Q_in_h - Q_prod
     L = I_now + np.cumsum(net_flow)
 
     n_steps = int(state_dict.get('n_steps', 100) or 100)
@@ -795,9 +796,10 @@ def extract_macro_state(
     state_temporal[:, 1] = Q_out / max(max_inventory, 1.0)
     state_temporal[:, 2] = Q_prod / max(max_inventory, 1.0)
     
-    # 通道 3: inventory_proj（库存投影）
+    # 通道 3: inventory_proj（原材料库存投影）
+    # Q_out 是成品出库，不影响原材料库存，故不参与此计算
     I_now = inventory_raw
-    net_flow = Q_in - Q_out - Q_prod
+    net_flow = Q_in - Q_prod
     I_proj = I_now + np.cumsum(net_flow)
     state_temporal[:, 3] = np.clip(I_proj / max(max_inventory, 1.0), -1.0, 2.0)
     

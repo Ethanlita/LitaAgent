@@ -138,7 +138,7 @@ $$R\_t' \= R\_{env} \+ (\\Phi(s\_{t+1}) \- \\Phi(s\_t))$$
 
 **输入数据**：
 
-* 当前库存 $I\_{now}$。  
+* 当前**原材料**库存 $I\_{now}$（`awi.current_inventory_input`，非总库存）。  
 * 未来 $H$ 天的入库计划列表 $\\mathcal{S}\_{in} \= \\{(q\_i, \\delta\_i)\\}$。  
 * 未来 $H$ 天的出库计划列表 $\\mathcal{S}\_{out} \= \\{(q\_j, \\delta\_j)\\}$。  
 * 未来 $H$ 天的预计生产消耗 $\\mathcal{S}\_{prod} \= \\{(q\_k, \\delta\_k)\\}$（来自 L2 的生产计划或保守估计）。
@@ -147,12 +147,13 @@ $$R\_t' \= R\_{env} \+ (\\Phi(s\_{t+1}) \- \\Phi(s\_t))$$
 
 1. 构建净流向量 (Net Flow Vector)：  
    初始化长度为 $H$ 的向量 $\\mathbf{F} \= \[0, \\dots, 0\]$。  
-   遍历所有计划，将 $q$ 累加到对应的相对时间下标 $\\delta$ 上。入库为正，出库和生产消耗为负。  
+   遍历所有计划，将 $q$ 累加到对应的相对时间下标 $\\delta$ 上。原材料入库为正，生产消耗为负。  
+   **注意**：$Q_{out}$ 是成品出库，不影响原材料库存，故不参与此计算。
 2. 计算库存轨迹 (Inventory Trajectory)：
 
    $$I\_{proj}\[\\tau\] \= I\_{now} \+ \\sum\_{k=0}^{\\tau} \\mathbf{F}\[k\]$$
 
-   这将生成一条未来库存水位的曲线。  
+   这将生成一条未来**原材料**库存水位的曲线。  
 3. 计算有效自由空间 (Effective Free Space)：
 
    $$C\_{free}\[\\tau\] \= C\_{total} \- I\_{proj}\[\\tau\]$$
@@ -443,12 +444,12 @@ L4 必须显式地建模线程之间的依赖关系。
 2. 时间偏置掩码可以灵活编码冲突强度
 3. 实现更简洁，与 L3 的 Transformer 架构一致
 
-节点 $N_k$：第 $k$ 个谈判线程。特征为 L3 输出的隐状态 $h_k$ 和意向交货时间 $\hat{\delta}_k$。
+节点 $N_k$：第 $k$ 个谈判线程。特征为可离线重建的线程显式特征 $x_k$（`thread_feat`，来自可观测状态与谈判历史）以及意向交货时间 $\hat{\delta}_k$。
 时间偏置 $M_{time}[i,j]$：如果 $\hat{\delta}_i \approx \hat{\delta}_j$，则偏置值较大（冲突概率高，需要相互关注）；如果时间相距甚远，则偏置趋近于 0（无冲突，解耦）。
 
 ### **6.2 时空注意力计算（Transformer + 时间偏置）**
 
-L4 采用 **Transformer Encoder** 结构，输入为集合 $\{(h_k, \hat{\delta}_k, role_k)\}_{k=1}^K$。
+L4 采用 **Transformer Encoder** 结构，输入为集合 $\{(x_k, \hat{\delta}_k, role_k)\}_{k=1}^K$，并结合全局上下文（`global_feat`）计算线程权重 $\\alpha$。
 
 **注意力公式**：
 $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{QK^T}{\sqrt{d_k}} + \mathbf{M}_{time}\right)V$$
@@ -457,7 +458,7 @@ $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{QK^T}{\sqrt{d_k}} + \mat
 
 1. **时间嵌入**：将每个线程的意向时间 $\hat{\delta}_k$ 映射为向量 $e_{time}^k$。
 2. **角色嵌入**：将每个线程的角色（买/卖）映射为向量 $e_{role}^k$。
-3. **特征融合**：$h'_k = h_k + e_{time}^k + e_{role}^k$。
+3. **特征融合**：$h'_k = \\text{Proj}(x_k) + e_{time}^k + e_{role}^k$（其中 $\\text{Proj}$ 为线性投影）。
 4. **时间偏置掩码**：
    - 计算线程间的时间距离：$\Delta_{ij} = |\hat{\delta}_i - \hat{\delta}_j|$
    - 距离越近，偏置越大（表示冲突）：$M_{time}[i,j] = -\alpha \cdot \Delta_{ij}$（或使用可学习参数）

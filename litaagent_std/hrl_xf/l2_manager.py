@@ -111,6 +111,10 @@ class L2Output:
 class HeuristicL2Manager:
     """启发式 L2 管理器（无需训练）.
     
+    ⚠️ 警告：此类仅用于开发调试和冷启动 fallback。
+    生产环境中 L2-L4 层应使用 neural 模式，heuristic 模式
+    的参数未经调优，可能导致次优决策。
+    
     基于规则生成分桶目标，作为神经网络 L2 的基线。
     
     策略：

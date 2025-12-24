@@ -60,9 +60,9 @@ SCML 2025 强调并发协商。代理必须同时在多个线程中与上游供�
 1. **观测解析**：原始观测 $o\_t$ 被拆解。宏观特征（总库存、资金、天数、未来合约列表）流向 L2；微观特征（各线程的报价序列、剩余时间）流向 L3。  
 2. **L1 安全计算**：L1 根据当前 $I\_t, B\_t$ 及已签合约，计算物理约束。输出动作掩码张量 mask\_tensor 和基准动作张量 base\_action。此过程不涉及梯度计算。  
 3. **L2 战略规划**（仅在每日开始时激活）：L2 接收宏观特征，通过 MLP 网络输出高斯分布参数，采样得到当天的目标向量 goal\_vector（如：今日需买入 50 单位，最高价 100）。此向量被广播（Broadcast）给所有 L3 实例。  
-4. **L3 微观编码**：每个活跃线程的 L3 决策 Transformer 接收各自的历史序列 history\_seq 和 goal\_vector。Transformer 输出当前线程的隐状态 hidden\_state。  
-5. **L4 全局协调**：L4 接收所有线程的 hidden\_state 集合。通过多头自注意力（Multi-Head Self-Attention）计算各线程的注意力权重 attention\_weights。  
-6. 动作合成：L3 结合 hidden\_state 和 L4 反馈的 attention\_weights，输出残差动作 delta\_action。最终动作合成公式为：
+4. **L3 微观编码**：每个活跃线程的 L3 决策 Transformer 接收各自的历史序列 history\_seq、goal\_vector，并条件化 base\_action（baseline）。Transformer 输出用于生成残差动作的线程表征（latent/hidden\_state），但该表征**不作为 L4 的输入**（避免分布漂移与启发式教师不一致）。  
+5. **L4 全局协调**（与当前实现对齐）：L4 接收可离线重建的显式特征集合 `thread_feat_set`（每线程一条）以及全局上下文 `global_feat`，输出线程重要性权重 $\\alpha\_k$（softmax，线程数可变），用于全局调度与冲突消解。  
+6. 动作合成（作用点前移）：L3 在 base\_action 上生成 residual；L4 的 $\\alpha$ 主要用于批次级调度/动态预留（例如买侧按 $\\alpha$ 从高到低逐线程执行 `clip_action` 并动态扣减剩余 `B_free/Q_safe`），最终动作仍由 L1 安全掩码裁剪：
 
    $$a\_{final} \= \\text{Clip}(a\_{base} \+ \\Delta a, \\mathcal{M}\_{safe})$$
 

@@ -191,7 +191,7 @@ def run_world(entry: dict, base_dir: Path, parallelism: int | None):
     entry["status"] = "done"
     entry["output_dir"] = str(world_dir)
     print(f"[World {entry['id']}] 完成，日志目录={world_dir / 'logs'}", flush=True)
-    return world
+    return world_dir
 
 
 def main():

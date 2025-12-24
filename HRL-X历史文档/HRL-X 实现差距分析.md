@@ -176,11 +176,11 @@ def respond(self, negotiator_id, state):
 - [ ] 因果掩码（Causal Mask）实现
 - [ ] 可学习 `residual_scale` 参数
 - [ ] 谈判历史序列的滑动窗口管理
-- [ ] 隐状态 `h_k` 输出（供 L4 使用）
+- [ ] L4 输入特征构建（`thread_feat_set + global_feat`，不再依赖 `h_k` 作为 L4 输入）
 
 ---
 
-### 4. L4 全局协调层 - 完全缺失 ⚫
+### 4. L4 全局协调层 - 已在 HRL-XF 落地
 
 **设计文件引用**：`PenguinAgent 目标与谈判机制.md` 第4节、`HRL-X 架构实现与训练方案.md` 第7节
 
@@ -194,13 +194,14 @@ class GlobalCoordinator(tf.keras.layers.Layer):
         self.dense_k = tf.keras.layers.Dense(d_model)  # Key from thread states
 ```
 
-**核心机制**：
+**核心机制（与当前实现对齐）**：
 ```python
-# 输入：所有活跃 L3 线程的隐状态
-H_in = {h_1, h_2, ..., h_K}
+# 输入：所有活跃线程的显式特征集合（可离线重建） + 全局上下文
+X_thread = {x_1, x_2, ..., x_K}      # thread_feat_set
+S_global = global_feat               # global_feat
 
 # 注意力权重计算
-α = Softmax(Q @ K^T / √d_k)
+α = Softmax((Q @ K^T / √d_k) + M_time)   # M_time 可用 |Δt| 构造（时间偏置）
 
 # 输出：线程重要性权重
 # α_k 高 → L3 变得激进，确保成交
@@ -209,14 +210,17 @@ H_in = {h_1, h_2, ..., h_K}
 
 **当前实现**：
 
-**完全不存在任何 L4 相关代码**
+HRL-XF 已实现 L4（启发式 + 神经网络结构）与方案 B 的批次级调度：
+- `litaagent_std/hrl_xf/l4_coordinator.py`：L4 协调器（启发式/神经）
+- `litaagent_std/hrl_xf/agent.py`：批次统一规划与缓存，构建 `thread_feat_set + global_feat`
+- `litaagent_std/hrl_xf/batch_planner.py`：买侧按 $\\alpha$ 动态预留（逐线程扣减 `B_free/Q_safe`）
 
 **缺失清单**：
 
 - [ ] `GlobalCoordinator` 类
 - [ ] 多头自注意力计算
 - [ ] 全局状态编码（Query 生成）
-- [ ] 线程隐状态收集机制
+- [ ] 线程显式特征收集/刷新机制（`thread_feat_set`）
 - [ ] 注意力权重 `α_k` 分配
 - [ ] 权重到 L3 策略调制的映射
 - [ ] 端到端训练集成（与 L3 联合反向传播）

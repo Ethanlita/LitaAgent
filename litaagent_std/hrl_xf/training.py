@@ -708,7 +708,7 @@ def train_l4_distill(
 
         if (epoch + 1) % config.save_every == 0:
             ckpt_name = f"l4_distill_epoch_{epoch+1}.pt"
-            save_checkpoint(model, optimizer, epoch + 1, history, config.output_dir, ckpt_name)
+            save_checkpoint(model, optimizer, epoch + 1, config.output_dir, ckpt_name, history=history)
 
     return history
 
