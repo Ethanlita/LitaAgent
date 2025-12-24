@@ -5,9 +5,11 @@
   SCML 2025 Standard 前 5 名（scml-agents）和 SCML 2024 Standard 前 5 名、
   RandomStdAgent/SyncRandomStdAgent。
 - 启用 scml_analyzer Tracker 记录所有 LitaAgent 行为（包含 HRL-XF 完整字段）。
+- 默认 forced_logs_fraction=0.1（可用 --forced-logs-fraction 调整强制日志比例）。
 - 默认启用 log_negotiations/log_ufuns（可用 --no-csv 关闭大部分 CSV 以减轻 I/O）。
 - 使用 loky 执行器避免并行死锁问题。
 - 结束后自动归集数据，不启动浏览器。
+- 可续跑场次结束后自动清理 resumable 中间数据以节省磁盘。
 - 支持后台运行并将输出重定向到日志文件。
 
 安装：
@@ -26,6 +28,9 @@
 
     # 关闭大部分 CSV（仍保留最小 stats/params 等）
     python -m runners.hrl_data_runner --no-csv
+
+    # 调整强制日志比例（默认 0.1）
+    python -m runners.hrl_data_runner --forced-logs-fraction 0.05
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import argparse
 import importlib
 import math
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -499,6 +505,38 @@ def _resolve_tracker_dir(base_dir: Path, tournament_root: Path) -> Path:
     return tournament_root / "tracker_logs"
 
 
+def _cleanup_resumable_data(save_path: Path, tournament_root: Path) -> None:
+    stage_pattern = f"{save_path.name}-stage-*"
+    candidates: List[Path] = []
+    for p in save_path.parent.glob(stage_pattern):
+        candidates.append(p)
+    if tournament_root.exists() and tournament_root != save_path and tournament_root not in candidates:
+        candidates.append(tournament_root)
+
+    for p in candidates:
+        if p.exists():
+            print(f"[INFO] 清理 resumable 数据目录: {p}")
+            shutil.rmtree(p, ignore_errors=True)
+
+    for fname in (
+        ASSIGNED_CONFIGS_PICKLE_FILE,
+        ASSIGNED_CONFIGS_JSON_FILE,
+        "assigned_configs",
+    ):
+        fpath = save_path / fname
+        if not fpath.exists():
+            continue
+        if fpath.is_dir():
+            print(f"[INFO] 清理 resumable 文件夹: {fpath}")
+            shutil.rmtree(fpath, ignore_errors=True)
+        else:
+            print(f"[INFO] 清理 resumable 文件: {fpath}")
+            try:
+                fpath.unlink()
+            except Exception:
+                pass
+
+
 def main():
     """主函数：解析参数并运行锦标赛。"""
     parser = argparse.ArgumentParser(
@@ -536,6 +574,12 @@ def main():
     )
     parser.set_defaults(round_robin=True)
     parser.add_argument("--steps", type=int, default=None, help="固定 n_steps（小规模快速验证用）")
+    parser.add_argument(
+        "--forced-logs-fraction",
+        type=float,
+        default=0.1,
+        help="强制保留详细日志的 world 比例 (default: 0.1)",
+    )
     parser.add_argument(
         "--track-only-penguin",
         action="store_true",
@@ -657,7 +701,8 @@ def main():
         print(f"🧮 约束: max_worlds_per_config={args.max_worlds_per_config} (≈ {approx_worlds} worlds)")
     print(
         f"🔧 选项: tracker=True, visualizer=False, auto_collect={not args.no_auto_collect}, "
-        f"round_robin={args.round_robin}, no_csv={args.no_csv}"
+        f"round_robin={args.round_robin}, no_csv={args.no_csv}, "
+        f"forced_logs_fraction={args.forced_logs_fraction}"
     )
     print(f"⚙️  并行: {parallelism_label}")
     print("=" * 60 + "\n")
@@ -694,7 +739,7 @@ def main():
                 n_competitors_per_world=n_per_world,
                 max_worlds_per_config=args.max_worlds_per_config,
                 tournament_path=str(save_path.parent),
-                forced_logs_fraction=1.0,
+                forced_logs_fraction=args.forced_logs_fraction,
                 parallelism=parallelism,
                 round_robin=args.round_robin,
                 name=save_path.name,
@@ -738,7 +783,7 @@ def main():
             n_competitors_per_world=n_per_world,
             max_worlds_per_config=args.max_worlds_per_config,
             tournament_path=str(save_path),
-            forced_logs_fraction=1.0,
+            forced_logs_fraction=args.forced_logs_fraction,
             parallelism=parallelism,
             round_robin=args.round_robin,
             name=f"LitaHRLData_{timestamp}",
@@ -765,6 +810,12 @@ def main():
             print("[WARN] scml_analyzer.postprocess 不可用，跳过自动归集")
         except Exception as exc:
             print(f"[WARN] 自动归集失败: {exc}")
+
+    if args.resumable:
+        try:
+            _cleanup_resumable_data(save_path, Path(tournament_root))
+        except Exception as exc:
+            print(f"[WARN] 清理 resumable 数据失败: {exc}")
     
     # 如果重定向了输出，恢复并关闭
     if not args.foreground:
