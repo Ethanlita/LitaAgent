@@ -27,7 +27,7 @@ from .state_builder import StateBuilder, StateDict
 from .l2_manager import L2StrategicManager, L2Output
 from .l3_executor import L3ResidualExecutor, L3Output, NegotiationRound
 from .l4_coordinator import L4ThreadCoordinator, L4Output, ThreadState
-from .batch_planner import plan_buy_offers_by_alpha
+from .batch_planner import plan_buy_offers_by_alpha, plan_sell_offers_by_alpha
 
 # 尝试导入 Tracker（可选依赖）
 try:
@@ -477,9 +477,24 @@ class LitaAgentHRL(StdAgent):
             n = min(len(Q_available), len(self._buy_q_committed))
             if n > 0:
                 Q_available[:n] = np.maximum(0.0, Q_available[:n] - self._buy_q_committed[:n])
+            # 获取 raw_free 用于正确的动态预留，并扣减已承诺量
+            raw_free_orig = getattr(self._step_l1_buy, 'raw_free', None)
+            if raw_free_orig is not None:
+                raw_free = raw_free_orig.astype(np.float32).copy()
+                # 扣减 _buy_q_committed：对每个 delta，扣减该 delta 及之后的所有位置
+                # 因为在 delta 买入的货物从 delta 开始占用空间
+                for delta in range(min(len(raw_free), len(self._buy_q_committed))):
+                    committed = self._buy_q_committed[delta]
+                    if committed > 0:
+                        for k in range(delta, len(raw_free)):
+                            raw_free[k] -= committed
+                raw_free = np.maximum(raw_free, 0)
+            else:
+                raw_free = None
         else:
             B_available = 0.0
             Q_available = np.zeros((self.horizon + 1,), dtype=np.float32)
+            raw_free = None
 
         offers.update(
             plan_buy_offers_by_alpha(
@@ -490,26 +505,26 @@ class LitaAgentHRL(StdAgent):
                 Q_safe=Q_available,
                 B_free=B_available,
                 current_step=int(self.awi.current_step),
+                raw_free=raw_free,
             )
         )
 
-        for nid in sell_ids:
-            ctx = self._get_or_create_context(nid)
-            q_final, p_final, t_final = actions[nid]
-            l1_out = ctx.l1_output or self._step_l1_sell
-            if l1_out is None:
-                offers[nid] = None
-                continue
-            qty, price, delta_t = self.l1.clip_action(
-                action=(q_final, p_final, t_final),
-                Q_safe=l1_out.Q_safe,
-                B_free=float(l1_out.B_free),
-                is_buying=False,
+        # 卖侧也需要动态预留，避免多个线程重复使用同一份 Q_safe_sell
+        if self._step_l1_sell is not None:
+            Q_sell_available = self._step_l1_sell.Q_safe_sell.astype(np.float32).copy()
+        else:
+            Q_sell_available = np.zeros((self.horizon + 1,), dtype=np.float32)
+        
+        offers.update(
+            plan_sell_offers_by_alpha(
+                l1=self.l1,
+                sell_ids=sell_ids,
+                actions=actions,
+                alphas=l4_alpha_by_id,
+                Q_safe_sell=Q_sell_available,
+                current_step=int(self.awi.current_step),
             )
-            if qty <= 0:
-                offers[nid] = None
-                continue
-            offers[nid] = (int(qty), int(self.awi.current_step + delta_t), float(price))
+        )
 
         return _BatchPlan(signature=signature, offers=offers, l4_output=l4_output)
     
@@ -553,7 +568,13 @@ class LitaAgentHRL(StdAgent):
             if price > bucket_goal["P_buy"] * 1.1:  # 允许 10% 容差
                 return False
         else:
-            # 卖方：检查价格（应高于底价）
+            # 卖方：检查可交付性和价格
+            # 检查数量是否在安全卖出范围内
+            q_sell_cap = float(l1_output.Q_safe_sell[delta_t]) if delta_t < len(l1_output.Q_safe_sell) else 0.0
+            if qty > q_sell_cap:
+                return False
+            
+            # 检查价格（应高于底价）
             bucket_goal = l2_output.get_bucket_goal(self._delta_to_bucket(delta_t))
             if price < bucket_goal["P_sell"] * 0.9:  # 允许 10% 容差
                 return False
@@ -641,7 +662,11 @@ class LitaAgentHRL(StdAgent):
         feat[0] = priority
         feat[1] = float(target_delta / max(self.horizon, 1))
         feat[2] = 1.0 if ctx.l1_output.time_mask[target_delta] > -np.inf else 0.0
-        feat[3] = float((ctx.l1_output.Q_safe[target_delta] / max_inv) if ctx.is_buying else 0.0)
+        # 根据角色选择对应的 Q_safe
+        if ctx.is_buying:
+            feat[3] = float((ctx.l1_output.Q_safe[target_delta] / max_inv) if target_delta < len(ctx.l1_output.Q_safe) else 0.0)
+        else:
+            feat[3] = float((ctx.l1_output.Q_safe_sell[target_delta] / max_inv) if target_delta < len(ctx.l1_output.Q_safe_sell) else 0.0)
         feat[4] = float(baseline_q / max_inv)
         feat[5] = float(baseline_p / max_price)
         feat[6] = float(float(bucket_goal["Q_buy"]) / max_inv)

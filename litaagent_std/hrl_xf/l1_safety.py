@@ -439,7 +439,8 @@ class L1SafetyLayer:
             time_mask=time_mask,
             baseline_action=baseline_action,
             L_trajectory=L,
-            C_total=C_total
+            C_total=C_total,
+            raw_free=raw_free
         )
     
     def _extract_payables(self, awi: "StdAWI") -> np.ndarray:
@@ -607,7 +608,7 @@ class L1SafetyLayer:
         
         # 数量裁剪
         if is_buying:
-            # 不超过安全量
+            # 买侧：不超过安全买入量
             max_qty = Q_safe[delivery_time] if delivery_time < len(Q_safe) else 0.0
             # 不超过资金允许
             if price > 0:

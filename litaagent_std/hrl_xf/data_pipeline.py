@@ -190,7 +190,7 @@ def compute_q_safe_offline(
     state_dict: Dict[str, Any],
     horizon: int = 40,
 ) -> np.ndarray:
-    """从日志状态离线计算 L1 Q_safe（与 l1_safety.py 一致）。"""
+    """从日志状态离线计算 L1 Q_safe（买侧，与 l1_safety.py 一致）。"""
     temporal_len = horizon + 1
 
     inventory = state_dict.get('inventory', {})
@@ -243,10 +243,66 @@ def compute_q_safe_offline(
     return Q_safe.astype(np.float32)
 
 
+def compute_q_safe_sell_offline(
+    state_dict: Dict[str, Any],
+    horizon: int = 40,
+) -> np.ndarray:
+    """从日志状态离线计算 L1 Q_safe_sell（卖侧，与 l1_safety.py 一致）。
+    
+    算法分两步：
+    1. 计算成品轨迹 S[k] = I_output + Σ_{j=0}^{k-1} (Q_prod[j] - Q_out[j])
+    2. 使用逆向累积最小值：Q_safe_sell[δ] = min_{k>=δ} S[k]
+    """
+    temporal_len = horizon + 1
+
+    inventory = state_dict.get('inventory', {})
+    n_lines = int(state_dict.get('n_lines', 1) or 1)
+
+    commitments = state_dict.get('commitments', {})
+    Q_out = np.array(commitments.get('Q_out', np.zeros(temporal_len)), dtype=np.float32)
+
+    if len(Q_out) < temporal_len:
+        Q_out = np.pad(Q_out, (0, temporal_len - len(Q_out)))
+    else:
+        Q_out = Q_out[:temporal_len]
+
+    Q_out_h = Q_out[:horizon]
+
+    # 获取成品库存（output）
+    if isinstance(inventory, dict):
+        I_output_now = float(inventory.get('output', 0) or 0.0)
+    else:
+        I_output_now = 0.0
+
+    Q_prod = np.full(horizon, n_lines, dtype=np.float32)
+    
+    # 步骤1: 计算成品轨迹 S[k]
+    net_flow = Q_prod - Q_out_h  # 每天净产出
+    
+    S = np.zeros(horizon, dtype=np.float32)
+    S[0] = I_output_now  # 第0天只有当前成品
+    if horizon > 1:
+        cumulative_net = np.cumsum(net_flow[:-1])  # 前 k-1 天的累计净产出
+        S[1:] = I_output_now + cumulative_net
+    
+    # 步骤2: 逆向累积最小值
+    reversed_S = S[::-1]
+    reversed_cummin = np.minimum.accumulate(reversed_S)
+    Q_safe_sell_h = reversed_cummin[::-1]
+    Q_safe_sell_h = np.maximum(Q_safe_sell_h, 0)
+
+    Q_safe_sell = np.zeros(temporal_len, dtype=np.float32)
+    if horizon > 0 and len(Q_safe_sell_h) > 0:
+        Q_safe_sell[:horizon] = Q_safe_sell_h
+        Q_safe_sell[horizon] = Q_safe_sell_h[-1]
+    return Q_safe_sell.astype(np.float32)
+
+
 def compute_time_mask_offline(
     state_dict: Dict[str, Any],
     horizon: int = 40,
     min_tradable_qty: float = 1.0,
+    is_buying: bool = True,
 ) -> np.ndarray:
     """从日志状态离线计算 L1 time_mask.
     
@@ -262,13 +318,17 @@ def compute_time_mask_offline(
             - n_steps / current_step: 用于计算库容
         horizon: 规划视界
         min_tradable_qty: 最小可交易数量
+        is_buying: 是否为买入角色（True=买侧用Q_safe，False=卖侧用Q_safe_sell）
         
     Returns:
         time_mask: shape (H+1,)，值为 0 或 -inf
     """
-    Q_safe = compute_q_safe_offline(state_dict, horizon=horizon)
+    if is_buying:
+        Q_safe = compute_q_safe_offline(state_dict, horizon=horizon)
+    else:
+        Q_safe = compute_q_safe_sell_offline(state_dict, horizon=horizon)
     
-    # ========== 6. 生成 time_mask ==========
+    # ========== 生成 time_mask ==========
     time_mask = np.where(Q_safe >= min_tradable_qty, 0.0, -np.inf)
     
     return time_mask.astype(np.float32)
@@ -424,8 +484,9 @@ def compute_l1_baseline_offline(
     # 生产消耗（保守：假设满负荷）
     Q_prod = np.full(horizon, n_lines, dtype=np.float32)
     
-    # 库存轨迹：I[k+1] = I[k] + Q_in[k] - Q_out[k] - Q_prod[k]
-    net_flow = Q_in_h - Q_out_h - Q_prod
+    # 原材料库存轨迹：I[k+1] = I[k] + Q_in[k] - Q_prod[k]
+    # Q_out 是成品出库，不影响原材料库存，故不参与此计算
+    net_flow = Q_in_h - Q_prod
     L = I_now + np.cumsum(net_flow)
     
     # ========== 4. 计算库容 C_total ==========
@@ -1407,7 +1468,7 @@ def extract_l3_residuals(
             
             if current_state is not None:
                 try:
-                    time_mask = compute_time_mask_offline(current_state, horizon=horizon)
+                    time_mask = compute_time_mask_offline(current_state, horizon=horizon, is_buying=is_buyer)
                 except Exception:
                     time_mask = None  # 回退：无法计算时使用 None
         
@@ -1721,8 +1782,10 @@ def _extract_l4_distill_samples_for_world(
             continue
 
         # day 级公共量：L1 约束、baseline、归一化分母
-        time_mask = compute_time_mask_offline(state, horizon=horizon)
+        time_mask_buy = compute_time_mask_offline(state, horizon=horizon, is_buying=True)
+        time_mask_sell = compute_time_mask_offline(state, horizon=horizon, is_buying=False)
         Q_safe = compute_q_safe_offline(state, horizon=horizon)
+        Q_safe_sell = compute_q_safe_sell_offline(state, horizon=horizon)
 
         baseline_buy = compute_l1_baseline_offline(state, is_buying=True, horizon=horizon)
         baseline_sell = compute_l1_baseline_offline(state, is_buying=False, horizon=horizon)
@@ -1800,8 +1863,14 @@ def _extract_l4_distill_samples_for_world(
             feat = np.zeros(thread_feat_dim, dtype=np.float32)
             feat[0] = float(priority)
             feat[1] = float(target_delta / max(horizon, 1))
-            feat[2] = 1.0 if target_delta < len(time_mask) and float(time_mask[target_delta]) > -np.inf else 0.0
-            feat[3] = float((Q_safe[target_delta] / max_inv) if is_buyer and target_delta < len(Q_safe) else 0.0)
+            # 根据角色选择对应的 time_mask
+            thread_time_mask = time_mask_buy if is_buyer else time_mask_sell
+            feat[2] = 1.0 if target_delta < len(thread_time_mask) and float(thread_time_mask[target_delta]) > -np.inf else 0.0
+            # 根据角色选择对应的 Q_safe
+            if is_buyer:
+                feat[3] = float((Q_safe[target_delta] / max_inv) if target_delta < len(Q_safe) else 0.0)
+            else:
+                feat[3] = float((Q_safe_sell[target_delta] / max_inv) if target_delta < len(Q_safe_sell) else 0.0)
             feat[4] = float(float(baseline_q) / max_inv)
             feat[5] = float(float(baseline_p) / max(max_price, 1.0))
             feat[6] = float(float(goal[offset + 0]) / max_inv)

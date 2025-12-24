@@ -265,7 +265,19 @@ if TORCH_AVAILABLE:
             time_diff = time_diff.abs().float()
             
             # 时间距离越近 -> 偏置越大（需要更多协调）
+            # 方案A修复：将可学习的 time_bias 矩阵并入 attn_bias
+            # time_bias[i,j] 表示线程 i 与线程 j 的交货时间组合对注意力的额外偏置
             attn_bias = -time_diff  # (B, K, K)
+            
+            # 使用 thread_times_clamped 索引 time_bias 矩阵
+            # time_bias shape: (H+1, H+1)
+            # thread_times_clamped shape: (B, K)
+            # 需要构建 (B, K, K) 的偏置矩阵
+            t_i = thread_times_clamped.unsqueeze(-1).expand(-1, -1, K)  # (B, K, K)
+            t_j = thread_times_clamped.unsqueeze(-2).expand(-1, K, -1)  # (B, K, K)
+            learned_time_bias = self.time_bias[t_i, t_j]  # (B, K, K)
+            attn_bias = attn_bias + learned_time_bias
+            
             if thread_mask is not None:
                 # 将 padding key 屏蔽掉，避免其参与任何 query 的注意力计算
                 pad_keys = ~thread_mask.bool()  # (B, K)

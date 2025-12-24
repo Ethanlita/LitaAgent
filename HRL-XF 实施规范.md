@@ -322,6 +322,43 @@ def compute_safe_buy_mask(
     return Q_safe
 ```
 
+### 5.5.1 动态预留后的 Q_safe 更新
+
+当 L4 批次规划器为某个线程（交货日 $\delta_t$）预留 $q$ 单位时，需要更新 `raw_free` 并重算 Q_safe：
+
+```python
+def recompute_q_safe_after_reservation(
+    raw_free: np.ndarray,
+    delta_t: int,
+    reserved_qty: float
+) -> np.ndarray:
+    """
+    动态预留后重新计算 Q_safe。
+    
+    关键逻辑：在 delta_t 买入 q 单位，这 q 单位会从 delta_t 开始
+    一直占用库存空间（直到被 Q_prod 消耗），因此需要对所有
+    k >= delta_t 扣减 reserved_qty。
+    
+    这正是我们讨论的"多交期采购共存"的核心：
+    - 虽然对 k >= delta_t 都扣减了 reserved_qty
+    - 但 L 中已包含 Q_prod 的消耗效果
+    - 所以早期买入不会永久阻塞后期买入
+    """
+    raw_free = raw_free.copy()
+    
+    # 对所有 k >= delta_t 扣减预留量
+    for k in range(delta_t, len(raw_free)):
+        raw_free[k] -= reserved_qty
+    
+    # 重新计算逆向累积最小值
+    reversed_free = raw_free[::-1]
+    reversed_cummin = np.minimum.accumulate(reversed_free)
+    Q_safe = reversed_cummin[::-1]
+    Q_safe = np.maximum(Q_safe, 0)
+    
+    return Q_safe
+```
+
 ### 5.6 资金约束
 
 ```python
