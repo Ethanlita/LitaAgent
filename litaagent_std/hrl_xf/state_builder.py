@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple, List
 import numpy as np
 
 if TYPE_CHECKING:
@@ -303,6 +303,18 @@ class StateBuilder:
             fill_from_future(future_sales, Q_out)
             fill_from_future(future_supplies_cost, Payables)
             fill_from_future(future_sales_cost, Receivables)
+            
+            # 用聚合承诺构造 VWAP，保证 price_diff 与离线口径一致
+            for delta in range(temporal_len):
+                qty_in = float(Q_in[delta])
+                if qty_in > 0:
+                    unit_price = float(Payables[delta]) / max(qty_in, 1e-6)
+                    signed_buy_contracts_by_delta[delta] = [(qty_in, unit_price)]
+                
+                qty_out = float(Q_out[delta])
+                if qty_out > 0:
+                    unit_price = float(Receivables[delta]) / max(qty_out, 1e-6)
+                    signed_sell_contracts_by_delta[delta] = [(qty_out, unit_price)]
         else:
             # 回退：使用 signed_contracts（兼容旧版本）
             signed_contracts = getattr(awi, 'signed_contracts', []) or []
@@ -482,6 +494,119 @@ class StateBuilder:
             C_total[k] = n_lines * max(0, remaining_days)
         
         return C_total
+
+    def _get_active_offers_with_weights(
+        self,
+        awi: "StdAWI",
+        side: str,
+    ) -> List[Tuple[int, float, float, float]]:
+        """获取活跃报价并计算轮次衰减权重.
+
+        返回列表元素: (delivery_time, quantity, unit_price, weight)
+        weight = w_round * w_qty，其中 w_round 为轮次衰减，w_qty 为数量缩放.
+        """
+        round_decay = 0.3
+        qty_scale = 10.0
+
+        def _compute_round_weight(step_val, max_step, total_steps, rel_time):
+            if step_val is not None and total_steps is not None:
+                age = max(0.0, float(total_steps) - float(step_val))
+            elif step_val is not None and max_step is not None:
+                age = max(0.0, float(max_step) - float(step_val))
+            elif rel_time is not None:
+                age = max(0.0, (1.0 - float(rel_time)) * 5.0)
+            else:
+                age = 0.0
+            return float(np.exp(-round_decay * age))
+
+        offers: List[Tuple[int, float, float, float]] = []
+        details_by_side = getattr(awi, "current_negotiation_details", None)
+        details_list = None
+        step_by_partner: Dict[str, int] = {}
+        rel_by_partner: Dict[str, float] = {}
+        n_steps_by_partner: Dict[str, int] = {}
+
+        if isinstance(details_by_side, dict) and side in details_by_side:
+            raw_details = details_by_side.get(side)
+            if isinstance(raw_details, dict):
+                details_list = list(raw_details.values())
+                for pid, d in raw_details.items():
+                    st = getattr(getattr(d, "nmi", None), "state", None) or getattr(d, "state", None)
+                    step_val = getattr(st, "step", None)
+                    rel_time = getattr(st, "relative_time", None)
+                    total_steps = getattr(st, "n_steps", None) or getattr(getattr(d, "nmi", None), "n_steps", None)
+                    if step_val is not None:
+                        step_by_partner[str(pid)] = int(step_val)
+                    if rel_time is not None:
+                        rel_by_partner[str(pid)] = float(rel_time)
+                    if total_steps is not None:
+                        n_steps_by_partner[str(pid)] = int(total_steps)
+            elif raw_details:
+                details_list = list(raw_details)
+
+        if details_list:
+            steps = []
+            for d in details_list:
+                st = getattr(getattr(d, "nmi", None), "state", None) or getattr(d, "state", None)
+                step_val = getattr(st, "step", None)
+                if step_val is not None:
+                    steps.append(int(step_val))
+            max_step = max(steps) if steps else None
+
+            for d in details_list:
+                st = getattr(getattr(d, "nmi", None), "state", None) or getattr(d, "state", None)
+                offer = getattr(st, "current_offer", None) or getattr(d, "current_offer", None)
+                if offer is None or len(offer) < 3:
+                    continue
+                try:
+                    quantity = float(offer[0])
+                    delivery_time = int(offer[1])
+                    unit_price = float(offer[2])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if quantity <= 0 or unit_price <= 0:
+                    continue
+                step_val = getattr(st, "step", None)
+                rel_time = getattr(st, "relative_time", None)
+                total_steps = getattr(st, "n_steps", None) or getattr(getattr(d, "nmi", None), "n_steps", None)
+                w_round = _compute_round_weight(step_val, max_step, total_steps, rel_time)
+                w_qty = float(np.sqrt(quantity / (quantity + qty_scale)))
+                weight = w_round * w_qty
+                offers.append((delivery_time, quantity, unit_price, weight))
+
+            if offers:
+                return offers
+
+        # 回退：直接使用 current_*_offers
+        try:
+            if side == "sell":
+                current_offers = getattr(awi, "current_sell_offers", None) or {}
+            else:
+                current_offers = getattr(awi, "current_buy_offers", None) or {}
+        except Exception:
+            current_offers = {}
+
+        max_step = max(step_by_partner.values()) if step_by_partner else None
+        for pid, offer in current_offers.items():
+            if offer is None or len(offer) < 3:
+                continue
+            try:
+                quantity = float(offer[0])
+                delivery_time = int(offer[1])
+                unit_price = float(offer[2])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if quantity <= 0 or unit_price <= 0:
+                continue
+            step_val = step_by_partner.get(str(pid))
+            rel_time = rel_by_partner.get(str(pid))
+            total_steps = n_steps_by_partner.get(str(pid))
+            w_round = _compute_round_weight(step_val, max_step, total_steps, rel_time)
+            w_qty = float(np.sqrt(quantity / (quantity + qty_scale)))
+            weight = w_round * w_qty
+            offers.append((delivery_time, quantity, unit_price, weight))
+
+        return offers
     
     def _compute_buy_pressure(
         self, 
@@ -501,8 +626,8 @@ class StateBuilder:
         
         数据来源：
             1. signed_sell_by_delta (Q_out): 已签销售合约按 delta 聚合的数量
-            2. current_sell_offers: StdAWI 提供的当前卖出谈判最新出价
-               格式为 dict[partner_id, Outcome]，Outcome = (quantity, time, unit_price)
+            2. current_sell_offers/current_negotiation_details: 活跃卖出谈判出价
+               会按轮次衰减与数量缩放加权
             3. 若 current_sell_offers 不可用，退化为仅基于已签合约计算
             
         备选方案（如需更详细的谈判历史）：
@@ -526,33 +651,17 @@ class StateBuilder:
         t_current = awi.current_step
         weighted_demand = signed_sell_by_delta.copy().astype(np.float32)
         
-        # 从当前卖出谈判中获取活跃出价
+        # 从当前卖出谈判中获取活跃出价（轮次衰减权重）
         # （我方作为卖方，收到买方请求 -> 代表输出市场买方需求）
         # 高价买单权重更大（以 spot_price_out 为基准）
         # 注意：若 current_sell_offers 不可用，压力将仅基于已签合约计算
-        try:
-            current_sell_offers = getattr(awi, 'current_sell_offers', None)
-            if current_sell_offers is None:
-                current_sell_offers = {}
-        except Exception:
-            current_sell_offers = {}
-        
-        for partner_id, offer in current_sell_offers.items():
-            if offer is None:
+        for delivery_time, quantity, unit_price, weight in self._get_active_offers_with_weights(awi, "sell"):
+            if weight <= 0:
                 continue
-            try:
-                # Outcome 格式: (quantity, time, unit_price)
-                quantity = float(offer[0])
-                delivery_time = int(offer[1])
-                unit_price = float(offer[2])
-                delta = delivery_time - t_current
-                
-                if 0 <= delta < temporal_len:
-                    # 价格加权：高于输出市场现货价的买单权重 > 1
-                    price_weight = max(0.5, min(2.0, unit_price / max(spot_price_out, 1.0)))
-                    weighted_demand[delta] += quantity * price_weight
-            except (IndexError, TypeError, ValueError):
-                continue
+            delta = int(delivery_time) - t_current
+            if 0 <= delta < temporal_len:
+                price_weight = max(0.5, min(2.0, unit_price / max(spot_price_out, 1.0)))
+                weighted_demand[delta] += quantity * weight * price_weight
         
         # 归一化
         # TODO: 考虑在大容量场景下添加平滑常数避免过度稀释
@@ -579,8 +688,8 @@ class StateBuilder:
         
         数据来源：
             1. signed_buy_by_delta (Q_in): 已签采购合约按 delta 聚合的数量
-            2. current_buy_offers: StdAWI 提供的当前买入谈判最新出价
-               格式为 dict[partner_id, Outcome]，Outcome = (quantity, time, unit_price)
+            2. current_buy_offers/current_negotiation_details: 活跃买入谈判出价
+               会按轮次衰减与数量缩放加权
             3. 若 current_buy_offers 不可用，退化为仅基于已签合约计算
             
         备选方案（如需更详细的谈判历史）：
@@ -604,35 +713,18 @@ class StateBuilder:
         t_current = awi.current_step
         weighted_supply = signed_buy_by_delta.copy().astype(np.float32)
         
-        # 从当前买入谈判中获取活跃出价
+        # 从当前买入谈判中获取活跃出价（轮次衰减权重）
         # （我方作为买方，收到卖方报价 -> 代表输入市场卖方供给）
         # 低价卖单权重更大（以 spot_price_in 为基准）
         # 注意：若 current_buy_offers 不可用，压力将仅基于已签合约计算
-        try:
-            current_buy_offers = getattr(awi, 'current_buy_offers', None)
-            if current_buy_offers is None:
-                current_buy_offers = {}
-        except Exception:
-            current_buy_offers = {}
-        
-        for partner_id, offer in current_buy_offers.items():
-            if offer is None:
+        for delivery_time, quantity, unit_price, weight in self._get_active_offers_with_weights(awi, "buy"):
+            if weight <= 0:
                 continue
-            try:
-                # Outcome 格式: (quantity, time, unit_price)
-                quantity = float(offer[0])
-                delivery_time = int(offer[1])
-                unit_price = float(offer[2])
-                delta = delivery_time - t_current
-                
-                if 0 <= delta < temporal_len:
-                    # 价格加权：低于输入市场现货价的卖单权重 > 1
-                    # 使用倒数关系：价格越低，权重越高
-                    price_ratio = max(spot_price_in, 1.0) / max(unit_price, 1.0)
-                    price_weight = max(0.5, min(2.0, price_ratio))
-                    weighted_supply[delta] += quantity * price_weight
-            except (IndexError, TypeError, ValueError):
-                continue
+            delta = int(delivery_time) - t_current
+            if 0 <= delta < temporal_len:
+                price_ratio = max(spot_price_in, 1.0) / max(unit_price, 1.0)
+                price_weight = max(0.5, min(2.0, price_ratio))
+                weighted_supply[delta] += quantity * weight * price_weight
         
         # 归一化
         # TODO: 考虑在大容量场景下添加平滑常数避免过度稀释
@@ -653,7 +745,7 @@ class StateBuilder:
         
         信号来源优先级：
         1. 已签成交 VWAP（按交货日聚合）
-        2. 正在谈判的最新出价中位数（按交货日聚合）
+        2. 正在谈判的最新出价加权均值（轮次衰减）
         3. 回退到现货价（无数据时保持平坦）
         
         Args:
@@ -674,14 +766,29 @@ class StateBuilder:
         W_ACTIVE = 0.3   # 活跃谈判权重
         W_SPOT = 0.1     # 现货回退权重
         
-        # 获取活跃谈判数据
-        try:
-            if active_offers_source == "sell":
-                active_offers = getattr(awi, 'current_sell_offers', None) or {}
-            else:
-                active_offers = getattr(awi, 'current_buy_offers', None) or {}
-        except Exception:
-            active_offers = {}
+        active_prices_by_delta: Dict[int, List[Tuple[float, float]]] = {}
+        active_offers = self._get_active_offers_with_weights(awi, active_offers_source)
+
+        def _weighted_avg(values: List[Tuple[float, float]]) -> Optional[float]:
+            if not values:
+                return None
+            total_w = 0.0
+            total_v = 0.0
+            for v, w in values:
+                if w <= 0:
+                    continue
+                total_w += float(w)
+                total_v += float(v) * float(w)
+            if total_w <= 0:
+                return None
+            return total_v / total_w
+
+        for delivery_time, _, unit_price, weight in active_offers:
+            if weight <= 0:
+                continue
+            delta = int(delivery_time) - t_current
+            if 0 <= delta < temporal_len:
+                active_prices_by_delta.setdefault(delta, []).append((float(unit_price), float(weight)))
         
         for k in range(temporal_len):
             vwap_signed = None
@@ -699,21 +806,8 @@ class StateBuilder:
                     except (TypeError, ValueError):
                         pass
             
-            # 2) 活跃谈判中位价
-            active_prices = []
-            for offer in active_offers.values():
-                if offer is None:
-                    continue
-                try:
-                    delivery_time = int(offer[1])
-                    unit_price = float(offer[2])
-                    if delivery_time - t_current == k:
-                        active_prices.append(unit_price)
-                except (IndexError, TypeError, ValueError):
-                    continue
-            
-            if active_prices:
-                mid_active = float(np.median(active_prices))
+            # 2) 活跃谈判加权均值（轮次衰减）
+            mid_active = _weighted_avg(active_prices_by_delta.get(k, []))
             
             # 3) 融合计算
             if vwap_signed is not None and mid_active is not None:

@@ -474,27 +474,27 @@ class LitaAgentHRL(StdAgent):
         if self._step_l1_buy is not None:
             B_available = max(0.0, float(self._step_l1_buy.B_free) - float(self._buy_budget_committed))
             Q_available = self._step_l1_buy.Q_safe.astype(np.float32).copy()
-            n = min(len(Q_available), len(self._buy_q_committed))
-            if n > 0:
-                Q_available[:n] = np.maximum(0.0, Q_available[:n] - self._buy_q_committed[:n])
-            # 获取 raw_free 用于正确的动态预留，并扣减已承诺量
-            raw_free_orig = getattr(self._step_l1_buy, 'raw_free', None)
-            if raw_free_orig is not None:
-                raw_free = raw_free_orig.astype(np.float32).copy()
-                # 扣减 _buy_q_committed：对每个 delta，扣减该 delta 及之后的所有位置
-                # 因为在 delta 买入的货物从 delta 开始占用空间
-                for delta in range(min(len(raw_free), len(self._buy_q_committed))):
-                    committed = self._buy_q_committed[delta]
-                    if committed > 0:
-                        for k in range(delta, len(raw_free)):
-                            raw_free[k] -= committed
-                raw_free = np.maximum(raw_free, 0)
+            Q_in = self._step_l1_buy.Q_in.copy() if self._step_l1_buy.Q_in is not None else None
+            if Q_in is None:
+                # 回退：无法重算 Q_safe 时，直接扣减已承诺买入量
+                n = min(len(Q_available), len(self._buy_q_committed))
+                if n > 0:
+                    Q_available[:n] = np.maximum(0.0, Q_available[:n] - self._buy_q_committed[:n])
             else:
-                raw_free = None
+                # 将本步已承诺的买入计入 Q_in，供动态重算使用
+                n = min(len(Q_in), len(self._buy_q_committed))
+                if n > 0:
+                    Q_in[:n] = Q_in[:n] + self._buy_q_committed[:n]
+            I_input_now = getattr(self._step_l1_buy, 'I_input_now', None)
+            n_lines = getattr(self._step_l1_buy, 'n_lines', None)
+            C_total = getattr(self._step_l1_buy, 'C_total', None)
         else:
             B_available = 0.0
             Q_available = np.zeros((self.horizon + 1,), dtype=np.float32)
-            raw_free = None
+            Q_in = None
+            I_input_now = None
+            n_lines = None
+            C_total = None
 
         offers.update(
             plan_buy_offers_by_alpha(
@@ -505,7 +505,10 @@ class LitaAgentHRL(StdAgent):
                 Q_safe=Q_available,
                 B_free=B_available,
                 current_step=int(self.awi.current_step),
-                raw_free=raw_free,
+                Q_in=Q_in,
+                I_input_now=I_input_now,
+                n_lines=n_lines,
+                C_total=C_total,
             )
         )
 

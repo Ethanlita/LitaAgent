@@ -162,8 +162,8 @@ p_base = market_price * 1.05
 ## 2. 架构概览与数学定义
 LitaAgent-HRL 由四层组成，时间尺度与职责不同：
 - **L1 安全/基准层**：提炼自 Penguin 的微观谈判逻辑，输出安全掩码与基准报价，防止超量、超价、超资金。  
-- **L2 战略管理层**：每日决策（Day 级），生成目标向量  
-  \( g_t = [Q^{buy}_t, P^{buy}_t, Q^{sell}_t, P^{sell}_t] \)。  
+- **L2 战略管理层**：每日决策（Day 级），生成 16 维分桶目标向量  
+  \( g_t \in \mathbb{R}^{16} = 4桶 \times [Q^{buy}, P^{buy}, Q^{sell}, P^{sell}] \)。为便于叙述，后文常以单桶四元组表示。  
 - **L3 残差执行层**：轮级决策（Round 级），在 L1 基准上输出残差  
   \( \Delta a = [\Delta q, \Delta p] \)，合成最终报价  
   \( a_{final} = \text{clip}(a_{base} + \Delta a, \text{mask}) \)。  
@@ -448,8 +448,8 @@ training.save_model(l3_model, cfg.output_dir, "l3_bc.pt")
   - `max_inventory = n_lines × n_steps`（经济容量）
   
   **通道 5-9（balance_proj, price_diff_in, price_diff_out, buy_pressure, sell_pressure）**：
-  - 在线模式：实时计算采购/销售两个 price_diff（成交 VWAP + 活跃报价加权均值 + spot）以及买/卖压力
-  - 离线模式：优先使用 tracker JSON 的 `offers_snapshot`；若快照为空，则从谈判日志按**轮次/数量加权**聚合活跃报价回填；仍缺失时回退 commitments/0
+  - 在线模式：实时计算采购/销售两个 price_diff（成交 VWAP + 活跃报价轮次衰减加权均值 + spot）以及买/卖压力
+  - 离线模式：若有谈判日志，优先按**轮次衰减/数量加权**重建活跃报价；否则使用 tracker JSON 的 `offers_snapshot`；仍缺失时回退 commitments/0
   - **建议**：使用 tracked runner 输出 JSON 格式，才能保留 price_diff_in/out 与压力通道
   
 - **L1 baseline 如何在离线数据中计算？**  
@@ -474,14 +474,14 @@ training.save_model(l3_model, cfg.output_dir, "l3_bc.pt")
   - 若 `time_mask` 全为 `-inf`（极端情况下可能发生），离线管道会**强制保留** `t_base` 为可行，以避免训练时数值异常。  
   - 推理时可将该情况视为“无法交易/终止谈判”，由 L1/L3 共同约束。  
 
-- **为什么库存投影不区分原料和成品？**  
+- **为什么库存投影只使用原材料库存？**  
   这是**有意的设计决策**，而非遗漏。理由如下：
-  1. **与 `state_builder.py` 一致**：在线推理时的状态构建器使用 `total_inventory = raw + finished` 作为统一库存指标，离线数据管道保持相同语义。
-  2. **信息压缩**：L2 战略层关注的是"是否需要补货"和"是否需要清仓"，这两个决策可以通过**总库存水位**和**承诺向量**（Q_in/Q_out）联合推断，无需区分原料/成品的精确库存。
-  3. **生产假设**：SCML 2025 Standard 赛道的生产是确定性的（输入原料 → 输出成品），L1 安全层已经处理了生产能力约束。L2 只需知道"库存紧张还是充裕"即可制定目标。
-  4. **复杂度权衡**：区分原料/成品需要额外的特征通道和更复杂的投影逻辑，但收益有限。如果未来发现这影响了模型性能，可以扩展为 `(H+1, 12)` 的双轨投影。
-
-  **注意**：如果需要原料/成品分离的精细投影，可以修改 `extract_macro_state()` 中的通道 0-1，但需同步更新 `state_builder.py` 以保持在线/离线一致性。
+  1. **与 L1 安全层一致**：L1 的库容约束针对原材料入库与产能消耗，库存投影使用原材料更能反映“可加工”约束。
+  2. **因果链一致**：Q_out 是成品出库，不影响原材料库存；将其混入原材料投影会造成语义混淆。
+  3. **信息压缩**：L2 关注“是否需要补货/清仓”，原材料投影 + Q_out 承诺已足够提供趋势信号。
+  4. **复杂度权衡**：若未来需要更精细的双轨投影，可扩展为 `(H+1, 12)` 并同步更新在线/离线实现。
+ 
+  **注意**：若扩展为原料/成品双轨投影，需同步修改 `extract_macro_state()` 与 `state_builder.py`，保持在线/离线一致性。
 
 - **L3 残差的 baseline 是什么？为什么不是 PenguinAgent 的完整输出？**  
   这是 HRL-XF 架构的**核心设计决策**。详细说明如下：

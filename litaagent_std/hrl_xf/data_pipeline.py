@@ -211,16 +211,22 @@ def compute_q_safe_offline(
 
     Q_in_h = Q_in[:horizon]
     Q_out_h = Q_out[:horizon]
+    _ = Q_out_h  # 买侧 baseline 不使用 Q_out，保留字段以兼容日志结构
+    _ = Q_out_h  # 买侧 Q_safe 计算不使用 Q_out，保留字段以兼容日志结构
 
     if isinstance(inventory, dict):
         I_now = float(inventory.get('input', 0) or 0.0)
     else:
         I_now = float(inventory) if inventory else 0.0
 
-    # 纯原材料模型：Q_out 是成品出库，不影响原材料库存
-    Q_prod = np.full(horizon, n_lines, dtype=np.float32)
-    net_flow = Q_in_h - Q_prod
-    L = I_now + np.cumsum(net_flow)
+    # 计算 backlog（满载加工假设）
+    backlog = np.zeros(horizon, dtype=np.float32)
+    b = float(I_now)
+    for k in range(horizon):
+        backlog[k] = max(0.0, b)
+        b = b + float(Q_in_h[k]) - float(n_lines)
+        if b < 0.0:
+            b = 0.0
 
     n_steps = int(state_dict.get('n_steps', 100) or 100)
     current_step = int(state_dict.get('current_step', 0) or 0)
@@ -230,10 +236,9 @@ def compute_q_safe_offline(
         remaining_days = n_steps - (current_step + k)
         C_total[k] = n_lines * max(0, remaining_days)
 
-    raw_free = C_total - L
-    reversed_free = raw_free[::-1]
-    reversed_cummin = np.minimum.accumulate(reversed_free)
-    Q_safe_h = reversed_cummin[::-1]
+    # Q_safe[δ] = max(0, C_total[δ] - backlog[δ] - Σ_{k=δ}^{H-1} Q_in[k])
+    suffix_in = np.cumsum(Q_in_h[::-1])[::-1]
+    Q_safe_h = C_total - backlog - suffix_in
     Q_safe_h = np.maximum(Q_safe_h, 0)
 
     Q_safe = np.zeros(temporal_len, dtype=np.float32)
@@ -394,8 +399,7 @@ def compute_l1_baseline_offline(
     算法核心（必须与 l1_safety.py 完全一致）：
     
     1. Q_safe 计算（仅买入）：
-       Q_safe[δ] = min_{k=δ}^{H-1} (C_total[k] - L[k])
-       使用逆向累积最小值高效计算。
+       Q_safe[δ] = max(0, C_total[δ] - backlog[δ] - Σ_{k=δ}^{H-1} Q_in[k])
        
     2. B_free 计算：
        B_free = balance - reserve - Σ Payables  (标量，而非数组)
@@ -472,7 +476,7 @@ def compute_l1_baseline_offline(
     Q_out_h = Q_out[:horizon]
     Payables_h = Payables[:horizon]
     
-    # ========== 3. 计算库存轨迹 L ==========
+    # ========== 3. 计算 backlog 轨迹 ==========
     # 重要：使用原材料库存（input），与 l1_safety.py 保持一致
     # 因为采购入库的是原材料，库容约束针对原材料存储空间
     if isinstance(inventory, dict):
@@ -481,13 +485,14 @@ def compute_l1_baseline_offline(
         # 如果是单个数值，假设就是原材料库存
         I_now = float(inventory) if inventory else 0.0
     
-    # 生产消耗（保守：假设满负荷）
-    Q_prod = np.full(horizon, n_lines, dtype=np.float32)
-    
-    # 原材料库存轨迹：I[k+1] = I[k] + Q_in[k] - Q_prod[k]
-    # Q_out 是成品出库，不影响原材料库存，故不参与此计算
-    net_flow = Q_in_h - Q_prod
-    L = I_now + np.cumsum(net_flow)
+    # backlog 递推：B[0]=I_now, B[k+1]=max(0, B[k]+Q_in[k]-n_lines)
+    backlog = np.zeros(horizon, dtype=np.float32)
+    b = float(I_now)
+    for k in range(horizon):
+        backlog[k] = max(0.0, b)
+        b = b + float(Q_in_h[k]) - float(n_lines)
+        if b < 0.0:
+            b = 0.0
     
     # ========== 4. 计算库容 C_total ==========
     # 修复：与在线版本一致，使用 n_lines * (n_steps - (current_step + k))
@@ -501,14 +506,10 @@ def compute_l1_baseline_offline(
         remaining_days = n_steps - (current_step + k)
         C_total[k] = n_lines * max(0, remaining_days)
     
-    # ========== 5. 计算 Q_safe（关键：使用逆向累积最小值） ==========
-    # Q_safe[δ] = min_{k=δ}^{H-1} (C_total[k] - L[k])
-    raw_free = C_total - L  # shape (horizon,)
-    
-    # 逆向累积最小值
-    reversed_free = raw_free[::-1]
-    reversed_cummin = np.minimum.accumulate(reversed_free)
-    Q_safe_h = reversed_cummin[::-1]
+    # ========== 5. 计算 Q_safe（新算法） ==========
+    # Q_safe[δ] = max(0, C_total[δ] - backlog[δ] - Σ_{k=δ}^{H-1} Q_in[k])
+    suffix_in = np.cumsum(Q_in_h[::-1])[::-1]
+    Q_safe_h = C_total - backlog - suffix_in
     
     # 非负约束
     Q_safe_h = np.maximum(Q_safe_h, 0)
@@ -880,8 +881,8 @@ def extract_macro_state(
     state_temporal[:, 5] = np.clip(B_proj / max(initial_balance, 1.0), -1.0, 2.0)
     
     # 通道 6-9: price_diff_in/out, buy_pressure, sell_pressure
-    # 优先从 offers_snapshot 重建（Tracker 完整数据）
-    # 否则回退到 commitments 中的预计算值（如有）
+    # 优先使用 offers_snapshot_by_day（轮次衰减权重）
+    # 否则回退到 tracker offers_snapshot / commitments 预计算值
     offers_snapshot = day_log.get('offers_snapshot', {'buy': [], 'sell': []})
     
     if offers_snapshot.get('buy') or offers_snapshot.get('sell'):
@@ -2812,10 +2813,8 @@ def _daily_states_to_logs(
         pending_sell_value = sum(Receivables) if Receivables else 0
         
         offers_snapshot = state.get('offers_snapshot', {'buy': [], 'sell': []})
-        if offers_snapshot_by_day:
-            has_offers = offers_snapshot and (offers_snapshot.get('buy') or offers_snapshot.get('sell'))
-            if not has_offers and day in offers_snapshot_by_day:
-                offers_snapshot = offers_snapshot_by_day[day]
+        if offers_snapshot_by_day and day in offers_snapshot_by_day:
+            offers_snapshot = offers_snapshot_by_day[day]
 
         day_log = {
             'current_step': day,

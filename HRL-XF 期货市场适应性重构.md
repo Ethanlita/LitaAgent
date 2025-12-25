@@ -43,7 +43,7 @@
 * $L\_{prod}$：生产线数量与效率参数。  
 * $Step$：当前仿真步数（归一化）。
 
-* **设计决策**：优先尝试通过 `awi.profile.storage_capacity` 获取静态库容。如果 negmas 未提供该接口，则采用动态公式：$C_{total}[k] = n\_lines \times (T_{max} - (t+k))$。**逻辑解释（买入时）**：买入的是原材料，而原材料需要加工才能出售。超出「原材料交货日到最后一日的总产能」的所有原材料都会因为无法及时加工而被浪费掉。因此动态库容本质上是「可有效利用的原材料容量」。（注：卖出时库容约束相对宽松，因为成品可以直接销售，不受加工时间限制）
+* **设计决策**：统一使用经济容量 $C_{total}[k] = n\_lines \times (T_{max} - (t+k))$。**逻辑解释（买入时）**：买入的是原材料，而原材料需要加工才能出售。超出「原材料交货日到最后一日的总产能」的所有原材料都会因为无法及时加工而被浪费掉。因此动态库容本质上是「可有效利用的原材料容量」。（注：卖出时库容约束相对宽松，因为成品可以直接销售，不受加工时间限制）
 
 #### **2.1.2 时序状态张量 ($\\mathbf{X}\_{temporal}$)**
 
@@ -56,7 +56,7 @@ $\\mathbf{X}\_{temporal} \\in \\mathbb{R}^{(H+1) \\times 10}$，其中 $H=40$，
 | 0 | `vol_in` | $Q_{in}[k]$ = 第 $t+k$ 天到货的采购量（已签署合约） |
 | 1 | `vol_out` | $Q_{out}[k]$ = 第 $t+k$ 天发货的销售量（已签署合约） |
 | 2 | `prod_plan` | $Q_{prod}[k]$ = 预计生产消耗（保守估计） |
-| 3 | `inventory_proj` | $I_{proj}[k] = I_{now} + \sum_{j=0}^{k}(Q_{in}[j] - Q_{out}[j] - Q_{prod}[j])$ |
+| 3 | `inventory_proj` | $I_{proj}[k] = I_{now} + \sum_{j=0}^{k}(Q_{in}[j] - Q_{prod}[j])$（原材料库存投影） |
 | 4 | `capacity_free` | $C_{free}[k] = C_{total}[k] - I_{proj}[k]$ |
 | 5 | `balance_proj` | $B_{proj}[k] = B_t + \sum_{j=0}^{k}(Receivables[j] - Payables[j] - Q_{prod}[j]\cdot cost)$ |
 | 6 | `price_diff_in` | 采购侧期货溢价：$P^{buy}_{future}[k] - P^{buy}_{spot}$ |
@@ -66,7 +66,7 @@ $\\mathbf{X}\_{temporal} \\in \\mathbb{R}^{(H+1) \\times 10}$，其中 $H=40$，
 
 **通道 6-9 计算说明**：
 
-- `price_diff_in/out`：成交 VWAP 与活跃报价中位数融合（权重 0.6/0.3/0.1），分别基于买入/卖出谈判和 `spot_price_in/out`
+- `price_diff_in/out`：成交 VWAP 与活跃报价轮次衰减加权均值融合（权重 0.6/0.3/0.1），分别基于买入/卖出谈判和 `spot_price_in/out`
 - `buy_pressure[k]`：输出市场买方需求强度 = 已签销售量 (Q_out) + 卖出谈判中买家的报价量（以 spot_price_out 为基准，高价权重更大），除以经济容量裁剪到 `[0,1]`
 - `sell_pressure[k]`：输入市场卖方供给强度 = 已签采购量 (Q_in) + 买入谈判中卖家的报价量（以 spot_price_in 为基准，低价权重更大），除以经济容量裁剪到 `[0,1]`
 
@@ -80,8 +80,9 @@ $\\mathbf{X}\_{temporal} \\in \\mathbb{R}^{(H+1) \\times 10}$，其中 $H=40$，
 
 为了解决买卖逻辑不对称的缺陷，HRL-XF 在 **L2、L3、L4 所有层级** 强制引入角色嵌入。
 
-* 形式：One-hot 编码 $[1, 0]$ (Buyer) 或 $[0, 1]$ (Seller)，或通过可学习的 Embedding 层映射为低维稠密向量 $\\mathbf{e}_{role} \\in \\mathbb{R}^{d}$。
-* 作用：指示神经网络当前是在处理"补货"任务还是"去库存"任务，使得同一套网络权重可以学习镜像的博弈逻辑（例如：买方压价与卖方抬价是对称的）。
+* **L2**：Multi-Hot 谈判能力编码 $[can\_buy, can\_sell]$，用于指示供应链位置。  
+* **L3/L4**：One-hot 谈判角色 $[1, 0]$ (Buyer) 或 $[0, 1]$ (Seller)，或通过可学习的 Embedding 层映射为低维稠密向量 $\\mathbf{e}_{role} \\in \\mathbb{R}^{d}$。  
+* 作用：在具体谈判中指示方向，使同一套网络权重学习镜像博弈逻辑。
 
 **设计洞察**：原 HRL-X 将状态视为扁平向量输入 MLP。HRL-XF 必须将 $\\mathbf{X}\_{temporal}$ 视为时间序列，输入到 **1D-CNN** 或 **Transformer Encoder** 中，以提取"库存缺口模式"（例如：第 5-8 天将出现严重原料短缺）。
 
@@ -160,20 +161,19 @@ $$R\_t' \= R\_{env} \+ (\\Phi(s\_{t+1}) \- \\Phi(s\_t))$$
 
    注意：必须确保 $I\_{proj}\[\\tau\] \\ge 0$（不缺货约束）和 $C\_{free}\[\\tau\] \\ge 0$（不爆仓约束）。如果任何点违反，则当前状态本身已不安全，需立即停止买入并紧急抛售。  
 4. 生成最大买入量掩码 (Max Buy Mask)：  
-   这是一个关键逻辑：如果我在 $\\delta$ 时刻买入 $q$，这个 $q$ 将一直占据库存，直到被生产消耗或卖出。为了安全起见（L1 必须保守），我们假设买入的原料可能会滞留一段时间。  
-   最严格的约束是：买入量 $q$ 不能导致从 $\\delta$ 开始的未来 任何一天 爆仓。
+   采用“满载加工假设”构建 backlog：  
+   $$B[0]=I_{now}, \\quad B[k+1]=\\max(0, B[k]+Q_{in}[k]-n_{lines})$$
 
-   $$Q_{safe}[\delta] = \min_{k=\delta}^{H} (C_{total}[k] - L(k))$$
+   最大买入量约束：
+   $$Q_{safe}[\\delta]=\\max\\big(0, C_{total}[\\delta]-B[\\delta]-\\sum_{k=\\delta}^{H-1}Q_{in}[k]\\big)$$
 
-   这个公式的含义是：如果在未来第 10 天仓库会满（自由库容为0），那么即便今天仓库是空的，我也不能买入任何将在第 10 天之前到货且滞留到第 10 天的货物。
+   含义：交货日之后的剩余可加工量必须覆盖已有 backlog 与已承诺入库量。
 
-   **向量化实现（支持动态 $C_{total}$）**：由于 $C_{total}$ 可能是一个向量（动态库容），此公式天然支持这种情况。实现时使用**逆向累积最小值（Reverse Cumulative Min）**高效计算：
+   **向量化实现（支持动态 $C_{total}$）**：
    ```python
-   raw_free = C_total - L  # shape (H,)
-   reversed_free = raw_free[::-1]
-   reversed_cummin = np.minimum.accumulate(reversed_free)
-   Q_safe = reversed_cummin[::-1]
-   Q_safe = np.maximum(Q_safe, 0)  # 非负约束
+   backlog = compute_inventory_trajectory(I_now, Q_in, n_lines, H)
+   suffix_in = np.cumsum(Q_in[::-1])[::-1]
+   Q_safe = np.maximum(C_total - backlog - suffix_in, 0)
    ```
 
 ### **3.2 TensorFlow 自定义层实现**
@@ -267,7 +267,7 @@ L1 不再输出单一的 max\_buy\_qty，而是输出一个向量 max\_q\_per\_d
 * **Bucket 0 (Urgent, Days 0-2)**: 解决眼前的短缺。  
 * **Bucket 1 (Short-term, Days 3-7)**: 维持周转。  
 * **Bucket 2 (Medium-term, Days 8-14)**: 建立缓冲区。  
-* **Bucket 3 (Long-term, Days 15-19)**: 战略储备/投机。
+* **Bucket 3 (Long-term, Days 15+)**: 战略储备/投机。
 
 L2 的输出动作向量变为（**买卖对称设计**）：
 
@@ -283,7 +283,7 @@ $$A_{L2} = [Q_{buy}^0, P_{buy}^0, Q_{sell}^0, P_{sell}^0, ..., Q_{buy}^3, P_{buy
 
 1. **输入层**：  
    * scalar\_input: $(B, 12)$ (资金、总库存等)  
-   * temporal\_input: $(B, H, 6)$ (上述 2.1.2 定义的张量)  
+   * temporal\_input: $(B, H\!+\!1, 10)$ (上述 2.1.2 定义的张量)  
 2. **时序特征提取塔 (Temporal Tower)**：  
    * Conv1D(filters=32, kernel\_size=3, strides=1, activation='relu')  
    * Conv1D(filters=64, kernel\_size=3, strides=1, activation='relu')  
@@ -293,8 +293,8 @@ $$A_{L2} = [Q_{buy}^0, P_{buy}^0, Q_{sell}^0, P_{sell}^0, ..., Q_{buy}^3, P_{buy
    * Concat(\[scalar\_input, temporal\_embedding\])  
    * Dense(128, activation='relu')  
 4. **策略头 (Policy Head)**：  
-   * Dense(8) $\\to$ 输出 4 个桶的 $Q$ 和 $P$ 的均值。  
-   * Dense(8) $\\to$ 输出标准差（用于 PPO 探索）。
+   * Dense(16) $\\to$ 输出 4 个桶的 $Q_{buy}, P_{buy}, Q_{sell}, P_{sell}$ 均值。  
+   * Dense(16) $\\to$ 输出标准差（用于 PPO 探索）。
 
 **代码实现片段**：
 

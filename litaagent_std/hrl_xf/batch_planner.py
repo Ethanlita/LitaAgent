@@ -11,7 +11,12 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from negmas.outcomes import Outcome
 
-from .l1_safety import L1SafetyLayer, recompute_q_safe_after_reservation
+from .l1_safety import (
+    L1SafetyLayer,
+    compute_inventory_trajectory,
+    compute_safe_buy_mask,
+    recompute_q_safe_after_reservation,
+)
 
 
 def plan_buy_offers_by_alpha(
@@ -23,14 +28,17 @@ def plan_buy_offers_by_alpha(
     Q_safe: np.ndarray,
     B_free: float,
     current_step: int,
-    raw_free: Optional[np.ndarray] = None,
+    Q_in: Optional[np.ndarray] = None,
+    I_input_now: Optional[float] = None,
+    n_lines: Optional[float] = None,
+    C_total: Optional[np.ndarray] = None,
 ) -> Dict[str, Optional[Outcome]]:
     """按 α 从高到低依次裁剪每个买方线程的动作，并动态扣减剩余资源.
 
     说明：
     - 不做"预算切块"，而是按线程动作的实际需求逐个"预留/扣账"；
     - 用 thread_id 作为稳定的次序打破平局，保证确定性。
-    - 修复：正确维护 Q_safe 的逆向累积最小值不变式。
+    - 修复：按新 Q_safe 公式动态重算（更新 Q_in 后重算 backlog 与 Q_safe）。
     
     Args:
         l1: L1SafetyLayer 实例
@@ -40,7 +48,10 @@ def plan_buy_offers_by_alpha(
         Q_safe: 初始安全买入量向量，shape (H+1,)
         B_free: 初始可用资金
         current_step: 当前仿真步数
-        raw_free: 原始可用空间向量 (C_total - L)，用于正确重算 Q_safe
+        Q_in: 已承诺入库量向量，shape (H,)
+        I_input_now: 当前原材料库存
+        n_lines: 每日最大加工量
+        C_total: 库容向量，shape (H,)
     """
 
     offers: Dict[str, Optional[Outcome]] = {nid: None for nid in buy_ids}
@@ -48,11 +59,22 @@ def plan_buy_offers_by_alpha(
     B_remain = float(max(0.0, B_free))
     Q_remain = Q_safe.astype(np.float32).copy()
     
-    # 如果提供了 raw_free，则使用正确的动态预留方式
-    if raw_free is not None:
-        raw_free_remain = raw_free.astype(np.float32).copy()
+    # 如果提供了 Q_in 等信息，则使用新算法动态重算
+    if Q_in is not None and I_input_now is not None and n_lines is not None and C_total is not None:
+        Q_in_remain = Q_in.astype(np.float32).copy()
     else:
-        raw_free_remain = None
+        Q_in_remain = None
+
+    # 用 Q_in 重算一次 Q_safe，确保与最新入库承诺一致
+    if Q_in_remain is not None:
+        backlog = compute_inventory_trajectory(
+            float(I_input_now), Q_in_remain, float(n_lines), len(Q_in_remain)
+        )
+        Q_safe_h = compute_safe_buy_mask(C_total.astype(np.float32), Q_in_remain, backlog, len(Q_in_remain))
+        if len(Q_safe_h) > 0:
+            Q_remain = np.zeros(len(Q_safe_h) + 1, dtype=np.float32)
+            Q_remain[:len(Q_safe_h)] = Q_safe_h
+            Q_remain[len(Q_safe_h)] = Q_safe_h[-1]
 
     for nid in sorted(buy_ids, key=lambda x: (-float(alphas.get(x, 0.0)), x)):
         if nid not in actions:
@@ -70,14 +92,16 @@ def plan_buy_offers_by_alpha(
 
         B_remain -= float(qty) * float(price)
         
-        # 正确的动态预留：对所有 k >= delta_t 扣减，然后重算 Q_safe
-        if raw_free_remain is not None and qty > 0:
-            Q_remain = recompute_q_safe_after_reservation(
-                raw_free_remain, delta_t, float(qty)
+        # 正确的动态预留：更新 Q_in 后重算 Q_safe
+        if Q_in_remain is not None and qty > 0:
+            Q_remain, Q_in_remain = recompute_q_safe_after_reservation(
+                Q_in_remain,
+                delta_t,
+                float(qty),
+                float(I_input_now),
+                float(n_lines),
+                C_total.astype(np.float32),
             )
-            # 同步更新 raw_free_remain
-            for k in range(delta_t, len(raw_free_remain)):
-                raw_free_remain[k] -= float(qty)
         else:
             # 回退到旧逻辑（向后兼容，但不够准确）
             if 0 <= delta_t < len(Q_remain):
@@ -150,4 +174,3 @@ __all__ = [
     "plan_buy_offers_by_alpha",
     "plan_sell_offers_by_alpha",
 ]
-

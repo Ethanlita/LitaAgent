@@ -142,7 +142,7 @@ class HeuristicL2Manager:
         
         Args:
             x_static: 静态特征，shape (12,)
-            X_temporal: 时序特征，shape (H, 10)
+            X_temporal: 时序特征，shape (H+1, 10)
             is_buying: 当前角色
             
         Returns:
@@ -275,18 +275,18 @@ if TORCH_AVAILABLE:
                 nn.Linear(64, 1)
             )
         
-        def forward(
-            self,
-            x_static: "torch.Tensor",
-            X_temporal: "torch.Tensor",
-            x_role: "torch.Tensor"
-        ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-            """前向传播.
-            
-            Args:
-                x_static: (B, 12) - 静态特征
-                X_temporal: (B, H, 10) - 时序特征
-                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
+    def forward(
+        self,
+        x_static: "torch.Tensor",
+        X_temporal: "torch.Tensor",
+        x_role: "torch.Tensor"
+    ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        """前向传播.
+        
+        Args:
+            x_static: (B, 12) - 静态特征
+            X_temporal: (B, H+1, 10) - 时序特征
+            x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
                 
             Returns:
                 mean: (B, 16) - 目标向量均值
@@ -319,11 +319,11 @@ if TORCH_AVAILABLE:
             
             return mean, log_std, value
         
-        def sample_action(
-            self,
-            x_static: "torch.Tensor",
-            X_temporal: "torch.Tensor",
-            x_role: "torch.Tensor"
+    def sample_action(
+        self,
+        x_static: "torch.Tensor",
+        X_temporal: "torch.Tensor",
+        x_role: "torch.Tensor"
         ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
             """采样动作并计算 log_prob.
             
@@ -342,12 +342,12 @@ if TORCH_AVAILABLE:
             log_prob = dist.log_prob(action).sum(dim=-1)
             return action, log_prob, value
         
-        def evaluate_actions(
-            self,
-            x_static: "torch.Tensor",
-            X_temporal: "torch.Tensor",
-            x_role: "torch.Tensor",
-            actions: "torch.Tensor"
+    def evaluate_actions(
+        self,
+        x_static: "torch.Tensor",
+        X_temporal: "torch.Tensor",
+        x_role: "torch.Tensor",
+        actions: "torch.Tensor"
         ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
             """评估给定动作的 log_prob 和熵.
             
@@ -367,11 +367,11 @@ if TORCH_AVAILABLE:
             entropy = dist.entropy().sum(dim=-1)
             return log_prob, entropy, value
         
-        def get_deterministic_action(
-            self,
-            x_static: "torch.Tensor",
-            X_temporal: "torch.Tensor",
-            x_role: "torch.Tensor"
+    def get_deterministic_action(
+        self,
+        x_static: "torch.Tensor",
+        X_temporal: "torch.Tensor",
+        x_role: "torch.Tensor"
         ) -> "torch.Tensor":
             """获取确定性动作（均值）.
             
@@ -438,7 +438,7 @@ class L2StrategicManager:
         
         Args:
             x_static: 静态特征，shape (12,)
-            X_temporal: 时序特征，shape (H, 10)
+            X_temporal: 时序特征，shape (H+1, 10)
             is_buying: 当前角色（用于启发式模式）
             awi: Agent World Interface（用于神经网络模式计算 x_role）
             

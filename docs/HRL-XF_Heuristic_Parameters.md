@@ -210,7 +210,7 @@ delta_q = q_base * 0.1 * concession # 增加供应
 | `horizon` | int | 40 | L97 | 规划视界，决定 X_temporal 形状 |
 | `max_price` | float | 50.0 | L100 | 最大价格，用于归一化 |
 | `initial_balance` | float | None→10000 | L98, L127 | 初始资金，用于归一化余额 |
-| `max_inventory` | float | None→100 | L99, L132 | 最大库存，用于归一化库存 |
+| `max_inventory` | float | None→n_lines*n_steps | L99, L132 | 最大库存（经济容量），用于归一化库存 |
 
 ### 5.2 硬编码归一化系数
 

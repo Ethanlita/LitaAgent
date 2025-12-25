@@ -29,9 +29,11 @@ class L1Output:
         B_free: 可用资金上限
         time_mask: 时间掩码 (0 或 -inf)，shape (H+1,)，用于 L3 的 Masked Softmax
         baseline_action: 基准动作 (q_base, p_base, t_base)
-        L_trajectory: 库存轨迹，shape (H,)
+        L_trajectory: 原材料 backlog 轨迹（满载加工假设），shape (H,)
         C_total: 库容向量，shape (H,)
-        raw_free: 原始可用空间向量 (C_total - L)，shape (H+1,)，用于动态预留
+        Q_in: 已承诺入库量向量，shape (H,)
+        I_input_now: 当前原材料库存
+        n_lines: 生产线数量（每日最大加工量）
     """
     Q_safe: np.ndarray
     Q_safe_sell: np.ndarray
@@ -40,7 +42,9 @@ class L1Output:
     baseline_action: Tuple[float, float, int]
     L_trajectory: np.ndarray
     C_total: np.ndarray
-    raw_free: Optional[np.ndarray] = None
+    Q_in: Optional[np.ndarray] = None
+    I_input_now: Optional[float] = None
+    n_lines: Optional[float] = None
 
 
 def get_capacity_vector(awi: "StdAWI", horizon: int) -> np.ndarray:
@@ -171,62 +175,66 @@ def extract_commitments(awi: "StdAWI", horizon: int) -> Tuple[np.ndarray, np.nda
 def compute_inventory_trajectory(
     I_now: float,
     Q_in: np.ndarray,
-    Q_prod: np.ndarray,
+    n_lines: float,
     horizon: int
 ) -> np.ndarray:
-    """计算未来 H 天的原材料库存水位轨迹.
+    """计算未来 H 天的原材料 backlog 轨迹（满载加工假设）.
     
-    公式：L[k] = I_now + Σ_{j=0}^{k} (Q_in[j] - Q_prod[j])
+    递推：
+    B[0] = I_now
+    B[k+1] = max(0, B[k] + Q_in[k] - n_lines)
     
-    纯原材料模型：
-    - I_now: 当前原材料库存
-    - Q_in: 原材料采购入库
-    - Q_prod: 原材料被生产消耗
+    语义：
+    - B[k] 表示第 k 天开始前的未加工原材料库存
+    - 假设生产线每日满载（最多 n_lines）
     - Q_out 是成品出库，不影响原材料库存，故不包含
     
     Args:
         I_now: 当前原材料库存
         Q_in: 入库承诺向量，shape (H,)
-        Q_prod: 生产消耗向量，shape (H,)
+        n_lines: 每日最大加工量
         horizon: 规划视界
         
     Returns:
-        L: shape (H,) - 每天的预计原材料库存
+        B: shape (H,) - 每天的原材料 backlog
     """
-    # 物理模型：纯原材料轨迹
-    # Q_out 是成品出库（不消耗原材料），故不在此扣减
-    # 详见 HRL-XF 期货市场代理重构.md §3.2.2
-    net_flow = Q_in - Q_prod  # shape (H,)
-    cumulative_flow = np.cumsum(net_flow)  # shape (H,)
-    L = I_now + cumulative_flow
-    return L
+    backlog = np.zeros(horizon, dtype=np.float32)
+    b = float(I_now)
+    for k in range(horizon):
+        backlog[k] = max(0.0, b)
+        b = b + float(Q_in[k]) - float(n_lines)
+        if b < 0.0:
+            b = 0.0
+    return backlog
 
 
 def compute_safe_buy_mask(
     C_total: np.ndarray,
-    L: np.ndarray,
+    Q_in: np.ndarray,
+    backlog: np.ndarray,
     horizon: int
 ) -> np.ndarray:
     """计算每个交货日 delta 的最大安全买入量.
     
-    公式：Q_safe[delta] = min_{k=delta}^{H-1} (C_total[k] - L[k])
+    公式：
+    Q_safe[δ] = max(0, C_total[δ] - backlog[δ] - Σ_{k=δ}^{H-1} Q_in[k])
     
-    使用逆向累积最小值高效计算。
+    解释：
+    - C_total[δ] 是交货日 δ 之后的剩余可加工总量
+    - backlog[δ] 是交货日 δ 开始前已积压的原材料
+    - Σ_{k=δ}^{H-1} Q_in[k] 是已承诺的未来入库量
     
     Args:
         C_total: 库容向量，shape (H,)
-        L: 库存轨迹，shape (H,)
+        Q_in: 入库承诺向量，shape (H,)
+        backlog: 原材料 backlog 轨迹，shape (H,)
         horizon: 规划视界
         
     Returns:
         Q_safe: shape (H,)
     """
-    raw_free = C_total - L  # shape (H,)
-    
-    # 逆向累积最小值
-    reversed_free = raw_free[::-1]
-    reversed_cummin = np.minimum.accumulate(reversed_free)
-    Q_safe = reversed_cummin[::-1]
+    suffix_in = np.cumsum(Q_in[::-1])[::-1]  # shape (H,)
+    Q_safe = C_total - backlog - suffix_in
     
     # 非负约束
     Q_safe = np.maximum(Q_safe, 0)
@@ -284,39 +292,44 @@ def compute_safe_sell_mask(
 
 
 def recompute_q_safe_after_reservation(
-    raw_free: np.ndarray,
+    Q_in: np.ndarray,
     delta_t: int,
-    reserved_qty: float
-) -> np.ndarray:
-    """在动态预留后重新计算 Q_safe.
+    reserved_qty: float,
+    I_input_now: float,
+    n_lines: float,
+    C_total: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """在动态预留后重新计算 Q_safe（新算法）.
     
-    Q_safe[δ] = min_{k>=δ}(raw_free[k]) 是逆向累积最小值。
-    当在 delta_t 预留 reserved_qty 时，需要对所有 k >= delta_t 扣减，
-    然后重新计算 Q_safe。
+    逻辑：将 reserved_qty 计入 Q_in[delta_t]，再重算 backlog 与 Q_safe。
     
     Args:
-        raw_free: 原始可用空间向量 (C_total - L)，shape (H,) 或 (H+1,)
+        Q_in: 原始入库承诺向量，shape (H,)
         delta_t: 预留的交货日
         reserved_qty: 预留的数量
+        I_input_now: 当前原材料库存
+        n_lines: 每日最大加工量
+        C_total: 库容向量，shape (H,)
         
     Returns:
-        Q_safe: 重新计算后的安全量向量
+        Q_safe: 重新计算后的安全量向量，shape (H+1,)
+        Q_in: 更新后的入库承诺向量，shape (H,)
     """
-    raw_free = raw_free.copy()
+    Q_in = Q_in.copy()
+    idx = int(delta_t)
+    if len(Q_in) > 0 and idx >= len(Q_in):
+        idx = len(Q_in) - 1
+    if 0 <= idx < len(Q_in):
+        Q_in[idx] += float(reserved_qty)
     
-    # 对所有 k >= delta_t 扣减预留量（因为货物从 delta_t 开始占用空间）
-    for k in range(delta_t, len(raw_free)):
-        raw_free[k] -= reserved_qty
+    backlog = compute_inventory_trajectory(I_input_now, Q_in, n_lines, len(Q_in))
+    Q_safe_h = compute_safe_buy_mask(C_total, Q_in, backlog, len(Q_in))
     
-    # 重新计算逆向累积最小值
-    reversed_free = raw_free[::-1]
-    reversed_cummin = np.minimum.accumulate(reversed_free)
-    Q_safe = reversed_cummin[::-1]
-    
-    # 非负约束
-    Q_safe = np.maximum(Q_safe, 0)
-    
-    return Q_safe
+    Q_safe = np.zeros(len(Q_safe_h) + 1, dtype=np.float32)
+    if len(Q_safe_h) > 0:
+        Q_safe[:len(Q_safe_h)] = Q_safe_h
+        Q_safe[len(Q_safe_h)] = Q_safe_h[-1]
+    return Q_safe, Q_in
 
 
 def compute_budget_limit(
@@ -382,31 +395,25 @@ class L1SafetyLayer:
         # 2. 提取合约承诺
         Q_in, Q_out = extract_commitments(awi, self.horizon)
         
-        # 3. 估计生产消耗（保守：假设满负荷）
+        # 3. 估计生产消耗（卖侧用满负荷）
         n_lines = getattr(awi.profile, 'n_lines', 1)
         Q_prod = np.full(self.horizon, n_lines, dtype=np.float32)
         
-        # 4. 计算库存轨迹（原材料）
+        # 4. 计算 backlog 轨迹（原材料，满载加工假设）
         # 重要：使用原材料库存（current_inventory_input），而非总库存
         # 因为采购入库的是原材料，库容约束针对原材料存储空间
         # 注意：Q_out 是成品出库，不影响原材料库存，故不参与此计算
         I_input_now = float(getattr(awi, 'current_inventory_input', 0) or 0)
-        L = compute_inventory_trajectory(I_input_now, Q_in, Q_prod, self.horizon)
+        backlog = compute_inventory_trajectory(I_input_now, Q_in, n_lines, self.horizon)
         
         # 5. 计算安全买入量掩码 (H 维)
-        Q_safe_h = compute_safe_buy_mask(C_total, L, self.horizon)
+        Q_safe_h = compute_safe_buy_mask(C_total, Q_in, backlog, self.horizon)
         
         # 6. 扩展为 H+1 维，支持 δt ∈ {0, 1, ..., H}
         # δt = H 的处理：复用 H-1 的值
         Q_safe = np.zeros(self.horizon + 1, dtype=np.float32)
         Q_safe[:self.horizon] = Q_safe_h
         Q_safe[self.horizon] = Q_safe_h[-1] if len(Q_safe_h) > 0 else 0.0
-        
-        # 6.1 计算 raw_free 用于动态预留
-        raw_free_h = C_total - L  # shape (H,)
-        raw_free = np.zeros(self.horizon + 1, dtype=np.float32)
-        raw_free[:self.horizon] = raw_free_h
-        raw_free[self.horizon] = raw_free_h[-1] if len(raw_free_h) > 0 else 0.0
         
         # 7. 计算卖侧安全量（成品可交付量）
         I_output_now = float(getattr(awi, 'current_inventory_output', 0) or 0)
@@ -438,9 +445,11 @@ class L1SafetyLayer:
             B_free=B_free,
             time_mask=time_mask,
             baseline_action=baseline_action,
-            L_trajectory=L,
+            L_trajectory=backlog,
             C_total=C_total,
-            raw_free=raw_free
+            Q_in=Q_in,
+            I_input_now=I_input_now,
+            n_lines=float(n_lines)
         )
     
     def _extract_payables(self, awi: "StdAWI") -> np.ndarray:
