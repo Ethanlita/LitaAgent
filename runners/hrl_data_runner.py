@@ -84,6 +84,7 @@ from litaagent_std.litaagent_p import LitaAgentP
 from litaagent_std.litaagent_yr import LitaAgentYR
 from litaagent_std.litaagent_n import LitaAgentN
 from litaagent_std.litaagent_h import LitaAgentH
+from litaagent_std.litaagent_hs import LitaAgentHS
 from litaagent_std.litaagent_cir import LitaAgentCIR
 from litaagent_std.tracker_mixin import create_tracked_agent
 
@@ -235,6 +236,14 @@ def _is_penguin_agent(cls: Type) -> bool:
     name_l = name.lower()
     return ("team_penguin" in module_l) and ("penguin" in name_l)
 
+
+
+def _is_litahs_agent(cls: Type) -> bool:
+    name = getattr(cls, "__name__", "") or ""
+    module = getattr(cls, "__module__", "") or ""
+    name_l = name.lower()
+    module_l = module.lower()
+    return ("litaagenths" in name_l) or ("litaagent_hs" in module_l)
 
 def _is_penguin_type_name(type_name: str) -> bool:
     if not type_name:
@@ -573,7 +582,12 @@ def _maybe_track_agent(
     cls: Type,
     tracker_log_dir: str,
     track_only_penguin: bool,
+    track_only_litahs: bool,
 ) -> Type:
+    if track_only_penguin and track_only_litahs:
+        raise RuntimeError("track_only_penguin and track_only_litahs cannot both be enabled")
+    if track_only_litahs and (not _is_litahs_agent(cls)):
+        return cls
     if track_only_penguin and (not _is_penguin_agent(cls)):
         return cls
     tracked_cls = create_tracked_agent(cls, log_dir=tracker_log_dir)
@@ -586,6 +600,7 @@ def _get_top5_std2025(
     tracker_log_dir: str,
     max_top: int = 5,
     track_only_penguin: bool = False,
+    track_only_litahs: bool = False,
 ) -> List[Type]:
     """加载 SCML 2025 Standard 前 5 代理，并用 Tracker 包装。"""
     explicit = _load_explicit_agents(EXPLICIT_STD_TOP2025)
@@ -611,7 +626,7 @@ def _get_top5_std2025(
     # 用 Tracker 包装所有代理
     wrapped_agents: List[Type] = []
     for cls in agents:
-        wrapped_agents.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin))
+        wrapped_agents.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin, track_only_litahs))
     return wrapped_agents
 
 
@@ -619,6 +634,7 @@ def _get_top5_std2024(
     tracker_log_dir: str,
     max_top: int = 5,
     track_only_penguin: bool = False,
+    track_only_litahs: bool = False,
 ) -> List[Type]:
     """加载 SCML 2024 Standard 前 5 代理，并用 Tracker 包装。"""
     explicit = _load_explicit_agents(EXPLICIT_STD_TOP2024)
@@ -643,7 +659,7 @@ def _get_top5_std2024(
         print(f"[WARN] 2024 Std Top 代理不足: {len(agents)}/{max_top}")
     wrapped_agents: List[Type] = []
     for cls in agents:
-        wrapped_agents.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin))
+        wrapped_agents.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin, track_only_litahs))
     return wrapped_agents
 
 
@@ -652,6 +668,8 @@ def build_competitors(
     max_top_2025: int = 5,
     max_top_2024: int = 5,
     track_only_penguin: bool = False,
+    track_only_litahs: bool = False,
+    agent_set: str = "default",
 ) -> Tuple[List[Type], List[str], List[str]]:
     """构建参赛代理列表，所有 LitaAgent 使用动态创建的 Tracked 版本。
     
@@ -664,12 +682,44 @@ def build_competitors(
     if not _TRACKER_AVAILABLE:
         raise RuntimeError("必须安装 scml_analyzer 以启用全量 Tracker")
 
+    if agent_set == "phh":
+        competitors: List[Type] = []
+        for base_cls in (LitaAgentH, LitaAgentHS):
+            wrapped_cls = _maybe_track_agent(base_cls, tracker_log_dir, track_only_penguin, track_only_litahs)
+            competitors.append(wrapped_cls)
+
+        penguin_list = _load_explicit_agents([
+            ("scml_agents.scml2024.standard.team_penguin.penguinagent", "PenguinAgent"),
+        ])
+        penguin_list = _filter_legacy_agents(penguin_list)
+        penguin_list = _filter_oneshot_track_agents(penguin_list)
+        if penguin_list:
+            competitors.append(_maybe_track_agent(penguin_list[0], tracker_log_dir, track_only_penguin, track_only_litahs))
+        else:
+            print("[WARN] cannot import PenguinAgent; agent_set=phh may be incomplete")
+
+        seen = set()
+        unique: List[Type] = []
+        for cls in competitors:
+            key = (cls.__module__, cls.__name__)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(cls)
+
+        base_names = {LitaAgentH.__name__, LitaAgentHS.__name__}
+        def _is_lita(name: str) -> bool:
+            return any(name.startswith(base) for base in base_names)
+        lita_names = [c.__name__ for c in unique if _is_lita(c.__name__)]
+        external_names = [c.__name__ for c in unique if not _is_lita(c.__name__)]
+        return unique, lita_names, external_names
+
     competitors: List[Type] = []
     lita_agents: List[Type] = []
     
     # 动态创建 LitaAgent Tracked 版本（包含完整 HRL-XF 字段）
     for base_cls in LITA_AGENT_BASES:
-        wrapped_cls = _maybe_track_agent(base_cls, tracker_log_dir, track_only_penguin)
+        wrapped_cls = _maybe_track_agent(base_cls, tracker_log_dir, track_only_penguin, track_only_litahs)
         competitors.append(wrapped_cls)
         lita_agents.append(wrapped_cls)
         if wrapped_cls is base_cls:
@@ -681,11 +731,13 @@ def build_competitors(
         tracker_log_dir,
         max_top=max_top_2025,
         track_only_penguin=track_only_penguin,
+        track_only_litahs=track_only_litahs,
     )
     top_agents_2024 = _get_top5_std2024(
         tracker_log_dir,
         max_top=max_top_2024,
         track_only_penguin=track_only_penguin,
+        track_only_litahs=track_only_litahs,
     )
     lita_base_names = {c.__name__ for c in LITA_AGENT_BASES}
     top_agents = [
@@ -705,7 +757,7 @@ def build_competitors(
             forced = _filter_oneshot_track_agents(forced)
             if forced:
                 penguin_cls = forced[0]
-                competitors.append(_maybe_track_agent(penguin_cls, tracker_log_dir, track_only_penguin))
+                competitors.append(_maybe_track_agent(penguin_cls, tracker_log_dir, track_only_penguin, track_only_litahs))
                 print("[INFO] 已强制加入 PenguinAgent（track_only_penguin=True）")
             else:
                 print("[WARN] track_only_penguin=True 但未能导入 PenguinAgent，可能导致 tracker_logs 为空")
@@ -713,7 +765,7 @@ def build_competitors(
     # 内置基线代理（Random/SyncRandom）：默认也追踪；track_only_penguin 下不追踪
     extra_agents = [RandomStdAgent, SyncRandomStdAgent]
     for cls in extra_agents:
-        competitors.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin))
+        competitors.append(_maybe_track_agent(cls, tracker_log_dir, track_only_penguin, track_only_litahs))
 
     # 去重保持顺序
     seen = set()
@@ -894,8 +946,8 @@ def main():
         description="HRL 训练数据采集 Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--configs", type=int, default=20, help="World 配置数量 (default: 20)")
-    parser.add_argument("--runs", type=int, default=2, help="每配置运行次数 (default: 2)")
+    parser.add_argument("--configs", type=int, default=5, help="World 配置数量 (default: 5)")
+    parser.add_argument("--runs", type=int, default=1, help="每配置运行次数 (default: 1)")
     parser.add_argument("--max-top-2025", type=int, default=5, help="2025 Top Agents 数量上限")
     parser.add_argument("--max-top-2024", type=int, default=5, help="2024 Top Agents 数量上限")
     parser.add_argument(
@@ -904,6 +956,12 @@ def main():
         choices=[2, 3, 4],
         default=None,
         help="每个 world 参赛者数量（2/3/4；不指定则按默认随机 2~4）",
+    )
+    parser.add_argument(
+        "--agent-set",
+        choices=["default", "phh"],
+        default="default",
+        help="参赛者集合（default: Top+基线；phh: Penguin/LitaAgent-H/LitaAgent-HS）",
     )
     parser.add_argument("--max-worlds-per-config", type=int, default=None, help="限制每个配置的最大 world 数")
     parser.add_argument("--target-worlds", type=int, default=None, help="目标总 world 数（自动折算为 max_worlds_per_config）")
@@ -943,13 +1001,20 @@ def main():
         help="仅追踪 PenguinAgent（其它参赛者不写 Tracker JSON，节省磁盘/解析开销）",
     )
     parser.add_argument(
+        "--track-only-litahs",
+        action="store_true",
+        help="仅追踪 LitaAgent-HS（其它参赛者不写 Tracker JSON，节省磁盘/解析开销）",
+    )
+    parser.add_argument(
         "--no-csv",
         action="store_true",
         help="尽量关闭 negmas CSV 输出（仍会保留少量必要文件，如 stats/params）",
     )
     parser.add_argument("--no-auto-collect", action="store_true", help="禁用自动归集")
     args = parser.parse_args()
-    
+    if args.track_only_penguin and args.track_only_litahs:
+        raise RuntimeError("track_only_penguin and track_only_litahs cannot both be enabled")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.output_dir:
         save_path = Path(args.output_dir).resolve()
@@ -1006,12 +1071,16 @@ def main():
     print(f"[INFO] Tracker enabled, log dir: {tracker_dir}")
     if args.track_only_penguin:
         print("[INFO] Tracker 过滤模式：仅追踪 PenguinAgent")
+    if args.track_only_litahs:
+        print("[INFO] Tracker 过滤模式：仅追踪 LitaAgent-HS")
 
     competitors, lita_names, external_names = build_competitors(
         str(tracker_dir),
         max_top_2025=args.max_top_2025,
         max_top_2024=args.max_top_2024,
         track_only_penguin=args.track_only_penguin,
+        track_only_litahs=args.track_only_litahs,
+        agent_set=args.agent_set,
     )
     _patch_score_calculator()
     n_per_world = args.n_competitors_per_world
