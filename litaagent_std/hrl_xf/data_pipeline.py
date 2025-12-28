@@ -2,7 +2,7 @@
 
 用于从 SCML 仿真日志中提取训练数据：
 - L2 标签：日级目标向量重构
-- L3 标签：轮级残差提取
+- L3 标签：轮级 AOP 提取
 - 状态重建：从日志恢复状态张量
 """
 
@@ -57,59 +57,39 @@ class MacroSample:
 
 @dataclass
 class MicroSample:
-    """轮级样本：用于 L3 残差模型.
-    
-    Attributes:
-        negotiation_id: 谈判 ID
-        history: 谈判历史，shape (T, 3)
-        role: 角色索引 (0=Buyer, 1=Seller)
-        x_role: L3 谈判角色 One-hot 编码 (2,)
-                [is_buyer, is_seller] - 当前这个具体谈判的方向
-                - [1, 0]: Buyer，当前谈判中我方是买家
-                - [0, 1]: Seller，当前谈判中我方是卖家
-                注意：与 L2 的 x_role (Multi-Hot 谈判能力) 含义不同
-        goal: L2 目标向量，shape (16,)
-        baseline: L1 基准动作 (q, p, t)
-        residual: 残差 (Δq, Δp)
-        time_label: 时间分类标签
-        reward: 轮级奖励（如果有）
-    
-    关于 baseline 的重要说明（方案 E）：
-    -----------------------------------------
-    baseline 必须与推理时 L1SafetyLayer._compute_baseline() 的输出一致。
-    
-    当前实现使用 compute_l1_baseline_offline() 函数从日志状态重建 baseline：
-    - 买入: q_base = min(Q_safe[δ]/2, B_free/price), p_base = market_price * 0.95
-    - 卖出: q_base = inventory/2, p_base = market_price * 1.05
-    
-    这与 L1SafetyLayer._compute_baseline() 的计算逻辑一致，确保训练/推理一致性。
-    
-    回退逻辑（如果状态数据不足）：
-    - JSON/Tracker 格式：使用 l1_baseline 字段（如果有）
-    - CSV 格式：使用专家第一轮出价作为近似值（会产生警告）
-    """
+    """轮级样本：用于 L3 AOP 训练."""
     negotiation_id: str
-    history: np.ndarray
-    role: int
-    x_role: np.ndarray  # One-hot: [1,0]=Buyer, [0,1]=Seller
-    goal: np.ndarray
-    baseline: np.ndarray
-    residual: np.ndarray
-    time_label: int
-    time_mask: Optional[np.ndarray] = None  # shape (H+1,)，0 或 -inf。旧数据可能为 None
+    history: np.ndarray  # shape (T, 4): [q, p, delta_t, is_my_turn]
+    role: int  # 0=Buyer, 1=Seller
+    current_offer: np.ndarray  # shape (3,): [q, p, delta_t]
+    relative_time: float
+    l2_goal: np.ndarray  # shape (16,)
+    goal_gap_buy: np.ndarray  # shape (4,)
+    goal_gap_sell: np.ndarray  # shape (4,)
+    today_bought_qty: float
+    today_sold_qty: float
+    today_bought_by_bucket: np.ndarray  # shape (4,)
+    today_sold_by_bucket: np.ndarray  # shape (4,)
+    x_static: np.ndarray  # shape (12,)
+    X_temporal: np.ndarray  # shape (H+1, 10)
+    time_mask: np.ndarray  # shape (H+1,)
+    Q_safe: np.ndarray  # shape (H+1,)
+    B_free: float
+    action_op: int  # 0=ACCEPT, 1=REJECT, 2=END
+    target_quantity: Optional[int] = None
+    target_price: Optional[float] = None
+    target_time: Optional[int] = None  # delta_t
     reward: Optional[float] = None
 
 
 @dataclass
 class L4DistillSample:
-    """用于 L4 蒸馏训练的样本（每条样本对应一次“批次/集合”决策）。"""
+    """用于 L4 蒸馏训练的样本（变长线程集合）。"""
 
     day: int
-    global_feat: np.ndarray  # (G,)
-    thread_feats: np.ndarray  # (K, D)
-    thread_times: np.ndarray  # (K,)
-    thread_roles: np.ndarray  # (K,) 0=Buyer, 1=Seller
-    teacher_weights: np.ndarray  # (K,) soft α（归一化）
+    global_state: np.ndarray  # (12,)
+    thread_states: np.ndarray  # (K, 11)
+    teacher_alpha: np.ndarray  # (K,)
     thread_ids: Optional[List[str]] = None
 
 
@@ -211,8 +191,6 @@ def compute_q_safe_offline(
 
     Q_in_h = Q_in[:horizon]
     Q_out_h = Q_out[:horizon]
-    _ = Q_out_h  # 买侧 baseline 不使用 Q_out，保留字段以兼容日志结构
-    _ = Q_out_h  # 买侧 Q_safe 计算不使用 Q_out，保留字段以兼容日志结构
 
     if isinstance(inventory, dict):
         I_now = float(inventory.get('input', 0) or 0.0)
@@ -339,225 +317,48 @@ def compute_time_mask_offline(
     return time_mask.astype(np.float32)
 
 
-def fix_invalid_time_label(
-    time_label: int,
-    time_mask: np.ndarray,
-    t_base: int = 1,
-) -> int:
-    """修正落在被掩码位置的 time_label.
-    
-    策略：
-    1. 如果 time_label 可行，直接返回
-    2. 否则投影到最近的可行 δ
-    3. 如果没有可行 δ，使用 t_base（如果合法）或 0
-    
-    Args:
-        time_label: 原始时间标签
-        time_mask: shape (H+1,)，0 或 -inf
-        t_base: 基准时间
-        
-    Returns:
-        修正后的 time_label
-    """
-    # 如果 time_mask 为 None 或当前位置可行，直接返回
-    if time_mask is None:
-        return time_label
-    
-    if time_label < len(time_mask) and time_mask[time_label] > -np.inf:
-        return time_label
-    
-    # 找到所有可行的 delta
-    valid_deltas = np.where(time_mask > -np.inf)[0]
-    
-    if len(valid_deltas) > 0:
-        # 投影到最近的可行 delta
-        distances = np.abs(valid_deltas - time_label)
-        return int(valid_deltas[np.argmin(distances)])
-    
-    # 没有可行 delta，尝试使用 t_base
-    if t_base < len(time_mask) and time_mask[t_base] > -np.inf:
-        return t_base
-    
-    # 最后回退为 0
-    return 0
+def _compute_b_free_from_state(state_dict: Dict[str, Any], reserve: float = 1000.0) -> float:
+    """按 L1 口径离线计算可用资金（不做裁剪）。"""
+    balance = float(state_dict.get('balance', 0.0))
+    commitments = state_dict.get('commitments', {}) or {}
+    payables = np.asarray(commitments.get('Payables', []), dtype=np.float32)
+    total_payables = float(np.sum(payables)) if payables.size > 0 else 0.0
+    return max(0.0, balance - reserve - total_payables)
 
 
-# ============== L1 Baseline 离线计算 ==============
+def _aggregate_deals_by_bucket(
+    deals: List[Dict[str, Any]],
+    day: int,
+    horizon: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """按 bucket 聚合当天成交，并计算 Q_safe/B_remaining 需要的扣减量。"""
+    bought_by_bucket = np.zeros(4, dtype=np.float32)
+    sold_by_bucket = np.zeros(4, dtype=np.float32)
+    committed_buy_qty = np.zeros(horizon + 1, dtype=np.float32)
+    committed_sell_qty = np.zeros(horizon + 1, dtype=np.float32)
+    committed_buy_budget = 0.0
 
-def compute_l1_baseline_offline(
-    state_dict: Dict[str, Any],
-    is_buying: bool,
-    horizon: int = 40,
-    min_tradable_qty: float = 1.0,
-    reserve: float = 1000.0
-) -> Tuple[float, float, int]:
-    """从日志状态离线计算 L1 baseline.
-    
-    此函数复现 L1SafetyLayer._compute_baseline() 的计算逻辑，
-    但使用日志中重建的状态而非实时 AWI。
-    
-    算法核心（必须与 l1_safety.py 完全一致）：
-    
-    1. Q_safe 计算（仅买入）：
-       Q_safe[δ] = max(0, C_total[δ] - backlog[δ] - Σ_{k=δ}^{H-1} Q_in[k])
-       
-    2. B_free 计算：
-       B_free = balance - reserve - Σ Payables  (标量，而非数组)
-       
-    3. 基准动作：
-       - 买入: q_base = min(Q_safe[δ_best]/2, B_free/price)
-               p_base = market_price * 0.95
-       - 卖出: q_base = inventory/2, p_base = market_price * 1.05
-       - t_base = 最早可行的交货日 δ
-    
-    Args:
-        state_dict: 日志状态字典，包含:
-            - balance: 当前余额
-            - inventory: {'input': x, 'output': y} 或 sum 值
-            - n_lines: 生产线数量
-            - spot_price_in / catalog_prices: 原材料市场价
-            - spot_price_out / catalog_prices: 成品市场价
-            - commitments: {'Q_in': [...], 'Q_out': [...], 'Payables': [...]}
-        is_buying: 是否为买入角色
-        horizon: 规划视界
-        min_tradable_qty: 最小可交易数量
-        reserve: 安全储备金
-        
-    Returns:
-        (q_base, p_base, t_base): 基准动作三元组
-    """
-    temporal_len = horizon + 1  # 支持 δ ∈ {0, 1, ..., H}
-    
-    # ========== 1. 提取状态 ==========
-    balance = float(state_dict.get('balance', 10000))
-    inventory = state_dict.get('inventory', {})
-    n_lines = int(state_dict.get('n_lines', 1))
-    
-    # 市场价格提取（优先使用 catalog_prices，回退 spot_price_*）
-    catalog_prices = state_dict.get('catalog_prices', {})
-    trading_prices = state_dict.get('trading_prices', {})
-    
-    def get_price(product_id: int, default: float) -> float:
-        """从价格字典安全获取价格."""
-        for prices in [trading_prices, catalog_prices]:
-            if prices:
-                if isinstance(prices, dict):
-                    if str(product_id) in prices:
-                        return float(prices[str(product_id)])
-                    if product_id in prices:
-                        return float(prices[product_id])
-                elif hasattr(prices, '__getitem__'):
-                    try:
-                        if product_id < len(prices):
-                            return float(prices[product_id])
-                    except (IndexError, TypeError):
-                        pass
-        return default
-    
-    spot_price_in = float(state_dict.get('spot_price_in', get_price(0, 10.0)))
-    spot_price_out = float(state_dict.get('spot_price_out', get_price(1, 20.0)))
-    
-    # ========== 2. 提取承诺量 ==========
-    commitments = state_dict.get('commitments', {})
-    Q_in = np.array(commitments.get('Q_in', np.zeros(temporal_len)), dtype=np.float32)
-    Q_out = np.array(commitments.get('Q_out', np.zeros(temporal_len)), dtype=np.float32)
-    Payables = np.array(commitments.get('Payables', np.zeros(temporal_len)), dtype=np.float32)
-    
-    # 补齐长度到 temporal_len
-    if len(Q_in) < temporal_len:
-        Q_in = np.pad(Q_in, (0, temporal_len - len(Q_in)))
-    if len(Q_out) < temporal_len:
-        Q_out = np.pad(Q_out, (0, temporal_len - len(Q_out)))
-    if len(Payables) < temporal_len:
-        Payables = np.pad(Payables, (0, temporal_len - len(Payables)))
-    
-    # 截断为 horizon（用于轨迹计算）
-    Q_in_h = Q_in[:horizon]
-    Q_out_h = Q_out[:horizon]
-    Payables_h = Payables[:horizon]
-    
-    # ========== 3. 计算 backlog 轨迹 ==========
-    # 重要：使用原材料库存（input），与 l1_safety.py 保持一致
-    # 因为采购入库的是原材料，库容约束针对原材料存储空间
-    if isinstance(inventory, dict):
-        I_now = float(inventory.get('input', 0))
-    else:
-        # 如果是单个数值，假设就是原材料库存
-        I_now = float(inventory) if inventory else 0.0
-    
-    # backlog 递推：B[0]=I_now, B[k+1]=max(0, B[k]+Q_in[k]-n_lines)
-    backlog = np.zeros(horizon, dtype=np.float32)
-    b = float(I_now)
-    for k in range(horizon):
-        backlog[k] = max(0.0, b)
-        b = b + float(Q_in_h[k]) - float(n_lines)
-        if b < 0.0:
-            b = 0.0
-    
-    # ========== 4. 计算库容 C_total ==========
-    # 修复：与在线版本一致，使用 n_lines * (n_steps - (current_step + k))
-    # 如果 state_dict 包含 n_steps/current_step，使用精确计算
-    # 否则回退到 n_lines × horizon（保守估计）
-    n_steps = int(state_dict.get('n_steps', 100))
-    current_step = int(state_dict.get('current_step', 0))
-    
-    C_total = np.zeros(horizon, dtype=np.float32)
-    for k in range(horizon):
-        remaining_days = n_steps - (current_step + k)
-        C_total[k] = n_lines * max(0, remaining_days)
-    
-    # ========== 5. 计算 Q_safe（新算法） ==========
-    # Q_safe[δ] = max(0, C_total[δ] - backlog[δ] - Σ_{k=δ}^{H-1} Q_in[k])
-    suffix_in = np.cumsum(Q_in_h[::-1])[::-1]
-    Q_safe_h = C_total - backlog - suffix_in
-    
-    # 非负约束
-    Q_safe_h = np.maximum(Q_safe_h, 0)
-    
-    # 扩展为 H+1 维，支持 δ ∈ {0, 1, ..., H}
-    Q_safe = np.zeros(temporal_len, dtype=np.float32)
-    Q_safe[:horizon] = Q_safe_h
-    Q_safe[horizon] = Q_safe_h[-1] if len(Q_safe_h) > 0 else 0.0
-    
-    # ========== 6. 计算 B_free（标量，而非数组） ==========
-    # B_free = balance - reserve - Σ Payables
-    total_payables = np.sum(Payables_h)
-    B_free = max(0.0, balance - reserve - total_payables)
-    
-    # ========== 7. 计算基准动作 ==========
-    if is_buying:
-        market_price = spot_price_in
-        
-        # 找到最早可行的交货日
-        best_delta = 1  # 默认明天
-        for delta in range(temporal_len):
-            if Q_safe[delta] >= min_tradable_qty:
-                best_delta = delta
-                break
-        
-        # 基准数量：安全量的一半（与在线一致）
-        q_base = min(Q_safe[best_delta] / 2, B_free / max(market_price, 1.0))
-        q_base = max(1.0, q_base)  # 至少 1 单位
-        
-        # 基准价格：略低于市场价（买方希望便宜）
-        p_base = market_price * 0.95
-        
-    else:
-        market_price = spot_price_out
-        
-        # 卖出使用成品库存（output）
-        if isinstance(inventory, dict):
-            available = float(inventory.get('output', 0))
+    for deal in deals or []:
+        try:
+            qty = float(deal.get('quantity', 0))
+            price = float(deal.get('price', 0))
+            delivery_time = int(deal.get('delivery_time', deal.get('time', 0)))
+            is_buying = bool(deal.get('is_buying', False))
+        except Exception:
+            continue
+
+        delta_t = max(0, min(int(delivery_time) - int(day), horizon))
+        bucket = delta_to_bucket(delta_t)
+
+        if is_buying:
+            bought_by_bucket[bucket] += qty
+            committed_buy_qty[delta_t] += qty
+            committed_buy_budget += qty * price
         else:
-            available = float(inventory) if inventory else 0.0
-        
-        best_delta = 1
-        q_base = max(1.0, available / 2)
-        
-        # 基准价格：略高于市场价（卖方希望贵）
-        p_base = market_price * 1.05
-    
-    return float(q_base), float(p_base), int(best_delta)
+            sold_by_bucket[bucket] += qty
+            committed_sell_qty[delta_t] += qty
+
+    return bought_by_bucket, sold_by_bucket, committed_buy_qty, committed_sell_qty, float(committed_buy_budget)
 
 
 def build_role_embedding(is_buying: bool) -> np.ndarray:
@@ -1307,215 +1108,178 @@ def reconstruct_l2_goals(
 
 # ============== L3 标签提取 ==============
 
-def extract_l3_residuals(
+def _normalize_goal_vector(goal_raw: Any) -> np.ndarray:
+    if isinstance(goal_raw, (list, tuple, np.ndarray)):
+        goal = np.array(goal_raw, dtype=np.float32).reshape(-1)
+        if goal.size == 16 and not np.any(np.isnan(goal)):
+            return goal
+    return np.zeros(16, dtype=np.float32)
+
+
+def _parse_action_op(action_op: Any) -> Optional[int]:
+    if action_op is None:
+        return None
+    if isinstance(action_op, (int, np.integer)):
+        val = int(action_op)
+        return val if val in (0, 1, 2) else None
+    op = str(action_op).strip().upper()
+    mapping = {"ACCEPT": 0, "REJECT": 1, "END": 2, "END_NEGOTIATION": 2}
+    return mapping.get(op)
+
+
+def extract_l3_samples_aop(
     negotiation_logs: List[Dict[str, Any]],
     horizon: int = 40,
     state_dict: Optional[Dict[str, Any]] = None,
-    daily_states: Optional[Dict[int, Dict[str, Any]]] = None
+    daily_states: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> List[MicroSample]:
-    """从谈判日志中提取 L3 残差标签.
-    
-    L1 Baseline 计算优先级：
-    1. 如果日志包含 'l1_baseline' 字段（tracker 记录），直接使用
-    2. 如果提供 daily_states 或 state_dict，调用 compute_l1_baseline_offline() 计算
-    3. 回退：使用日志中的 baseline 字段（近似值，会产生警告）
-    4. 最后回退：默认值（会产生警告）
-    
-    Args:
-        negotiation_logs: 谈判日志列表
-        horizon: 规划视界
-        state_dict: 单一状态字典（用于所有谈判，向后兼容）
-        daily_states: 按天索引的状态字典 {day: state_dict}，优先于 state_dict
-        
-    Returns:
-        MicroSample 列表
-    """
-    samples = []
-    baseline_warnings_shown = 0
-    time_label_fixes = 0  # 统计 time_label 被修正的次数
-    invalid_time_mask_count = 0  # time_mask 全部不可行的次数
-    max_warnings = 3  # 最多显示警告次数
-    baseline_stats = {'tracker': 0, 'computed': 0, 'log_fallback': 0, 'default': 0}
-    
-    for neg in negotiation_logs:
-        # 谈判历史
-        offer_history = neg.get('offer_history', [])
-        if len(offer_history) == 0:
-            continue
-        
-        history = np.array([
-            [h.get('quantity', 0), h.get('price', 0), h.get('delta_t', 0)]
-            for h in offer_history
-        ], dtype=np.float32)
+    """从谈判日志中提取 L3 AOP 标签."""
+    samples: List[MicroSample] = []
+    day_cache: Dict[int, Dict[str, Any]] = {}
 
-        # 重要：delta_t 用作离散索引（0..H），必须裁剪到有效范围，避免训练/推理 embedding 越界
-        if history.ndim == 2 and history.shape[1] >= 3:
-            history[:, 2] = np.nan_to_num(
-                history[:, 2],
-                nan=0.0,
-                posinf=float(horizon),
-                neginf=0.0,
-            )
-            history[:, 2] = np.clip(history[:, 2], 0.0, float(horizon))
-        
-        # 角色
-        is_buyer = neg.get('is_buyer', True)
-        role = 0 if is_buyer else 1
-        x_role = build_role_embedding(is_buyer)
-        
-        # L2 目标（如果有）
-        goal_raw = neg.get('l2_goal', None)
-        if isinstance(goal_raw, (list, tuple, np.ndarray)):
-            goal = np.array(goal_raw, dtype=np.float32).reshape(-1)
-            if goal.size != 16 or np.any(np.isnan(goal)):
-                goal = np.zeros(16, dtype=np.float32)
-        else:
-            goal = np.zeros(16, dtype=np.float32)
-        
-        # L1 基准动作 - 优先级处理
-        baseline = None
-        baseline_source = 'unknown'
-        
-        # 优先级 1: tracker 记录的 l1_baseline
-        lb = neg.get('l1_baseline')
-        if lb is not None:
-            lb_arr = np.array(lb, dtype=np.float32).flatten()
-            if lb_arr.size >= 3 and not np.any(np.isnan(lb_arr[:3])):
-                baseline = lb_arr[:3]
-                baseline_source = 'tracker'
-        
-        # 优先级 2: 从状态离线计算（按天索引优先）
-        if baseline is None and (daily_states is not None or state_dict is not None):
-            # 获取当天的状态
-            # 修复：统一使用 'sim_step' 或 'day' 键（兼容两种格式）
-            day = neg.get('sim_step', neg.get('day', 0))
-            if daily_states is not None and day in daily_states:
-                current_state = daily_states[day]
+    for neg in negotiation_logs:
+        offer_history = neg.get('offer_history', [])
+        if not offer_history:
+            continue
+
+        day = int(neg.get('sim_step', neg.get('day', 0)) or 0)
+        if day not in day_cache:
+            state = None
+            if daily_states is not None:
+                state = daily_states.get(day)
             elif state_dict is not None:
-                current_state = state_dict
+                state = state_dict
+
+            if state is None:
+                day_cache[day] = {
+                    "x_static": np.zeros(12, dtype=np.float32),
+                    "X_temporal": np.zeros((horizon + 1, 10), dtype=np.float32),
+                    "Q_safe_buy": np.zeros(horizon + 1, dtype=np.float32),
+                    "Q_safe_sell": np.zeros(horizon + 1, dtype=np.float32),
+                    "time_mask_buy": np.zeros(horizon + 1, dtype=np.float32),
+                    "time_mask_sell": np.zeros(horizon + 1, dtype=np.float32),
+                    "B_free": 0.0,
+                    "bought_by_bucket": np.zeros(4, dtype=np.float32),
+                    "sold_by_bucket": np.zeros(4, dtype=np.float32),
+                    "today_bought_qty": 0.0,
+                    "today_sold_qty": 0.0,
+                }
             else:
-                current_state = None
-            
-            if current_state is not None:
-                q_base, p_base, t_base = compute_l1_baseline_offline(
-                    current_state, is_buying=is_buyer, horizon=horizon
+                x_static, X_temporal = extract_macro_state(state, horizon=horizon)
+                Q_safe_buy = compute_q_safe_offline(state, horizon=horizon)
+                Q_safe_sell = compute_q_safe_sell_offline(state, horizon=horizon)
+                time_mask_buy = compute_time_mask_offline(state, horizon=horizon, is_buying=True)
+                time_mask_sell = compute_time_mask_offline(state, horizon=horizon, is_buying=False)
+                B_free = _compute_b_free_from_state(state)
+                deals = state.get('deals', [])
+                bought_by_bucket, sold_by_bucket, _, _, _ = _aggregate_deals_by_bucket(
+                    deals, day, horizon
                 )
-                baseline = np.array([q_base, p_base, t_base], dtype=np.float32)
-                baseline_source = 'computed'
-        
-        # 优先级 3: 使用日志中的 baseline 字段（可能是近似值）
-        if baseline is None and 'baseline' in neg:
-            bl_data = neg['baseline']
-            # 确保 baseline 是正确的形状
-            if isinstance(bl_data, (list, tuple)) and len(bl_data) >= 3:
-                baseline = np.array(bl_data[:3], dtype=np.float32)
-                baseline_source = 'log_fallback'
-            elif isinstance(bl_data, np.ndarray) and bl_data.ndim >= 1 and len(bl_data) >= 3:
-                baseline = np.array(bl_data[:3], dtype=np.float32)
-                baseline_source = 'log_fallback'
-        
-        # 最后回退: 默认值
-        if baseline is None or (isinstance(baseline, np.ndarray) and np.any(np.isnan(baseline))):
-            baseline = np.array([1.0, 10.0, 1], dtype=np.float32)
-            baseline_source = 'default'
-        
-        # 确保 baseline 是 1D 数组且有正确维度
-        baseline = np.atleast_1d(baseline).flatten()
-        if len(baseline) < 3:
-            baseline = np.concatenate([baseline, np.array([1.0, 10.0, 1])[:3-len(baseline)]])
-        
-        # 统计 baseline 来源
-        baseline_stats[baseline_source] = baseline_stats.get(baseline_source, 0) + 1
-        
-        # 警告：非理想 baseline 来源
-        if baseline_source in ('log_fallback', 'default'):
-            baseline_warnings_shown += 1
-            if baseline_warnings_shown <= max_warnings:
-                print(f"[WARN] L3 sample {neg.get('id', '?')}: baseline from {baseline_source}, "
-                      "may not match L1SafetyLayer output. Consider using tracked runner with l1_baseline field.")
-            elif baseline_warnings_shown == max_warnings + 1:
-                print(f"[WARN] ... (suppressing further baseline warnings)")
-        
-        # 专家动作
-        final_action = neg.get('final_action', {})
-        expert_q = final_action.get('quantity', baseline[0])
-        expert_p = final_action.get('price', baseline[1])
-        try:
-            expert_t = int(final_action.get('delta_t', int(baseline[2])) or baseline[2])
-        except Exception:
-            expert_t = int(baseline[2]) if len(baseline) > 2 else 1
-        
-        # 残差 = 专家动作 - L1 基准
-        residual = np.array([
-            expert_q - baseline[0],
-            expert_p - baseline[1]
-        ], dtype=np.float32)
-        
-        # 时间标签
-        time_label = min(max(0, expert_t), horizon)
-        
-        # ========== 计算 time_mask ==========
-        # 从状态重建 time_mask，确保训练/推理分布一致
-        time_mask = None
-        t_base = int(baseline[2]) if len(baseline) > 2 else 1
-        if daily_states is not None or state_dict is not None:
-            day = neg.get('sim_step', neg.get('day', 0))
-            if daily_states is not None and day in daily_states:
-                current_state = daily_states[day]
-            elif state_dict is not None:
-                current_state = state_dict
-            else:
-                current_state = None
-            
-            if current_state is not None:
-                try:
-                    time_mask = compute_time_mask_offline(current_state, horizon=horizon, is_buying=is_buyer)
-                except Exception:
-                    time_mask = None  # 回退：无法计算时使用 None
-        
-        if time_mask is not None and np.isneginf(time_mask).all():
-            # 若无可交易日期，至少保留 t_base 以避免全 -inf
-            invalid_time_mask_count += 1
-            safe_time_mask = np.full_like(time_mask, -np.inf, dtype=np.float32)
-            if 0 <= t_base < len(safe_time_mask):
-                safe_time_mask[t_base] = 0.0
-            else:
-                safe_time_mask[0] = 0.0
-            time_mask = safe_time_mask
-        
-        # 修正非法 time_label（落在被 mask 的位置）
-        original_time_label = time_label
-        time_label = fix_invalid_time_label(time_label, time_mask, t_base)
-        
-        if time_label != original_time_label:
-            time_label_fixes += 1
-        
-        # 奖励
+                day_cache[day] = {
+                    "x_static": x_static,
+                    "X_temporal": X_temporal,
+                    "Q_safe_buy": Q_safe_buy,
+                    "Q_safe_sell": Q_safe_sell,
+                    "time_mask_buy": time_mask_buy,
+                    "time_mask_sell": time_mask_sell,
+                    "B_free": B_free,
+                    "bought_by_bucket": bought_by_bucket,
+                    "sold_by_bucket": sold_by_bucket,
+                    "today_bought_qty": float(np.sum(bought_by_bucket)),
+                    "today_sold_qty": float(np.sum(sold_by_bucket)),
+                }
+
+        cached = day_cache[day]
+
+        history_rows = []
+        current_offer = np.zeros(3, dtype=np.float32)
+        for h in offer_history:
+            try:
+                qty = float(h.get('quantity', 0))
+                price = float(h.get('price', 0))
+                delta_t = int(h.get('delta_t', 0))
+            except Exception:
+                qty, price, delta_t = 0.0, 0.0, 0
+            delta_t = max(0, min(delta_t, horizon))
+            is_my_turn = 1.0 if h.get('source') == 'self' else 0.0
+            history_rows.append([qty, price, float(delta_t), is_my_turn])
+            current_offer = np.array([qty, price, float(delta_t)], dtype=np.float32)
+
+        history = np.asarray(history_rows, dtype=np.float32)
+
+        is_buyer = bool(neg.get('is_buyer', True))
+        role = 0 if is_buyer else 1
+
+        l2_goal = _normalize_goal_vector(neg.get('l2_goal'))
+        goal_gap_buy = np.zeros(4, dtype=np.float32)
+        goal_gap_sell = np.zeros(4, dtype=np.float32)
+        for i in range(4):
+            goal_gap_buy[i] = max(0.0, float(l2_goal[i * 4]) - float(cached["bought_by_bucket"][i]))
+            goal_gap_sell[i] = max(0.0, float(l2_goal[i * 4 + 2]) - float(cached["sold_by_bucket"][i]))
+
+        action_op = _parse_action_op(neg.get('action_op'))
+        if action_op is None:
+            continue
+
+        action_offer = neg.get('action_offer') or neg.get('final_action') or {}
+        target_quantity = None
+        target_price = None
+        target_time = None
+        if action_op in (0, 1) and action_offer:
+            try:
+                target_quantity = int(action_offer.get('quantity', action_offer.get('q', 0)))
+                target_price = float(action_offer.get('price', action_offer.get('unit_price', action_offer.get('p', 0.0))))
+                target_time = int(action_offer.get('delta_t', action_offer.get('t', 0)))
+            except Exception:
+                target_quantity = None
+                target_price = None
+                target_time = None
+
         reward = neg.get('reward', None)
-        
+        if reward is None:
+            reward = 1.0 if neg.get('final_status') == 'succeeded' else 0.0
+
         samples.append(MicroSample(
             negotiation_id=neg.get('id', str(len(samples))),
             history=history,
             role=role,
-            x_role=x_role,
-            goal=goal,
-            baseline=baseline,
-            residual=residual,
-            time_label=time_label,
-            time_mask=time_mask,
-            reward=reward
+            current_offer=current_offer,
+            relative_time=float(neg.get('relative_time', 0.0) or 0.0),
+            l2_goal=l2_goal,
+            goal_gap_buy=goal_gap_buy,
+            goal_gap_sell=goal_gap_sell,
+            today_bought_qty=float(cached["today_bought_qty"]),
+            today_sold_qty=float(cached["today_sold_qty"]),
+            today_bought_by_bucket=np.asarray(cached["bought_by_bucket"], dtype=np.float32),
+            today_sold_by_bucket=np.asarray(cached["sold_by_bucket"], dtype=np.float32),
+            x_static=np.asarray(cached["x_static"], dtype=np.float32),
+            X_temporal=np.asarray(cached["X_temporal"], dtype=np.float32),
+            time_mask=np.asarray(cached["time_mask_buy"] if is_buyer else cached["time_mask_sell"], dtype=np.float32),
+            Q_safe=np.asarray(cached["Q_safe_buy"] if is_buyer else cached["Q_safe_sell"], dtype=np.float32),
+            B_free=float(cached["B_free"]),
+            action_op=action_op,
+            target_quantity=target_quantity,
+            target_price=target_price,
+            target_time=target_time,
+            reward=reward,
         ))
-    
-    if baseline_warnings_shown > 0:
-        print(f"[INFO] Total samples with approximate baseline: {baseline_warnings_shown}/{len(samples)}")
-    
-    if time_label_fixes > 0:
-        print(f"[INFO] Time labels fixed (projected to valid delta): {time_label_fixes}/{len(samples)}")
-    
-    if invalid_time_mask_count > 0:
-        print(f"[WARN] time_mask all invalid in {invalid_time_mask_count} samples; forced t_base to be valid")
-    
+
     return samples
+
+
+def extract_l3_residuals(
+    negotiation_logs: List[Dict[str, Any]],
+    horizon: int = 40,
+    state_dict: Optional[Dict[str, Any]] = None,
+    daily_states: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> List[MicroSample]:
+    """兼容旧接口：改为输出 AOP 样本."""
+    return extract_l3_samples_aop(
+        negotiation_logs,
+        horizon=horizon,
+        state_dict=state_dict,
+        daily_states=daily_states,
+    )
 
 
 # ============== 批量处理 ==============
@@ -1674,7 +1438,7 @@ def _backfill_negotiation_goals(
     goal_backfill: str,
     l2_model_path: Optional[str],
 ) -> None:
-    """将 L2 目标回填到谈判日志（用于生成 micro.goal）。"""
+    """将 L2 目标回填到谈判日志（用于生成 micro.l2_goal）。"""
     mode = (goal_backfill or "none").lower().strip()
     if mode in ("none", "off", "false", "0", ""):
         return
@@ -1701,25 +1465,24 @@ def _backfill_negotiation_goals(
         neg["l2_goal"] = np.asarray(g, dtype=np.float32).reshape(-1).tolist()
 
 
-def _build_l4_global_feat(
-    goal: np.ndarray,
-    x_static: np.ndarray,
+def _encode_l4_global_state(
+    goal_gap_buy: np.ndarray,
+    goal_gap_sell: np.ndarray,
     *,
+    step_progress: float,
+    B_remaining: float,
     n_buy: int,
     n_sell: int,
-    global_feat_dim: int = 30,
 ) -> np.ndarray:
-    counts = np.array([n_buy / 10.0, n_sell / 10.0], dtype=np.float32)
-    global_feat = np.concatenate(
-        [np.asarray(goal, dtype=np.float32).reshape(-1), np.asarray(x_static, dtype=np.float32).reshape(-1), counts],
-        axis=0,
-    )
-    if global_feat.shape[0] != global_feat_dim:
-        padded = np.zeros(global_feat_dim, dtype=np.float32)
-        n = min(global_feat_dim, int(global_feat.shape[0]))
-        padded[:n] = global_feat[:n]
-        return padded
-    return global_feat
+    features = [
+        float(step_progress),
+        float(B_remaining) / 10000.0,
+        *[float(g) / 10.0 for g in goal_gap_buy],
+        *[float(g) / 10.0 for g in goal_gap_sell],
+        float(n_buy) / 10.0,
+        float(n_sell) / 10.0,
+    ]
+    return np.asarray(features, dtype=np.float32)
 
 
 def _extract_l4_distill_samples_for_world(
@@ -1730,11 +1493,9 @@ def _extract_l4_distill_samples_for_world(
     goal_source: str,
     l2_model_path: Optional[str],
     horizon: int = 40,
-    thread_feat_dim: int = 24,
-    global_feat_dim: int = 30,
 ) -> List[L4DistillSample]:
     """从单个 world 的日志中构建 L4 蒸馏样本（按 day 聚合线程集合）。"""
-    if not daily_states or not macro_samples or not neg_logs:
+    if not daily_states or not neg_logs:
         return []
 
     mode = (goal_source or "v2").lower().strip()
@@ -1747,187 +1508,159 @@ def _extract_l4_distill_samples_for_world(
     else:
         raise ValueError(f"Unknown goal_source: {goal_source}")
 
-    macro_by_day: Dict[int, MacroSample] = {int(s.day): s for s in macro_samples}
-
     from collections import defaultdict
-
     negs_by_day: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for neg in neg_logs:
-        if not neg.get("offer_history"):
-            continue
-        try:
-            day = int(neg.get("sim_step", neg.get("day", 0)) or 0)
-        except Exception:
-            day = 0
+        day = int(neg.get("sim_step", neg.get("day", 0)) or 0)
         negs_by_day[day].append(neg)
 
-    if not negs_by_day:
-        return []
+    from .l4_coordinator import HeuristicAlphaGenerator, ThreadState, GlobalBroadcast
 
-    from .l4_coordinator import HeuristicL4Coordinator, ThreadState
-
-    l4_teacher = HeuristicL4Coordinator(horizon=horizon)
+    teacher = HeuristicAlphaGenerator()
     samples: List[L4DistillSample] = []
 
-    for day in sorted(negs_by_day.keys()):
-        if day not in macro_by_day or day not in daily_states:
+    for day, state in daily_states.items():
+        if day not in negs_by_day:
             continue
 
-        macro = macro_by_day[day]
-        state = daily_states[day]
-        goal = goal_by_day.get(day)
-        if goal is None:
-            continue
-        goal = np.asarray(goal, dtype=np.float32).reshape(-1)
-        if goal.size != 16 or np.any(np.isnan(goal)):
-            continue
-
-        # day 级公共量：L1 约束、baseline、归一化分母
-        time_mask_buy = compute_time_mask_offline(state, horizon=horizon, is_buying=True)
-        time_mask_sell = compute_time_mask_offline(state, horizon=horizon, is_buying=False)
-        Q_safe = compute_q_safe_offline(state, horizon=horizon)
+        goal = goal_by_day.get(int(day), np.zeros(16, dtype=np.float32))
+        x_static, X_temporal = extract_macro_state(state, horizon=horizon)
+        Q_safe_buy = compute_q_safe_offline(state, horizon=horizon)
         Q_safe_sell = compute_q_safe_sell_offline(state, horizon=horizon)
+        B_free = _compute_b_free_from_state(state)
 
-        baseline_buy = compute_l1_baseline_offline(state, is_buying=True, horizon=horizon)
-        baseline_sell = compute_l1_baseline_offline(state, is_buying=False, horizon=horizon)
+        deals = state.get('deals', [])
+        bought_by_bucket, sold_by_bucket, committed_buy_qty, committed_sell_qty, committed_buy_budget = _aggregate_deals_by_bucket(
+            deals, day, horizon
+        )
 
-        n_lines = int(state.get("n_lines", 1) or 1)
-        n_steps = int(state.get("n_steps", 100) or 100)
-        max_inv = max(float(n_lines * n_steps), 1.0)
-        max_price = float(DEFAULT_MAX_PRICE)
+        goal_gap_buy = np.zeros(4, dtype=np.float32)
+        goal_gap_sell = np.zeros(4, dtype=np.float32)
+        for i in range(4):
+            goal_gap_buy[i] = max(0.0, float(goal[i * 4]) - float(bought_by_bucket[i]))
+            goal_gap_sell[i] = max(0.0, float(goal[i * 4 + 2]) - float(sold_by_bucket[i]))
 
-        # 构建线程特征（与 agent.py:_build_l4_thread_state 对齐）
-        thread_feats: List[np.ndarray] = []
-        thread_times: List[int] = []
-        thread_roles: List[int] = []
+        today_bought_qty = float(np.sum(bought_by_bucket))
+        today_sold_qty = float(np.sum(sold_by_bucket))
+        today_bought_value = float(sum(float(d.get('quantity', 0)) * float(d.get('price', 0)) for d in deals if d.get('is_buying')))
+        today_sold_value = float(sum(float(d.get('quantity', 0)) * float(d.get('price', 0)) for d in deals if not d.get('is_buying')))
+
+        B_remaining = max(0.0, float(B_free) - float(committed_buy_budget))
+        Q_safe_remaining = np.maximum(0.0, Q_safe_buy - committed_buy_qty)
+        Q_safe_sell_remaining = np.maximum(0.0, Q_safe_sell - committed_sell_qty)
+
+        threads = negs_by_day.get(day, [])
+        n_buy = sum(1 for n in threads if n.get('offer_history') and bool(n.get('is_buyer', True)))
+        n_sell = sum(1 for n in threads if n.get('offer_history') and not bool(n.get('is_buyer', True)))
+
+        gb = GlobalBroadcast(
+            current_step=int(day),
+            n_steps=int(state.get('n_steps', 100) or 100),
+            step_progress=float(int(day) / max(1, int(state.get('n_steps', 100) or 100))),
+            l2_goal=np.asarray(goal, dtype=np.float32),
+            goal_gap_buy=goal_gap_buy,
+            goal_gap_sell=goal_gap_sell,
+            today_bought_qty=today_bought_qty,
+            today_bought_value=today_bought_value,
+            today_sold_qty=today_sold_qty,
+            today_sold_value=today_sold_value,
+            B_remaining=B_remaining,
+            Q_safe_remaining=Q_safe_remaining,
+            Q_safe_sell_remaining=Q_safe_sell_remaining,
+            n_active_buy_threads=int(n_buy),
+            n_active_sell_threads=int(n_sell),
+            x_static=x_static,
+            X_temporal=X_temporal,
+        )
+
+        thread_states: List[np.ndarray] = []
+        teacher_alpha: List[float] = []
         thread_ids: List[str] = []
-        thread_states: List[ThreadState] = []
 
-        day_negs = sorted(negs_by_day[day], key=lambda x: str(x.get("id", "")))
-        for idx, neg in enumerate(day_negs):
-            nid = str(neg.get("id", f"{day}_{idx}"))
-            is_buyer = bool(neg.get("is_buyer", True))
-            role = 0 if is_buyer else 1
-            history = neg.get("offer_history", []) or []
+        for neg in threads:
+            history = neg.get('offer_history', [])
             if not history:
                 continue
 
-            baseline_q, baseline_p, baseline_t = baseline_buy if is_buyer else baseline_sell
+            is_buyer = bool(neg.get('is_buyer', True))
+            rel_time = float(neg.get('relative_time', 0.0) or 0.0)
+            rounds = [h.get('round') for h in history if h.get('round') is not None]
+            negotiation_step = int(max(rounds)) if rounds else len(history)
 
-            last_delta = None
-            try:
-                last_delta = int(history[-1].get("delta_t", None))
-            except Exception:
-                last_delta = None
-            target_delta = int(last_delta) if last_delta is not None else int(baseline_t)
-            target_delta = int(max(0, min(target_delta, horizon)))
-
-            bucket = delta_to_bucket(target_delta)
-            offset = bucket * 4
-            q_goal = float(goal[offset + (0 if is_buyer else 2)])
-            p_goal = float(goal[offset + (1 if is_buyer else 3)])
-
-            # 从宏观状态取该交期切片（已归一化）
-            X = np.asarray(macro.state_temporal, dtype=np.float32)
-            x_t = X[target_delta] if X.ndim == 2 and target_delta < X.shape[0] else np.zeros((10,), dtype=np.float32)
-
-            n_rounds = len(history)
-            n_rounds_norm = float(min(n_rounds, 20) / 20.0)
-
-            rounds = [h.get("round") for h in history if h.get("round") is not None]
-            if rounds:
-                max_round = max(int(r) for r in rounds if r is not None)
-                rel_time = float(np.clip(max_round / max(max_round + 1, 1), 0.0, 1.0))
-            else:
-                rel_time = float(np.clip(n_rounds_norm, 0.0, 1.0))
-
-            last_price_gap = 0.0
-            last_qty_gap = 0.0
             last = history[-1]
             try:
-                last_price = float(last.get("price", 0) or 0)
-                last_qty = float(last.get("quantity", 0) or 0)
+                q_val = float(last.get('quantity', 0))
+                p_val = float(last.get('price', 0))
+                delta_t = int(last.get('delta_t', 0))
             except Exception:
-                last_price = 0.0
-                last_qty = 0.0
-            if p_goal > 0:
-                last_price_gap = (last_price - p_goal) / max(max_price, 1.0)
-            if q_goal > 0:
-                last_qty_gap = (last_qty - q_goal) / max(max_inv, 1.0)
+                q_val, p_val, delta_t = 0.0, 0.0, 0
+            delta_t = max(0, min(delta_t, horizon))
 
-            urgency = 1.0 / (target_delta + 1.0)
-            market_pressure = float(x_t[9] if is_buyer else x_t[8])
-            closeness = 1.0 / (1.0 + abs(last_price_gap) * 5.0)
-            priority = 1.0 + 0.5 * urgency + 0.5 * market_pressure + 0.5 * rel_time + 0.5 * closeness
-            priority = float(np.clip(priority, 0.1, 3.0))
+            bucket = delta_to_bucket(delta_t)
+            gap = float(goal_gap_buy[bucket] if is_buyer else goal_gap_sell[bucket])
 
-            feat = np.zeros(thread_feat_dim, dtype=np.float32)
-            feat[0] = float(priority)
-            feat[1] = float(target_delta / max(horizon, 1))
-            # 根据角色选择对应的 time_mask
-            thread_time_mask = time_mask_buy if is_buyer else time_mask_sell
-            feat[2] = 1.0 if target_delta < len(thread_time_mask) and float(thread_time_mask[target_delta]) > -np.inf else 0.0
-            # 根据角色选择对应的 Q_safe
             if is_buyer:
-                feat[3] = float((Q_safe[target_delta] / max_inv) if target_delta < len(Q_safe) else 0.0)
+                q_safe_at_t = float(Q_safe_remaining[delta_t]) if delta_t < len(Q_safe_remaining) else 0.0
+                b_remaining = float(B_remaining)
             else:
-                feat[3] = float((Q_safe_sell[target_delta] / max_inv) if target_delta < len(Q_safe_sell) else 0.0)
-            feat[4] = float(float(baseline_q) / max_inv)
-            feat[5] = float(float(baseline_p) / max(max_price, 1.0))
-            feat[6] = float(float(goal[offset + 0]) / max_inv)
-            feat[7] = float(float(goal[offset + 2]) / max_inv)
-            feat[8] = float(float(goal[offset + 1]) / max(max_price, 1.0))
-            feat[9] = float(float(goal[offset + 3]) / max(max_price, 1.0))
-            feat[10] = float(n_rounds_norm)
-            feat[11] = float(rel_time)
-            feat[12] = float(np.clip(last_price_gap, -2.0, 2.0))
-            feat[13] = float(np.clip(last_qty_gap, -2.0, 2.0))
-            feat[14:24] = x_t[:10].astype(np.float32)
+                q_safe_at_t = float(Q_safe_sell_remaining[delta_t]) if delta_t < len(Q_safe_sell_remaining) else 0.0
+                b_remaining = 0.0
 
-            thread_ids.append(nid)
-            thread_feats.append(feat)
-            thread_times.append(target_delta)
-            thread_roles.append(role)
-            thread_states.append(
-                ThreadState(
-                    thread_id=nid,
-                    thread_feat=feat,
-                    target_time=target_delta,
-                    role=role,
-                    priority=priority,
-                )
+            ts = ThreadState(
+                thread_id=str(neg.get('id', '')),
+                is_buying=is_buyer,
+                negotiation_step=int(negotiation_step),
+                relative_time=float(rel_time),
+                current_offer=(int(q_val), int(delta_t), float(p_val)),
+                history_len=len(history),
+                target_bucket=int(bucket),
+                goal_gap=float(gap),
+                Q_safe_at_t=float(q_safe_at_t),
+                B_remaining=float(b_remaining),
             )
+            alpha = teacher.compute_alpha(ts, gb)
+
+            feat = np.array([
+                0.0 if is_buyer else 1.0,
+                float(rel_time),
+                float(negotiation_step) / 20.0,
+                1.0,
+                float(q_val) / 10.0,
+                float(p_val) / 40.0,
+                float(delta_t) / 40.0,
+                float(bucket) / 3.0,
+                float(gap) / 10.0,
+                float(q_safe_at_t) / 100.0,
+                float(b_remaining) / 10000.0,
+            ], dtype=np.float32)
+
+            thread_states.append(feat)
+            teacher_alpha.append(float(alpha))
+            thread_ids.append(str(neg.get('id', '')))
 
         if not thread_states:
             continue
 
-        n_buy = sum(1 for r in thread_roles if r == 0)
-        n_sell = len(thread_roles) - n_buy
-        global_feat = _build_l4_global_feat(goal, macro.state_static, n_buy=n_buy, n_sell=n_sell, global_feat_dim=global_feat_dim)
-
-        l4_out = l4_teacher.compute(thread_states, global_feat)
-        teacher = np.asarray(l4_out.weights, dtype=np.float32).reshape(-1)
-        if teacher.size != len(thread_states) or not np.isfinite(teacher).all():
-            continue
-        s = float(teacher.sum())
-        if s <= 0:
-            teacher = np.full_like(teacher, 1.0 / max(len(teacher), 1))
+        global_state = _encode_l4_global_state(
+            goal_gap_buy,
+            goal_gap_sell,
+            step_progress=float(int(day) / max(1, int(state.get('n_steps', 100) or 100))),
+            B_remaining=B_remaining,
+            n_buy=n_buy,
+            n_sell=n_sell,
+        )
 
         samples.append(
             L4DistillSample(
                 day=int(day),
-                global_feat=global_feat.astype(np.float32),
-                thread_feats=np.stack(thread_feats).astype(np.float32),
-                thread_times=np.asarray(thread_times, dtype=np.int64),
-                thread_roles=np.asarray(thread_roles, dtype=np.int64),
-                teacher_weights=teacher.astype(np.float32),
+                global_state=global_state,
+                thread_states=np.asarray(thread_states, dtype=np.float32),
+                teacher_alpha=np.asarray(teacher_alpha, dtype=np.float32),
                 thread_ids=thread_ids,
             )
         )
 
     return samples
-
-
 def _process_world_dir_l4(
     world_dir: str,
     agent_name: str,
@@ -2200,7 +1933,7 @@ def _process_world_dir(
         # 判断数据格式优先级：Tracker JSON > CSV
         # 注意：弃用 world_stats.json/negotiations.json，因为没有生成器
         # Tracker JSON 提供完整精确的状态和谈判数据
-        # CSV 是降级方案，会导致精度问题（价格/压力通道为 0，baseline 不精确）
+        # CSV 是降级方案，会导致精度问题（价格/压力通道为 0，缺少 aop_action 标签）
         has_tracker = len(glob.glob(os.path.join(world_dir, "agent_*.json"))) > 0
         has_csv = os.path.exists(os.path.join(world_dir, "stats.csv"))
         result['has_tracker'] = has_tracker
@@ -2311,9 +2044,9 @@ def load_tournament_data(
     """从锦标赛目录加载训练数据.
     
     数据格式：
-    - **Tracker JSON 格式**（推荐）：包含完整的 L1 baseline、
+    - **Tracker JSON 格式**（推荐）：包含完整状态与 aop_action 标签，
       buy_pressure/sell_pressure、price_diff_in/out 等字段，适合完整训练。
-    - **CSV 格式**（已弃用）：基础字段，部分状态通道无法精确重建，
+    - **CSV 格式**（已弃用）：缺少 aop_action/快照通道，无法保证标签正确，
       仅在 strict_json_only=False 时作为降级方案。
     
     Args:
@@ -2323,7 +2056,7 @@ def load_tournament_data(
             - True: 跳过所有 CSV 目录，确保训练数据质量
             - False: 允许 CSV 降级（仅用于调试）
         num_workers: 并行进程数（默认自动，<=1 则串行）
-        goal_backfill: micro.goal 的回填来源（默认 "none"）
+        goal_backfill: micro.l2_goal 的回填来源（默认 "none"）
             - "none": 不回填，依赖日志自带 l2_goal（通常为空/旧版本为 0）
             - "v2": 用 reconstruct_l2_goals() 的 v2 标签按 day 回填到谈判日志
             - "l2": 用已训练 L2 模型预测 goal_hat 后按 day 回填到谈判日志（推荐）
@@ -2406,13 +2139,13 @@ def load_tournament_data(
     if csv_count > 0:
         for world_dir in csv_worlds_used:
             print(f"[WARN] Using deprecated CSV format for {world_dir}. "
-                  "⚠️ CSV data has quality issues (channels 6-9 = 0, approximate baseline). "
+                  "CSV data has quality issues (channels 6-9 = 0, missing aop_action). "
                   "For accurate training, use Tracker JSON format with hrl_data_runner.")
         if tracker_count == 0:
             print(f"[WARN] Using CSV format only ({csv_count} worlds). "
-                  "⚠️ Training data quality issues:\n"
+                  "Training data quality issues:\n"
                   "  - Channels 6-9 (price_diff_in/out, buy_pressure, sell_pressure) = 0\n"
-                  "  - L1 baseline uses approximate values (expert first offer)\n"
+                  "  - Missing aop_action labels (ACCEPT/REJECT/END)\n"
                   "  For accurate training, use Tracker JSON format.")
         else:
             print(f"[INFO] Data sources: {csv_count} CSV (lossy, fallback only)")
@@ -3042,154 +2775,151 @@ def _parse_tracker_entries(entries: List[Dict[str, Any]], agent_name: str) -> Li
         agent_name: 代理名称
         
     Returns:
-        按谈判聚合的日志列表，格式与 extract_l3_residuals 期望一致
+        按谈判聚合的日志列表，格式与 extract_l3_samples_aop 期望一致
     """
     from collections import defaultdict
-    
-    # P1 修复: 使用 partner+day+thread_id 区分同天多次谈判
-    # thread_id 从 negotiation:started 事件的 mechanism_id 或递增计数器获取
+
     negotiations: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
         'partner': '',
         'day': 0,
-        'current_step': 0,  # P0 修复: 记录当前步骤用于 delta_t 转换
+        'current_step': 0,
         'is_buyer': True,
         'offer_history': [],
         'final_action': {},
         'final_status': 'unknown',
-        'baseline': None,  # L1 基准（如果 tracker 有记录）
-        'l2_goal': None,   # L2 目标（如果 tracker 有记录）
+        'action_op': None,
+        'action_offer': None,
+        'relative_time': None,
+        'l2_goal': None,
     })
-    
-    # P1 修复: 跟踪每个 partner+day 的谈判计数，用于区分同天多次谈判
+
     neg_counter: Dict[str, int] = defaultdict(int)
-    
+
+    def _get_partner(payload: Dict[str, Any]) -> str:
+        return (
+            payload.get('partner')
+            or payload.get('negotiator_id')
+            or payload.get('counterparty', '')
+        )
+
+    def _make_key(partner: str, day: int, mechanism_id: str, event: str) -> str:
+        if mechanism_id:
+            return f"{partner}_{day}_{mechanism_id}"
+        base_key = f"{partner}_{day}"
+        if event == 'started':
+            neg_counter[base_key] += 1
+        counter = neg_counter[base_key] if neg_counter[base_key] > 0 else 1
+        return f"{partner}_{day}_{counter}"
+
     for entry in entries:
-        category = entry.get('category', '')
         event = entry.get('event', '')
-        data = entry.get('data', {})
-        day = entry.get('day', 0)
-        
-        if category != 'negotiation':
+        data = entry.get('data', {}) or {}
+        day = int(entry.get('day', 0) or 0)
+
+        if event not in (
+            'started',
+            'offer_received',
+            'offer_made',
+            'accept',
+            'success',
+            'failure',
+            'aop_action',
+        ):
             continue
-        
-        partner = data.get('partner', '')
+
+        partner = _get_partner(data)
         if not partner:
             continue
-        
-        # P1 修复: 使用 partner+day+mechanism_id 或 partner+day+counter
+
         mechanism_id = data.get('mechanism_id', '')
-        if mechanism_id:
-            neg_key = f"{partner}_{day}_{mechanism_id}"
-        else:
-            # 回退: 对于 started 事件递增计数器
-            base_key = f"{partner}_{day}"
-            if event == 'started':
-                neg_counter[base_key] += 1
-            counter = neg_counter[base_key] if neg_counter[base_key] > 0 else 1
-            neg_key = f"{partner}_{day}_{counter}"
-        
+        neg_key = _make_key(partner, day, mechanism_id, event)
         neg = negotiations[neg_key]
         neg['partner'] = partner
-        neg['current_step'] = day  # 记录当前步骤
+        neg['current_step'] = day
         neg['day'] = day
-        
+
         if event == 'started':
             role = data.get('role', 'buyer')
-            neg['is_buyer'] = (role == 'buyer')
-            # 如果 tracker 记录了 L1 baseline，写入 'l1_baseline' 字段（优先级 1）
-            if 'l1_baseline' in data:
-                neg['l1_baseline'] = data['l1_baseline']
-        
+            if role in ('buyer', 'seller'):
+                neg['is_buyer'] = (role == 'buyer')
+            if 'l2_goal' in data:
+                neg['l2_goal'] = data.get('l2_goal')
+
         elif event == 'offer_received':
             offer = data.get('offer', {})
             if offer:
-                # P0 修复: 将绝对 delivery_day 转换为相对 delta_t
                 abs_delivery = offer.get('delivery_day', offer.get('time', offer.get('t', offer.get('delta_t', day + 1))))
-                relative_delta_t = max(0, abs_delivery - day)  # 相对于当前天的剩余天数
-                
+                relative_delta_t = max(0, abs_delivery - day)
                 neg['offer_history'].append({
                     'quantity': offer.get('quantity', offer.get('q', 0)),
-                    # 修复：Tracker 用 unit_price，也支持 price/p
                     'price': offer.get('unit_price', offer.get('price', offer.get('p', 0))),
-                    # P0 修复: 使用相对 delta_t 而非绝对 delivery_day
                     'delta_t': relative_delta_t,
                     'round': offer.get('round'),
                     'source': 'opponent',
                 })
-        
+
         elif event == 'offer_made':
             offer = data.get('offer', {})
             if offer:
-                # P0 修复: 将绝对 delivery_day 转换为相对 delta_t
                 abs_delivery = offer.get('delivery_day', offer.get('time', offer.get('t', offer.get('delta_t', day + 1))))
                 relative_delta_t = max(0, abs_delivery - day)
-                
                 neg['offer_history'].append({
                     'quantity': offer.get('quantity', offer.get('q', 0)),
                     'price': offer.get('unit_price', offer.get('price', offer.get('p', 0))),
-                    'delta_t': relative_delta_t,  # P0 修复: 相对 delta_t
+                    'delta_t': relative_delta_t,
                     'round': offer.get('round'),
                     'source': 'self',
                 })
-                # 最后一次发出的报价作为专家动作
-                neg['final_action'] = {
-                    'quantity': offer.get('quantity', offer.get('q', 0)),
-                    'price': offer.get('unit_price', offer.get('price', offer.get('p', 0))),
-                    'delta_t': relative_delta_t,  # P0 修复: 相对 delta_t
-                }
-        
+
         elif event == 'accept':
             offer = data.get('offer', {})
             if offer:
-                # P0 修复: 将绝对 delivery_day 转换为相对 delta_t
                 abs_delivery = offer.get('delivery_day', offer.get('time', offer.get('t', offer.get('delta_t', day + 1))))
                 relative_delta_t = max(0, abs_delivery - day)
-                
-                # 接受的报价是最终协议
                 neg['final_action'] = {
                     'quantity': offer.get('quantity', offer.get('q', 0)),
                     'price': offer.get('unit_price', offer.get('price', offer.get('p', 0))),
-                    'delta_t': relative_delta_t,  # P0 修复: 相对 delta_t
+                    'delta_t': relative_delta_t,
                 }
             neg['final_status'] = 'succeeded'
-        
+
         elif event == 'success':
             agreement = data.get('agreement', {})
             if agreement:
-                # P0 修复: 将绝对 delivery_day 转换为相对 delta_t
                 abs_delivery = agreement.get('delivery_day', agreement.get('time', agreement.get('t', agreement.get('delta_t', day + 1))))
                 relative_delta_t = max(0, abs_delivery - day)
-                
                 neg['final_action'] = {
                     'quantity': agreement.get('quantity', agreement.get('q', 0)),
                     'price': agreement.get('unit_price', agreement.get('price', agreement.get('p', 0))),
-                    'delta_t': relative_delta_t,  # P0 修复: 相对 delta_t
+                    'delta_t': relative_delta_t,
                 }
             neg['final_status'] = 'succeeded'
-        
+
         elif event == 'failure':
             neg['final_status'] = 'failed'
-    
-    # 转换为列表格式
+
+        elif event == 'aop_action':
+            role = data.get('role', None)
+            if role in ('buyer', 'seller'):
+                neg['is_buyer'] = (role == 'buyer')
+            if data.get('relative_time') is not None:
+                neg['relative_time'] = data.get('relative_time')
+
+            neg['action_op'] = data.get('action_op')
+            offer = data.get('offer', None)
+            if offer:
+                abs_delivery = offer.get('delivery_day', offer.get('time', offer.get('t', offer.get('delta_t', day + 1))))
+                relative_delta_t = max(0, abs_delivery - day)
+                neg['action_offer'] = {
+                    'quantity': offer.get('quantity', offer.get('q', 0)),
+                    'price': offer.get('unit_price', offer.get('price', offer.get('p', 0))),
+                    'delta_t': relative_delta_t,
+                }
+
     result = []
     for neg_key, neg in negotiations.items():
-        # 跳过没有历史的谈判
         if len(neg['offer_history']) == 0:
             continue
-        
-        # 如果没有记录的 baseline，使用第一次发出的报价作为近似
-        if neg['baseline'] is None:
-            for offer in neg['offer_history']:
-                if offer.get('source') == 'self':
-                    neg['baseline'] = [
-                        offer['quantity'],
-                        offer['price'],
-                        offer['delta_t']
-                    ]
-                    break
-            if neg['baseline'] is None:
-                neg['baseline'] = [1, 10, 1]  # 默认值
-        
         result.append({
             'id': neg_key,
             'partner': neg['partner'],
@@ -3198,12 +2928,12 @@ def _parse_tracker_entries(entries: List[Dict[str, Any]], agent_name: str) -> Li
             'offer_history': neg['offer_history'],
             'final_action': neg['final_action'],
             'final_status': neg['final_status'],
-            'baseline': neg['baseline'],
-            # 修复：输出 l1_baseline 字段（如果存在）
-            'l1_baseline': neg.get('l1_baseline'),
+            'action_op': neg.get('action_op'),
+            'action_offer': neg.get('action_offer'),
+            'relative_time': neg.get('relative_time'),
             'l2_goal': neg.get('l2_goal'),
         })
-    
+
     return result
 
 
@@ -3400,19 +3130,9 @@ def _load_negotiation_logs_csv(
                     'price': last_offer[2],
                 }
         
-        # 计算基准动作
-        # ⚠️ CSV 格式限制：使用专家第一轮出价作为 baseline 的近似值。
-        # 这不是真正的 L1 安全层输出，仅适用于调试和验证数据管道。
-        # 正确的 L3 残差训练需要 JSON 格式提供的 l1_baseline 字段，
-        # 该字段由 L1SafetyLayer.compute() 在谈判开始时计算并记录。
-        baseline = [1, 10, 1]  # 默认 [quantity, price, delta_t]
-        if agent_offers and len(agent_offers) > 0:
-            first_offer = agent_offers[0]
-            if isinstance(first_offer, (list, tuple)) and len(first_offer) >= 3:
-                absolute_time = first_offer[1]
-                delta_t = max(0, absolute_time - sim_step)
-                baseline = [first_offer[0], first_offer[2], delta_t]  # q, p, delta_t
-        
+        # CSV 仅能区分是否成交，无法还原完整 AOP 行为
+        action_op = "ACCEPT" if row.get("final_status") == "succeeded" else "END"
+        action_offer = final_action if action_op != "END" else None
         log_entry = {
             'id': row.get('id', ''),
             'partners': partners_str,
@@ -3421,7 +3141,8 @@ def _load_negotiation_logs_csv(
             'final_status': row.get('final_status', 'unknown'),
             'offer_history': offer_history,
             'final_action': final_action,
-            'baseline': baseline,
+            'action_op': action_op,
+            'action_offer': action_offer,
             'l2_goal': np.zeros(16).tolist(),  # 需要从宏观数据中填充
             'reward': 1.0 if row.get('final_status') == 'succeeded' else 0.0,
         }
@@ -3469,8 +3190,9 @@ def save_samples(
             if s.time_mask is not None:
                 max_tm_len = max(max_tm_len, len(s.time_mask))
         
-        # 构建 time_masks 数组，缺失的填充 0.0（表示全部允许）
+        # 构建 time_masks / Q_safe 数组，缺失的填充 0.0
         time_masks = []
+        q_safe_masks = []
         for s in micro_samples:
             if s.time_mask is not None:
                 tm = s.time_mask
@@ -3480,15 +3202,49 @@ def save_samples(
                 time_masks.append(tm)
             else:
                 time_masks.append(np.zeros(max_tm_len, dtype=np.float32))
+
+            qs = s.Q_safe if s.Q_safe is not None else np.zeros(max_tm_len, dtype=np.float32)
+            if len(qs) < max_tm_len:
+                qs = np.concatenate([qs, np.zeros(max_tm_len - len(qs))])
+            q_safe_masks.append(qs)
         
         micro_data = {
+            'negotiation_ids': np.array([s.negotiation_id for s in micro_samples], dtype=object),
             'roles': np.array([s.role for s in micro_samples]),
-            'x_roles': np.stack([s.x_role for s in micro_samples]),  # One-hot (2,) 谈判角色
-            'goals': np.stack([s.goal for s in micro_samples]),
-            'baselines': np.stack([s.baseline for s in micro_samples]),
-            'residuals': np.stack([s.residual for s in micro_samples]),
-            'time_labels': np.array([s.time_label for s in micro_samples]),
-            'time_masks': np.stack(time_masks),  # 新增：L1 安全约束掩码
+            'current_offers': np.stack([
+                np.asarray(s.current_offer if s.current_offer is not None else np.zeros(3, dtype=np.float32), dtype=np.float32)
+                for s in micro_samples
+            ]),
+            'relative_times': np.array([float(s.relative_time) for s in micro_samples], dtype=np.float32),
+            'l2_goals': np.stack([np.asarray(s.l2_goal, dtype=np.float32) for s in micro_samples]),
+            'goal_gap_buy': np.stack([np.asarray(s.goal_gap_buy, dtype=np.float32) for s in micro_samples]),
+            'goal_gap_sell': np.stack([np.asarray(s.goal_gap_sell, dtype=np.float32) for s in micro_samples]),
+            'today_bought_qty': np.array([float(s.today_bought_qty) for s in micro_samples], dtype=np.float32),
+            'today_sold_qty': np.array([float(s.today_sold_qty) for s in micro_samples], dtype=np.float32),
+            'today_bought_by_bucket': np.stack([np.asarray(s.today_bought_by_bucket, dtype=np.float32) for s in micro_samples]),
+            'today_sold_by_bucket': np.stack([np.asarray(s.today_sold_by_bucket, dtype=np.float32) for s in micro_samples]),
+            'x_static': np.stack([np.asarray(s.x_static, dtype=np.float32) for s in micro_samples]),
+            'X_temporal': np.stack([np.asarray(s.X_temporal, dtype=np.float32) for s in micro_samples]),
+            'time_masks': np.stack(time_masks),
+            'Q_safe': np.stack(q_safe_masks),
+            'B_free': np.array([float(s.B_free) for s in micro_samples], dtype=np.float32),
+            'action_ops': np.array([int(s.action_op) for s in micro_samples], dtype=np.int64),
+            'target_q': np.array([
+                float(s.target_quantity) if s.target_quantity is not None else np.nan
+                for s in micro_samples
+            ], dtype=np.float32),
+            'target_p': np.array([
+                float(s.target_price) if s.target_price is not None else np.nan
+                for s in micro_samples
+            ], dtype=np.float32),
+            'target_t': np.array([
+                int(s.target_time) if s.target_time is not None else -1
+                for s in micro_samples
+            ], dtype=np.int64),
+            'rewards': np.array([
+                float(s.reward) if s.reward is not None else 0.0
+                for s in micro_samples
+            ], dtype=np.float32),
         }
         np.savez(os.path.join(output_dir, "l3_samples.npz"), **micro_data)
         
@@ -3539,37 +3295,75 @@ def load_samples(
     if os.path.exists(l3_path):
         data = np.load(l3_path)
         histories = None
-        x_roles = None
-        time_masks = None
-        
+        time_masks = data.get('time_masks', None)
+        q_safe_masks = data.get('Q_safe', None)
+        neg_ids = data.get('negotiation_ids', None)
+        current_offers = data.get('current_offers', None)
+        relative_times = data.get('relative_times', None)
+        l2_goals = data.get('l2_goals', data.get('goals', None))
+        goal_gap_buy = data.get('goal_gap_buy', None)
+        goal_gap_sell = data.get('goal_gap_sell', None)
+        today_bought_qty = data.get('today_bought_qty', None)
+        today_sold_qty = data.get('today_sold_qty', None)
+        today_bought_by_bucket = data.get('today_bought_by_bucket', None)
+        today_sold_by_bucket = data.get('today_sold_by_bucket', None)
+        x_static = data.get('x_static', None)
+        X_temporal = data.get('X_temporal', None)
+        B_free = data.get('B_free', None)
+        action_ops = data.get('action_ops', None)
+        target_q = data.get('target_q', None)
+        target_p = data.get('target_p', None)
+        target_t = data.get('target_t', None)
+        rewards = data.get('rewards', None)
+
         if os.path.exists(l3_hist_path):
             hist_data = np.load(l3_hist_path, allow_pickle=True)
             histories = hist_data['histories']
-        
-        # 兼容旧格式（无 x_roles 字段）
-        if 'x_roles' in data:
-            x_roles = data['x_roles']
-        
-        # 兼容旧格式（无 time_masks 字段）
-        if 'time_masks' in data:
-            time_masks = data['time_masks']
-        
-        for i in range(len(data['roles'])):
-            history = histories[i] if histories is not None else np.zeros((1, 3))
-            role = int(data['roles'][i])
-            x_role = x_roles[i] if x_roles is not None else build_role_embedding(role == 0)
-            time_mask = time_masks[i] if time_masks is not None else None
-            
+
+        roles = data.get('roles', None)
+        count = int(len(roles)) if roles is not None else (len(histories) if histories is not None else 0)
+        for i in range(count):
+            history = histories[i] if histories is not None else np.zeros((1, 4))
+            role = int(roles[i]) if roles is not None else 0
+
+            tm_len = 41
+            if time_masks is not None:
+                tm_len = len(time_masks[i]) if time_masks.ndim > 1 else len(time_masks)
+            elif q_safe_masks is not None:
+                tm_len = len(q_safe_masks[i]) if q_safe_masks.ndim > 1 else len(q_safe_masks)
+            elif X_temporal is not None and len(X_temporal) > i:
+                tm_len = int(X_temporal[i].shape[0])
+
+            time_mask = time_masks[i] if time_masks is not None else np.zeros(tm_len, dtype=np.float32)
+            q_safe = q_safe_masks[i] if q_safe_masks is not None else np.zeros(tm_len, dtype=np.float32)
+
+            tq = target_q[i] if target_q is not None else np.nan
+            tp = target_p[i] if target_p is not None else np.nan
+            tt = target_t[i] if target_t is not None else -1
+
             micro_samples.append(MicroSample(
-                negotiation_id=str(i),
+                negotiation_id=str(neg_ids[i]) if neg_ids is not None else str(i),
                 history=history,
                 role=role,
-                x_role=x_role,
-                goal=data['goals'][i],
-                baseline=data['baselines'][i],
-                residual=data['residuals'][i],
-                time_label=int(data['time_labels'][i]),
+                current_offer=(current_offers[i] if current_offers is not None else np.zeros(3, dtype=np.float32)),
+                relative_time=float(relative_times[i]) if relative_times is not None else 0.0,
+                l2_goal=(l2_goals[i] if l2_goals is not None else np.zeros(16, dtype=np.float32)),
+                goal_gap_buy=(goal_gap_buy[i] if goal_gap_buy is not None else np.zeros(4, dtype=np.float32)),
+                goal_gap_sell=(goal_gap_sell[i] if goal_gap_sell is not None else np.zeros(4, dtype=np.float32)),
+                today_bought_qty=float(today_bought_qty[i]) if today_bought_qty is not None else 0.0,
+                today_sold_qty=float(today_sold_qty[i]) if today_sold_qty is not None else 0.0,
+                today_bought_by_bucket=(today_bought_by_bucket[i] if today_bought_by_bucket is not None else np.zeros(4, dtype=np.float32)),
+                today_sold_by_bucket=(today_sold_by_bucket[i] if today_sold_by_bucket is not None else np.zeros(4, dtype=np.float32)),
+                x_static=(x_static[i] if x_static is not None else np.zeros(12, dtype=np.float32)),
+                X_temporal=(X_temporal[i] if X_temporal is not None else np.zeros((tm_len, 10), dtype=np.float32)),
                 time_mask=time_mask,
+                Q_safe=q_safe,
+                B_free=float(B_free[i]) if B_free is not None else 0.0,
+                action_op=int(action_ops[i]) if action_ops is not None else 2,
+                target_quantity=None if np.isnan(tq) else int(tq),
+                target_price=None if np.isnan(tp) else float(tp),
+                target_time=None if int(tt) < 0 else int(tt),
+                reward=float(rewards[i]) if rewards is not None else 0.0,
             ))
     
     return macro_samples, micro_samples
@@ -3586,11 +3380,9 @@ def save_l4_samples(
 
     l4_data = {
         "days": np.array([s.day for s in l4_samples], dtype=np.int32),
-        "global_feats": np.stack([np.asarray(s.global_feat, dtype=np.float32) for s in l4_samples]),
-        "thread_feats": np.array([np.asarray(s.thread_feats, dtype=np.float32) for s in l4_samples], dtype=object),
-        "thread_times": np.array([np.asarray(s.thread_times, dtype=np.int64) for s in l4_samples], dtype=object),
-        "thread_roles": np.array([np.asarray(s.thread_roles, dtype=np.int64) for s in l4_samples], dtype=object),
-        "teacher_weights": np.array([np.asarray(s.teacher_weights, dtype=np.float32) for s in l4_samples], dtype=object),
+        "global_states": np.stack([np.asarray(s.global_state, dtype=np.float32) for s in l4_samples]),
+        "thread_states": np.array([np.asarray(s.thread_states, dtype=np.float32) for s in l4_samples], dtype=object),
+        "teacher_alpha": np.array([np.asarray(s.teacher_alpha, dtype=np.float32) for s in l4_samples], dtype=object),
         "thread_ids": np.array([s.thread_ids for s in l4_samples], dtype=object),
     }
     np.savez(os.path.join(output_dir, "l4_samples.npz"), **l4_data)
@@ -3604,30 +3396,31 @@ def load_l4_samples(data_dir: str) -> List[L4DistillSample]:
 
     data = np.load(path, allow_pickle=True)
     days = data.get("days", np.array([], dtype=np.int32))
-    global_feats = data.get("global_feats", None)
-    thread_feats = data.get("thread_feats", None)
-    thread_times = data.get("thread_times", None)
-    thread_roles = data.get("thread_roles", None)
-    teacher_weights = data.get("teacher_weights", None)
+    global_states = data.get("global_states", data.get("global_state", None))
+    thread_states = data.get("thread_states", None)
+    teacher_alpha = data.get("teacher_alpha", None)
     thread_ids = data.get("thread_ids", None)
+
+    if global_states is None:
+        global_states = data.get("global_feats", None)
+    if thread_states is None:
+        thread_states = data.get("thread_feats", None)
+    if teacher_alpha is None:
+        teacher_alpha = data.get("teacher_weights", None)
 
     samples: List[L4DistillSample] = []
     for i in range(len(days)):
-        gf = global_feats[i] if global_feats is not None else np.zeros((30,), dtype=np.float32)
-        tf = thread_feats[i] if thread_feats is not None else np.zeros((1, 24), dtype=np.float32)
-        tt = thread_times[i] if thread_times is not None else np.zeros((tf.shape[0],), dtype=np.int64)
-        tr = thread_roles[i] if thread_roles is not None else np.zeros((tf.shape[0],), dtype=np.int64)
-        tw = teacher_weights[i] if teacher_weights is not None else np.full((tf.shape[0],), 1.0 / max(tf.shape[0], 1), dtype=np.float32)
+        gs = global_states[i] if global_states is not None else np.zeros((12,), dtype=np.float32)
+        ts = thread_states[i] if thread_states is not None else np.zeros((1, 11), dtype=np.float32)
+        ta = teacher_alpha[i] if teacher_alpha is not None else np.full((ts.shape[0],), 0.0, dtype=np.float32)
         ids = thread_ids[i] if thread_ids is not None else None
 
         samples.append(
             L4DistillSample(
                 day=int(days[i]),
-                global_feat=np.asarray(gf, dtype=np.float32),
-                thread_feats=np.asarray(tf, dtype=np.float32),
-                thread_times=np.asarray(tt, dtype=np.int64),
-                thread_roles=np.asarray(tr, dtype=np.int64),
-                teacher_weights=np.asarray(tw, dtype=np.float32),
+                global_state=np.asarray(gs, dtype=np.float32),
+                thread_states=np.asarray(ts, dtype=np.float32),
+                teacher_alpha=np.asarray(ta, dtype=np.float32),
                 thread_ids=list(ids) if ids is not None else None,
             )
         )
@@ -3640,6 +3433,7 @@ __all__ = [
     "MicroSample",
     "L4DistillSample",
     "reconstruct_l2_goals",
+    "extract_l3_samples_aop",
     "extract_l3_residuals",
     "load_tournament_data",
     "load_l4_distill_data",
@@ -3652,6 +3446,5 @@ __all__ = [
     "delta_to_bucket_soft",
     "compute_q_safe_offline",
     "compute_time_mask_offline",
-    "compute_l1_baseline_offline",
     "build_role_embedding",
 ]

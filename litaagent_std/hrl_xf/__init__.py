@@ -1,14 +1,12 @@
-"""LitaAgent-HRL (HRL-XF) 模块入口.
+﻿"""LitaAgent-HRL (HRL-XF) 模块入口.
 
 HRL-XF: Hybrid Residual Learner - Extended Framework, Futures Edition
 针对 SCML 2025 期货市场环境的分层强化学习代理。
-
 架构概览:
 - L1 (Safety): 时序 ATP 算法，输出安全掩码 Q_safe, time_mask
 - L2 (Manager): 1D-CNN 双塔网络，输出 16 维分桶目标向量
-- L3 (Executor): Decision Transformer，输出残差动作 (Δq, Δp, δt)
-- L4 (Coordinator): 多头注意力 + 时间偏置，输出线程权重
-
+- L3 (Executor): Decision Transformer，输出完整 SAOAction
+- L4 (Coordinator): 监控器 + 优先级协调器，输出 α
 训练与数据:
 - data_pipeline: 日志解析、状态重建、标签生成
 - training: BC、AWR、PPO 训练循环
@@ -19,15 +17,15 @@ from .agent import LitaAgentHRL, LitaAgentHRLTracked
 from .l1_safety import L1SafetyLayer, L1Output
 from .state_builder import StateBuilder, StateDict
 from .l2_manager import L2StrategicManager
-from .l3_executor import L3ResidualExecutor
-from .l4_coordinator import L4ThreadCoordinator
+from .l3_executor import L3Actor
+from .l4_coordinator import L4Layer
 
 # 数据与训练
 from .data_pipeline import (
     MacroSample,
     MicroSample,
     reconstruct_l2_goals,
-    extract_l3_residuals,
+    extract_l3_samples_aop,
     load_tournament_data,
     save_samples,
     load_samples,
@@ -58,8 +56,8 @@ __all__ = [
     "L1SafetyLayer",
     "L1Output",
     "L2StrategicManager",
-    "L3ResidualExecutor",
-    "L4ThreadCoordinator",
+    "L3Actor",
+    "L4Layer",
     # 状态构建
     "StateBuilder",
     "StateDict",
@@ -67,7 +65,7 @@ __all__ = [
     "MacroSample",
     "MicroSample",
     "reconstruct_l2_goals",
-    "extract_l3_residuals",
+    "extract_l3_samples_aop",
     "load_tournament_data",
     "save_samples",
     "load_samples",

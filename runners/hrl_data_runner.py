@@ -83,6 +83,7 @@ from litaagent_std.litaagent_y import LitaAgentY
 from litaagent_std.litaagent_p import LitaAgentP
 from litaagent_std.litaagent_yr import LitaAgentYR
 from litaagent_std.litaagent_n import LitaAgentN
+from litaagent_std.litaagent_h import LitaAgentH
 from litaagent_std.litaagent_cir import LitaAgentCIR
 from litaagent_std.tracker_mixin import create_tracked_agent
 
@@ -94,6 +95,7 @@ LITA_AGENT_BASES = [
     LitaAgentYR,
     LitaAgentN,
     LitaAgentCIR,
+    LitaAgentH,
 ]
 
 # 明确指定的 Top 代理（优先于 scml_agents.get_agents）
@@ -1050,22 +1052,22 @@ def main():
         parallelism = "parallel"
 
     print("\n" + "=" * 60)
-    print("🎯 SCML 2025 Standard 数据采集 Runner")
+    print("SCML 2025 Standard 数据采集 Runner")
     print("=" * 60)
-    print(f"📋 参赛代理: {len(competitors)} 个")
+    print(f"参赛代理: {len(competitors)} 个")
     print(f"   LitaAgent: {lita_names}")
     print(f"   外部 Agent: {external_names}")
-    print(f"📊 配置: n_configs={args.configs}, n_runs={args.runs}")
+    print(f"配置: n_configs={args.configs}, n_runs={args.runs}")
     if args.max_worlds_per_config is not None and n_per_world is not None:
         n_sets = _estimate_competitor_sets(len(competitors), n_per_world, args.round_robin)
         approx_worlds = args.configs * args.runs * args.max_worlds_per_config * n_sets
-        print(f"🧮 约束: max_worlds_per_config={args.max_worlds_per_config} (≈ {approx_worlds} worlds)")
+        print(f"约束: max_worlds_per_config={args.max_worlds_per_config} (≈ {approx_worlds} worlds)")
     print(
-        f"🔧 选项: tracker=True, visualizer=False, auto_collect={not args.no_auto_collect}, "
+        f"选项: tracker=True, visualizer=False, auto_collect={not args.no_auto_collect}, "
         f"round_robin={args.round_robin}, no_csv={args.no_csv}, "
         f"forced_logs_fraction={args.forced_logs_fraction}"
     )
-    print(f"⚙️  并行: {parallelism_label}")
+    print(f"并行: {parallelism_label}")
     print("=" * 60 + "\n")
 
     # 使用 anac2024_std 运行标准赛，强制保留日志以便 HRL 数据采集。

@@ -4,7 +4,6 @@ L1 是确定性规则层，不含可训练参数。其职责：
 1. 计算时序库容约束 Q_safe[δ]，维度 (H+1,)
 2. 计算资金约束 B_free
 3. 生成动作掩码 time_mask 供 L3 使用
-4. 提供基准动作 baseline_action
 
 核心算法：Available-To-Promise (ATP) 时序安全检查
 """
@@ -28,7 +27,6 @@ class L1Output:
         Q_safe_sell: 每个交货日的最大安全卖出量，shape (H+1,)，δt ∈ {0, 1, ..., H}
         B_free: 可用资金上限
         time_mask: 时间掩码 (0 或 -inf)，shape (H+1,)，用于 L3 的 Masked Softmax
-        baseline_action: 基准动作 (q_base, p_base, t_base)
         L_trajectory: 原材料 backlog 轨迹（满载加工假设），shape (H,)
         C_total: 库容向量，shape (H,)
         Q_in: 已承诺入库量向量，shape (H,)
@@ -39,7 +37,6 @@ class L1Output:
     Q_safe_sell: np.ndarray
     B_free: float
     time_mask: np.ndarray
-    baseline_action: Tuple[float, float, int]
     L_trajectory: np.ndarray
     C_total: np.ndarray
     Q_in: Optional[np.ndarray] = None
@@ -254,7 +251,7 @@ def compute_safe_sell_mask(
     
     算法分两步：
     1. 计算每天的"净可交付量"（成品轨迹）：
-       S[k] = I_output_now + Σ_{j=0}^{k-1} Q_prod[j] - Σ_{j=0}^{k-1} Q_out[j]
+       S[k] = I_output_now + Σ_{j=0}^{k} Q_prod[j] - Σ_{j=0}^{k} Q_out[j]
     2. 使用逆向累积最小值确保不挤爆后续交付：
        Q_safe_sell[δ] = min_{k>=δ} S[k]
     
@@ -270,14 +267,13 @@ def compute_safe_sell_mask(
         Q_safe_sell: shape (H,)
     """
     # 步骤1: 计算成品轨迹 S[k]（每天的可交付量）
-    # S[k] = I_output + Σ_{j=0}^{k-1} (Q_prod[j] - Q_out[j])
+    # S[k] = I_output + Σ_{j=0}^{k} (Q_prod[j] - Q_out[j])
     net_flow = Q_prod - Q_out  # 每天净产出
     
     S = np.zeros(horizon, dtype=np.float32)
-    S[0] = I_output_now  # 第0天只有当前成品
-    if horizon > 1:
-        cumulative_net = np.cumsum(net_flow[:-1])  # 前 k-1 天的累计净产出
-        S[1:] = I_output_now + cumulative_net
+    if horizon > 0:
+        cumulative_net = np.cumsum(net_flow)  # 前 k 天的累计净产出
+        S = I_output_now + cumulative_net
     
     # 步骤2: 逆向累积最小值
     # Q_safe_sell[δ] = min_{k>=δ} S[k]
@@ -289,47 +285,6 @@ def compute_safe_sell_mask(
     Q_safe_sell = np.maximum(Q_safe_sell, 0)
     
     return Q_safe_sell
-
-
-def recompute_q_safe_after_reservation(
-    Q_in: np.ndarray,
-    delta_t: int,
-    reserved_qty: float,
-    I_input_now: float,
-    n_lines: float,
-    C_total: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """在动态预留后重新计算 Q_safe（新算法）.
-    
-    逻辑：将 reserved_qty 计入 Q_in[delta_t]，再重算 backlog 与 Q_safe。
-    
-    Args:
-        Q_in: 原始入库承诺向量，shape (H,)
-        delta_t: 预留的交货日
-        reserved_qty: 预留的数量
-        I_input_now: 当前原材料库存
-        n_lines: 每日最大加工量
-        C_total: 库容向量，shape (H,)
-        
-    Returns:
-        Q_safe: 重新计算后的安全量向量，shape (H+1,)
-        Q_in: 更新后的入库承诺向量，shape (H,)
-    """
-    Q_in = Q_in.copy()
-    idx = int(delta_t)
-    if len(Q_in) > 0 and idx >= len(Q_in):
-        idx = len(Q_in) - 1
-    if 0 <= idx < len(Q_in):
-        Q_in[idx] += float(reserved_qty)
-    
-    backlog = compute_inventory_trajectory(I_input_now, Q_in, n_lines, len(Q_in))
-    Q_safe_h = compute_safe_buy_mask(C_total, Q_in, backlog, len(Q_in))
-    
-    Q_safe = np.zeros(len(Q_safe_h) + 1, dtype=np.float32)
-    if len(Q_safe_h) > 0:
-        Q_safe[:len(Q_safe_h)] = Q_safe_h
-        Q_safe[len(Q_safe_h)] = Q_safe_h[-1]
-    return Q_safe, Q_in
 
 
 def compute_budget_limit(
@@ -361,7 +316,6 @@ class L1SafetyLayer:
     1. 计算时序库容约束 Q_safe[δ]
     2. 计算资金约束 B_free
     3. 生成时间掩码 time_mask
-    4. 提供基准动作 baseline_action
     
     Args:
         horizon: 规划视界 H，默认 40
@@ -387,7 +341,7 @@ class L1SafetyLayer:
             is_buying: 当前是买入还是卖出角色
             
         Returns:
-            L1Output: 包含 Q_safe, Q_safe_sell, B_free, time_mask, baseline_action 等
+            L1Output: 包含 Q_safe, Q_safe_sell, B_free, time_mask 等
         """
         # 1. 获取库容向量
         C_total = get_capacity_vector(awi, self.horizon)
@@ -436,15 +390,11 @@ class L1SafetyLayer:
         else:
             time_mask = np.where(Q_safe_sell >= self.min_tradable_qty, 0.0, -np.inf)
         
-        # 10. 生成基准动作
-        baseline_action = self._compute_baseline(awi, Q_safe, Q_safe_sell, B_free, is_buying)
-        
         return L1Output(
             Q_safe=Q_safe,
             Q_safe_sell=Q_safe_sell,
             B_free=B_free,
             time_mask=time_mask,
-            baseline_action=baseline_action,
             L_trajectory=backlog,
             C_total=C_total,
             Q_in=Q_in,
@@ -493,90 +443,6 @@ class L1SafetyLayer:
         
         return Payables
     
-    def _compute_baseline(
-        self,
-        awi: "StdAWI",
-        Q_safe: np.ndarray,
-        Q_safe_sell: np.ndarray,
-        B_free: float,
-        is_buying: bool
-    ) -> Tuple[float, float, int]:
-        """计算基准动作.
-        
-        基准策略：选择最早的可行交货日，使用保守的数量和价格。
-        
-        Args:
-            awi: Agent World Interface
-            Q_safe: 安全买入量向量，shape (H+1,)
-            Q_safe_sell: 安全卖出量向量，shape (H+1,)
-            B_free: 可用资金
-            is_buying: 是否为买入角色
-            
-        Returns:
-            (q_base, p_base, t_base): 基准动作
-        """
-        t_current = awi.current_step
-        
-        # 获取市场价格 (trading_prices 是 numpy 数组，按产品索引)
-        trading_prices = getattr(awi, 'trading_prices', None)
-        
-        def get_price(product_id: int, default: float) -> float:
-            """安全地从 trading_prices 获取价格."""
-            if trading_prices is None:
-                return default
-            try:
-                if hasattr(trading_prices, '__getitem__'):
-                    if product_id < len(trading_prices):
-                        return float(trading_prices[product_id])
-            except (IndexError, TypeError):
-                pass
-            return default
-        
-        if is_buying:
-            # 买入：使用输入产品价格
-            input_product = awi.my_input_product
-            if hasattr(input_product, '__len__') and not isinstance(input_product, (str, int)):
-                input_product = input_product[0]
-            market_price = get_price(input_product, 10.0)
-            
-            # 找到最早可行的交货日
-            best_delta = 1  # 默认明天
-            for delta in range(self.horizon + 1):
-                if Q_safe[delta] >= self.min_tradable_qty:
-                    best_delta = delta
-                    break
-            
-            # 基准数量：安全量的一半（保守）
-            q_base = min(Q_safe[best_delta] / 2, B_free / max(market_price, 1.0))
-            q_base = max(1.0, q_base)
-            
-            # 基准价格：略低于市场价（买方希望便宜）
-            p_base = market_price * 0.95
-            
-        else:
-            # 卖出：使用输出产品价格
-            output_product = awi.my_output_product
-            if hasattr(output_product, '__len__') and not isinstance(output_product, (str, int)):
-                output_product = output_product[0]
-            market_price = get_price(output_product, 20.0)
-            
-            # 找到最早可行的交货日（有足够可交付成品）
-            best_delta = 1  # 默认明天
-            for delta in range(self.horizon + 1):
-                if Q_safe_sell[delta] >= self.min_tradable_qty:
-                    best_delta = delta
-                    break
-            
-            # 基准数量：安全量的一半（保守）
-            q_base = max(1.0, Q_safe_sell[best_delta] / 2)
-            
-            # 基准价格：略高于市场价（卖方希望贵）
-            p_base = market_price * 1.05
-        
-        t_base = best_delta
-        
-        return (float(q_base), float(p_base), int(t_base))
-    
     def clip_action(
         self,
         action: Tuple[float, float, int],
@@ -585,49 +451,41 @@ class L1SafetyLayer:
         is_buying: bool,
         min_price: float = 0.0,
         max_price: float = float('inf'),
-        Q_safe_sell: Optional[np.ndarray] = None
+        Q_safe_sell: Optional[np.ndarray] = None,
+        time_range: Optional[Tuple[int, int]] = None
     ) -> Tuple[int, float, int]:
-        """裁剪动作到安全范围.
+        """裁剪动作到安全范围（仅裁剪数量）.
         
         所有最终动作必须经过此方法裁剪。
         
         Args:
             action: (quantity, price, delivery_time) 原始动作
-            Q_safe: 安全买入量向量，shape (H+1,)
-            B_free: 可用资金
+            Q_safe: 买方剩余安全量向量，shape (H+1,)
+            B_free: 可用资金（此处不裁剪预算）
             is_buying: 是否为买入角色
-            min_price: 最小价格（卖方底价）
-            max_price: 最大价格（买方顶价）
-            Q_safe_sell: 安全卖出量向量，shape (H+1,)，卖侧必须提供
+            min_price: 价格下界（此处不裁剪价格）
+            max_price: 价格上界（此处不裁剪价格）
+            Q_safe_sell: 卖方剩余安全量向量，shape (H+1,)
             
         Returns:
             (quantity, price, delivery_time): 裁剪后的动作
         """
         quantity, price, delivery_time = action
         
-        # 确保 delivery_time 在有效范围内
-        delivery_time = int(max(0, min(delivery_time, self.horizon)))
-        
-        # 价格裁剪
+        delivery_time = int(delivery_time)
+
+        if time_range is not None:
+            min_t, max_t = time_range
+            if delivery_time < int(min_t) or delivery_time > int(max_t):
+                return (0, float(price), delivery_time)
+
+        # 数量裁剪（不改时间，不改价格）
         if is_buying:
-            price = min(price, max_price)
-        else:
-            price = max(price, min_price)
-        price = max(0.0, price)
-        
-        # 数量裁剪
-        if is_buying:
-            # 买侧：不超过安全买入量
-            max_qty = Q_safe[delivery_time] if delivery_time < len(Q_safe) else 0.0
-            # 不超过资金允许
-            if price > 0:
-                max_qty = min(max_qty, B_free / price)
+            max_qty = Q_safe[delivery_time] if 0 <= delivery_time < len(Q_safe) else 0.0
             quantity = min(quantity, max_qty)
         else:
-            # 卖侧：不超过安全卖出量（可交付成品量）
-            if Q_safe_sell is not None:
-                max_qty = Q_safe_sell[delivery_time] if delivery_time < len(Q_safe_sell) else 0.0
-                quantity = min(quantity, max_qty)
+            max_qty = Q_safe_sell[delivery_time] if Q_safe_sell is not None and 0 <= delivery_time < len(Q_safe_sell) else 0.0
+            quantity = min(quantity, max_qty)
         
         quantity = max(0, int(quantity))
         
@@ -648,5 +506,4 @@ __all__ = [
     "compute_safe_buy_mask",
     "compute_safe_sell_mask",
     "compute_budget_limit",
-    "recompute_q_safe_after_reservation",
 ]

@@ -1,7 +1,7 @@
-# HRL-XF L1&L3&L4 层重构详细行动方案
+﻿# HRL-XF L1&L3&L4 层重构详细行动方案
 
 > **生成日期**：2025年12月25日
-> **文档版本**：1.5（方案A：L4=网络输出α；BC/数据重建纳入 END_NEGOTIATION；L2 目标标签优先使用 first_proposals 聚合）
+> **文档版本**：1.7（修正 DT 数量解码：不再使用 E[Q_safe] 缩放；数量/交期离散采样后再 clip）
 > **基于设计文档**：
 > - `HRL-XF 实施规范.md`
 > - `HRL-XF 期货市场代理重构.md`
@@ -54,8 +54,8 @@ AWI → L1 (Safety Mask)
 
 为了让同一套 L3 网络同时覆盖 `propose()` 和 `respond()`，我们把动作统一成：
 
-- 一个离散操作符：\(op\in\{\texttt{ACCEPT},\texttt{COUNTER},\texttt{END}\}\)
-- 以及一个可选的我方报价 \(offer\_out\)（仅当 \(op=\texttt{COUNTER}\) 时需要）
+- 一个离散操作符：\(op\in\{\texttt{ACCEPT},\texttt{REJECT},\texttt{END}\}\)
+- 以及一个可选的我方报价 \(offer\_out\)（仅当 \(op=\texttt{REJECT}\) 时需要）
 
 > **Outcome 的字段顺序**（SCML/negmas）：`(quantity, time, unit_price)`  
 > 为避免混淆，本文统一使用：  
@@ -69,12 +69,13 @@ AWI → L1 (Safety Mask)
 
 | op_id | op 名称 | 在 respond() 中含义 | 在 propose() 中含义 |
 |---:|---|---|---|
-| 0 | **ACCEPT** | `ACCEPT_OFFER`（接受对手当前 offer） | **无效（mask 掉）** |
-| 1 | **COUNTER** | `REJECT_OFFER + counter_offer`（拒绝并还价） | 返回 `offer_out`（主动出价） |
-| 2 | **END** | `END_NEGOTIATION`（结束谈判） | **允许**：返回 `None` / 或在批量返回字典中省略该 negotiator，以显式结束该谈判（用于复刻 PenguinAgent 的“筛掉对手”行为） |
+| 0 | **ACCEPT** | `SAOResponse(ResponseType.ACCEPT_OFFER, offer_in)`（接受对手当前 offer） | **无效（mask 掉）** |
+| 1 | **REJECT** | `SAOResponse(ResponseType.REJECT_OFFER, offer_out)`（拒绝并还价；`offer_out` **必须非 None**） | 返回 `offer_out`（主动出价） |
+| 2 | **END** | `SAOResponse(ResponseType.END_NEGOTIATION, None)`（结束谈判） | 返回 `None`（结束/放弃该谈判） |
 
-> 重要更正：PenguinAgent 很少显式返回 `ResponseType.END_NEGOTIATION`，但它会通过“在 `first_proposals()` / `counter_all()` 的返回字典里 **省略某些 negotiator**”来**隐式终止**这些谈判；控制器会把缺失键补成 `END_NEGOTIATION`。  
-> 因此 **BC 数据必须包含 END**（否则线上你一旦遇到需要“筛掉/终止某些谈判”的场景就会 OOD）。实现上建议在 **tracker 侧把“缺失响应/缺失提案”显式记录为 `action_op=END`**（见 7.2.4）。
+> 重要边界（必须按此理解，否则 Tracker/BC 标签会错）：  
+> 1) 在 `counter_all()`（StdSyncAgent 批量响应）里，如果返回 dict **缺失某个已出现在 `states` 中的 negotiator**，控制器会把它补成 `END_NEGOTIATION`。**Tracker 需要把这类“缺失响应”记录为 END**。  
+> 2) 在 `first_proposals()` 里，如果返回 dict **缺失某个 negotiator**，意味着**根本没有对该对手发起谈判/从未给出第一轮报价**。这类“未发起”不应当强行当作 END 样本写入 BC 数据（否则会混淆“结束已开始的谈判”与“根本不启动谈判”）。
 
 ---
 
@@ -88,7 +89,7 @@ AWI → L1 (Safety Mask)
   `return SAOResponse(ResponseType.ACCEPT_OFFER, offer_in)`  
   > **注意**：`ACCEPT` 必须带上 **对手的 offer（相同 Outcome）**，不能传 `None` 或我方自定义 outcome。
 
-- 若 `op==COUNTER`：  
+- 若 `op==REJECT`：  
   `return SAOResponse(ResponseType.REJECT_OFFER, offer_out)`  
   > **注意**：这里的 `REJECT_OFFER` 在 SCML 语义上就是“反报价/还价”，因此 **必须携带一个 counter offer**。
 
@@ -97,9 +98,9 @@ AWI → L1 (Safety Mask)
 
 #### 2.2.2 propose() → Outcome | None
 
-- 通常只允许 `op==COUNTER`：`return offer_out`  
+- 通常只允许 `op==REJECT`：`return offer_out`  
 - 若你希望允许“不开局”，可把 `op==END` 映射为 `return None`（或由 controller 默认补 END）。  
-  但由于你明确“不需要重建 DO_NOTHING”，BC 阶段不训练 `None`/END 的 propose 行为。
+  但由于你明确“不需要重建 DO_NOTHING”，BC 阶段不训练 `None`/END 的 propose 行为，且 **return None 不记录样本**。
 
 ---
 
@@ -107,10 +108,32 @@ AWI → L1 (Safety Mask)
 
 L3 不再输出残差，而是输出完整动作：
 
-- `op_logits ∈ R^{3}`（Categorical：ACCEPT / COUNTER / END）
-- `quantity_head`：例如 `q_ratio ∈ (0,1)` 或直接回归 `q`
-- `price_head`：例如 `p_ratio ∈ (0,1)` 或直接回归 `p`
+- `op_logits ∈ R^{3}`（Categorical：ACCEPT / REJECT / END）
+- `quantity_head`：输出 `q_raw >= 0`（Softplus）
+- `price_head`：输出 `p_raw >= 0`（Softplus）
 - `time_logits ∈ R^{H+1}`（离散的 \(\delta t\in\{0,1,\dots,H\}\)）
+
+
+
+#### 2.3.1 重要：不要用 “期望 Q_safe” 去缩放数量（修正点）
+
+你之前提到的这种写法（示意）：
+
+- `time_probs = softmax(time_logits)`
+- `expected_Q_safe = (time_probs * Q_safe_remaining).sum()`
+- `quantity = q_ratio * expected_Q_safe`（旧思路，已废弃）
+
+属于一种“为了让数量分支对 time_logits 可微”而做的连续化技巧。  
+但在 **真实执行** 时，我们通常会 **采样/argmax 得到一个具体的交期 δ\***，然后把 `(q, p, δ\*)` 送入 `clip_action()` 做硬裁剪。  
+这样就会产生结构性不一致：网络训练时把数量当成“对所有时间的加权平均容量”，执行时却落在某个单点时间上，导致 **频繁 clip、分布偏移、策略不稳定**。
+
+**本方案（v1.7）的统一原则：DT 只输出动作三元组的“离散选择 + 连续参数”，不使用 `E[Q_safe]`。**
+
+- DT 输出：`op_logits`、`q_raw`、`p_raw`、`time_logits`
+- 解码顺序：**先选 δ\*** → **再生成 q/p** → **最后 clip**
+- 安全约束：只由 `L1.clip_action(..., Q_safe_remaining)` 兜底（以及 accept feasibility 检查）
+
+也就是说：**不做 E[Q_safe]，只做 “选 δ\* → 算 q → clip”**。
 
 并通过 **掩码 + 兜底规则** 确保合法性：
 
@@ -120,23 +143,23 @@ L3 不再输出残差，而是输出完整动作：
 
 2) **L1 Safety Mask（只管“能不能履约”，不管价格好坏）**  
    - `ACCEPT`：仅在“接受后必然违约/浪费/资金不足”时屏蔽  
-   - `COUNTER`：仅在“该交期/数量必然违约/爆仓/资金不足”时裁剪/改选  
+   - `REJECT`：仅在“该交期/数量必然违约/爆仓/资金不足”时裁剪/改选  
    - **不**因为价格高低屏蔽动作（价格优劣交给在线 RL 的回报学习）
 
 3) **关键合法性兜底（非常重要）**  
-   - 如果策略选择 `COUNTER`，但经过 L1 裁剪/约束后无法产生任何合法 offer（例如所有可行 \(\delta t\) 都被 mask，或 \(q\le 0\)）：  
+   - 如果策略选择 `REJECT`，但经过 L1 裁剪/约束后无法产生任何合法 offer（例如所有可行 \(\delta t\) 都被 mask，或 \(q\le 0\)）：  
      **必须改为 `END`**（因为 “REJECT_OFFER 且 outcome=None” 非法）。
 
 ---
 
 ### 2.4 离线重建标签（BC 阶段）应当怎么理解
 
-- 我方每次发出报价（`offer_made`：包括 first_proposal / counter_offer）→ `op=COUNTER`
+- 我方每次发出报价（`offer_made`：包括 first_proposal / counter_offer）→ `op=REJECT`
 - 我方接受对手报价（若日志中能明确识别）→ `op=ACCEPT`
 - 我方结束谈判（若日志/控制器能明确识别）→ `op=END`
 
-> 由于 PenguinAgent 的 `END` 多为**隐式 END**（`first_proposals()/counter_all()` 省略某些 negotiator → 控制器补 `END_NEGOTIATION`），我们需要在 **tracker/pipeline** 中把它显式补齐为 `op=END`。  
-> 因此 BC 阶段将同时训练三类动作：`COUNTER`、`ACCEPT`、`END`（避免线上遇到“需要筛掉某些对手/终止谈判”的场景产生 OOD）。
+> 由于 PenguinAgent 的 `END` 多为**隐式 END**（`counter_all()()` 省略某些 negotiator → 控制器补 `END_NEGOTIATION`），我们需要在 **tracker/pipeline** 中把它显式补齐为 `op=END`。  
+> 因此 BC 阶段将同时训练三类动作：`REJECT`、`ACCEPT`、`END`（避免线上遇到“需要筛掉某些对手/终止谈判”的场景产生 OOD）。
 
 ## 三、L1 层重构：移除 Baseline，仅输出 Safety Mask
 
@@ -222,28 +245,58 @@ class L1SafetyLayer:
         )
 ```
 
-#### 3.3.3 保留 `clip_action()` 方法
+> **补充：卖侧允许“当日生产当日交付”。**  
+> 因此成品轨迹应按下式计算：  
+> \[
+> S[k] = I\_{output\_now} + \sum\_{j=0}^{k} \big(Q\_{prod}[j] - Q\_{out}[j]\big)
+> \]
+> 这意味着 \(\delta_t=0\) 时可以使用当日产能。
 
-L1 仍需提供 `clip_action()` 方法，用于在最终输出前裁剪动作到安全范围：
+#### 3.3.3 保留 `clip_action()` 方法（仅裁剪数量 q）
+
+L1 仍需提供 `clip_action()`，但在本重构版本中它**只做一件事**：对数量 **q** 做上界裁剪，确保不超过“当日剩余安全可交易量”。  
+- **不改交付时间** `delta_t`  
+- **不改价格** `p`
+- **若交期超出 issue range，则将 q 直接置 0**
+
+数学上，对动作 \(a=(q,p,\delta_t)\)：
+
+- Buyer：
+\[
+q' = \min\big(q,\; Q_{safe\_remaining}[\delta_t]\big)
+\]
+- Seller（若实现中有卖出侧安全量向量）：
+\[
+q' = \min\big(q,\; Q_{safe\_sell\_remaining}[\delta_t]\big)
+\]
+
+实现上可以保留旧方法签名（便于最小侵入），但内部逻辑应改为仅裁剪数量：
 
 ```python
 def clip_action(
     self,
     action: Tuple[float, float, int],
-    Q_safe: np.ndarray,
-    B_free: float,
+    Q_safe_remaining: np.ndarray,
+    B_remaining: float,
     is_buying: bool,
     min_price: float = 0.0,
     max_price: float = float('inf'),
-    Q_safe_sell: Optional[np.ndarray] = None
+    Q_safe_sell_remaining: Optional[np.ndarray] = None,
 ) -> Tuple[int, float, int]:
-    """裁剪动作到安全范围.
+    q, p, delta_t = action
 
-    所有最终动作必须经过此方法裁剪。
-    此方法保持不变。
-    """
-    # ... 现有实现保持不变 ...
+    if delta_t < 0 or delta_t >= len(Q_safe_remaining):
+        q = 0.0
+    elif is_buying:
+        q_cap = float(Q_safe_remaining[delta_t])
+        q = min(float(q), q_cap)
+    else:
+        q_cap = float(Q_safe_sell_remaining[delta_t]) if Q_safe_sell_remaining is not None and delta_t < len(Q_safe_sell_remaining) else 0.0
+        q = min(float(q), q_cap)
+    return int(round(q)), float(p), int(delta_t)
 ```
+
+> 说明：预算/资金可行性应通过 **L1 的 accept/reject mask** 在动作选择阶段屏蔽；`clip_action()` 不裁剪预算、不裁剪价格、不裁剪时间。
 
 ---
 
@@ -274,84 +327,95 @@ L4 采用**双组件架构**：
 
 ### 4.2 新的数据结构
 
-#### 4.2.1 ThreadState 与 ThreadPriority
+#### 4.2.1 ThreadState（统一 11 维）与 ThreadPriority
+
+为了保证 **(i) 不依赖 baseline**、**(ii) 可离线重建**、**(iii) 可变线程数/顺序无关**，我们把 L4 的每线程输入统一为一个固定长度向量：
+
+- 每个线程 \(k\) 的状态：\(s_k \in \mathbb{R}^{11}\)
+- L4 输出优先级：
+  \[
+  \alpha_k = f_\phi(\{s_j\}_{j=1..K},\; g) \in (-1,1)
+  \]
+  其中 \(g\) 是全局状态（GlobalBroadcast 的精简向量），\(K\) 为当下活跃线程数。
+
+**ThreadState-11 的字段顺序（必须全局统一）：**
+
+令当前仿真日为 \(t=\texttt{awi.current_step}\)，视界 \(H\)，对手当前报价（若存在）为  
+\[
+\texttt{offer\_in}=(q_{in},\;t_{abs,in},\;p_{in})
+\]
+其中 \(t_{abs,in}\) 是**绝对交货日**（SCML outcome 的 time issue）。
+
+定义相对交期：
+\[
+\delta_{in}=\mathrm{clip}(t_{abs,in}-t,\;0,\;H)
+\]
+
+则线程状态向量定义为：
+
+\[
+s_k =
+\begin{bmatrix}
+r \\
+\mathrm{rel\_time} \\
+\mathrm{step\_norm} \\
+\mathbb{1}[\texttt{offer\_in}\neq\varnothing] \\
+\tilde q_{in} \\
+\tilde p_{in} \\
+\tilde\delta_{in} \\
+\tilde b \\
+\tilde g \\
+\tilde Q_{cap} \\
+\tilde B_{cap}
+\end{bmatrix}
+\in\mathbb{R}^{11}
+\]
+
+各分量含义与归一化方式：
+
+- \(r\in\{0,1\}\)：角色（0=buy, 1=sell）
+- \(\mathrm{rel\_time}\in[0,1]\)：谈判相对进度（`state.relative_time`）
+- \(\mathrm{step\_norm}\in[0,1]\)：谈判轮次归一化（`state.step / max_rounds`，max_rounds 可取机制上限或经验常数）
+- \(\mathbb{1}[\texttt{offer\_in}\neq\varnothing]\)：是否存在对手报价
+- \(\tilde q_{in}\)：数量归一化（例如 \(q_{in}/q_{scale}\)，\(q_{scale}\) 可取 `state_builder.max_inventory` 或 `n_lines*H`）
+- \(\tilde p_{in}\)：价格归一化（不依赖 issue 范围；可用固定尺度，如 `price_scale` 或 `state_builder.max_price`）
+- \(\tilde\delta_{in}=\delta_{in}/H\)
+- \(\tilde b\)：交期桶编号归一化（bucket_id/3）。bucket 由 \(\delta\) 映射（见 L2 的 bucket 定义）
+- \(\tilde g\)：该 bucket 的**剩余目标缺口**归一化（见 `GlobalBroadcast.goal_gap_*`）
+- \(\tilde Q_{cap}\)：该 \(\delta\) 的 **剩余安全量**（买用 `Q_safe_remaining[δ]`，卖用 `Q_safe_sell_remaining[δ]`）归一化
+- \(\tilde B_{cap}\)：剩余可用资金 \(B_{remaining}\) 归一化（例如除以预算尺度）
+
+> 备注：若 `offer_in=None`，则 \(	ilde q_{in},\tilde p_{in},\tilde\delta_{in}\) 置 0，同时 bucket 与 gap 可用 L2 的“当前主 bucket”兜底（或也置 0）。关键是：**必须可重建**，且维度固定为 11。
+
+ThreadPriority 仍保持简单：只存线程 id 与 α：
 
 ```python
 @dataclass
-class ThreadState:
-    """单个谈判线程的状态（供 L4 自注意力使用）.
-
-    Attributes:
-        thread_id: 线程唯一标识
-        is_buying: 谈判方向
-        negotiation_step: 当前谈判轮次
-        relative_time: 谈判相对进度 [0, 1]
-        current_offer: 对手当前报价 (q, p, t) 或 None
-        history_len: 历史轮次数
-
-        # 目标相关
-        target_bucket: 交货时间对应的桶索引
-        goal_gap: 该桶的目标缺口
-
-        # 资源相关
-        Q_safe_at_t: 该交货时间的安全量
-        B_remaining: 剩余预算（买侧）
-    """
-    thread_id: str
-    is_buying: bool
-    negotiation_step: int
-    relative_time: float
-    current_offer: Optional[Tuple[int, float, int]]
-    history_len: int
-    target_bucket: int
-    goal_gap: float
-    Q_safe_at_t: float
-    B_remaining: float
-
-
-@dataclass
 class ThreadPriority:
-    """L4 为单个线程计算的优先级.
-
-    Attributes:
-        thread_id: 线程唯一标识
-        alpha: 优先级值 ∈ (-1, 1)
-               +1 = 高优先级/紧急 → 激进策略
-               0 = 中性
-               -1 = 低优先级 → 保守策略
-        attention_weight: 自注意力权重（调试用）
-    """
     thread_id: str
-    alpha: float  # ∈ (-1, 1)
-    attention_weight: Optional[float] = None
+    alpha: float   # in (-1, 1)
 ```
 
-#### 4.2.2 GlobalBroadcast
+#### 4.2.2 GlobalBroadcast（L4 监控器广播的“当日快照”）
+
+GlobalBroadcast 的目标是让 L3 在每一轮决策时都能拿到“全局最新状态”（目标剩余、已签约、资源剩余等）。推荐结构（字段可扩展，但**至少**要包含 remaining 相关项）：
 
 ```python
 @dataclass
 class GlobalBroadcast:
-    """L4 广播给每个 L3 线程的全局状态.
+    # 时间
+    current_step: int
+    n_steps: int
+    step_progress: float  # t / T_max
 
-    此结构包含 L3 做决策时需要的全局上下文信息。
-    """
+    # L2 目标与剩余缺口
+    l2_goal: np.ndarray        # (16,)
+    goal_gap_buy: np.ndarray   # (4,)
+    goal_gap_sell: np.ndarray  # (4,)
 
-    # ========== 时间与进度 ==========
-    current_step: int              # 当前仿真天
-    n_steps: int                   # 总天数
-    step_progress: float           # t / T_max ∈ [0, 1]
-
-    # ========== L2 目标与剩余缺口 ==========
-    l2_goal: np.ndarray            # shape (16,)，原始 L2 目标向量
-    goal_gap_buy: np.ndarray       # shape (4,)，每个桶的买入缺口
-    goal_gap_sell: np.ndarray      # shape (4,)，每个桶的卖出缺口
-
-    # ========== 当日已成交统计 ==========
-    today_bought_qty: float        # 今日已买入总量
-    today_bought_value: float      # 今日已买入总金额
-    today_sold_qty: float          # 今日已卖出总量
-    today_sold_value: float        # 今日已卖出总金额
-
+    # 当日成交统计（可选但有用）
+    today_bought_qty: float
+    today_sold_qty: float
     # 按桶细分
     today_bought_by_bucket: np.ndarray  # shape (4,)
     today_sold_by_bucket: np.ndarray    # shape (4,)
@@ -361,14 +425,17 @@ class GlobalBroadcast:
     Q_safe_remaining: np.ndarray   # shape (H+1,)，剩余安全买入量
     Q_safe_sell_remaining: np.ndarray  # shape (H+1,)，剩余安全卖出量
 
-    # ========== 并发谈判概览 ==========
-    n_active_buy_threads: int      # 活跃的买入谈判数
-    n_active_sell_threads: int     # 活跃的卖出谈判数
+    # 状态张量（L3 用）
+    x_static: np.ndarray       # (12,)
+    X_temporal: np.ndarray     # (H+1, 10)
 
-    # ========== 状态张量（供 L3 神经网络使用） ==========
-    x_static: np.ndarray           # shape (12,)，静态状态向量
-    X_temporal: np.ndarray         # shape (H+1, 10)，时序状态张量
+    # 并发概览（可选）
+    n_active_buy_threads: int
+    n_active_sell_threads: int
 ```
+
+> **规范（必须执行）**：同一天（同一个 `awi.current_step`）内，L1 的 `Q_safe` / `B_free` **只计算一次**作为 base；随后由 L4GlobalMonitor 维护 `Q_safe_remaining` / `B_remaining`，只在“合同签署/承诺更新”等事件发生时**扣减更新**。  
+> L3 输入、accept/reject mask、以及 `clip_action()` **一律使用 remaining**，不要在一天内重复调用 L1 重新计算安全量/预算。
 
 ### 4.3 新的 L4GlobalMonitor 类
 
@@ -912,7 +979,7 @@ class L4Layer:
 |------|----------|------------|
 | **输入** | `baseline + history + goal` | `local_state + global_broadcast + α + history` |
 | **输出** | 残差 `(Δq, Δp, δt)` | **完整动作 `SAOAction`**（不输出 α） |
-| **决策** | 仅调整 baseline | 自主决定 accept/counter/end，行为受 α 调节 |
+| **决策** | 仅调整 baseline | 自主决定 accept/reject/end，行为受 α 调节 |
 | **架构** | MLP / Transformer Encoder | **Decision Transformer** |
 
 **α 信号流向**：
@@ -971,13 +1038,13 @@ class L3Input:
 class L3Output:
     """L3 执行器的输出.
 
-    核心输出是 SAOAction，表示 op∈{ACCEPT, COUNTER, END} 的决策。
+    核心输出是 SAOAction，表示 op∈{ACCEPT, REJECT, END} 的决策。
     """
     action: SAOAction
 
     # 辅助信息（用于调试和训练）
     time_probs: Optional[np.ndarray] = None       # shape (H+1,)，时间选择概率
-    op_probs: Optional[np.ndarray] = None  # shape (3,)，op 概率（ACCEPT/COUNTER/END）
+    op_probs: Optional[np.ndarray] = None  # shape (3,)，op 概率（ACCEPT/REJECT/END）
     confidence: float = 1.0                        # 决策置信度
 ```
 
@@ -1146,7 +1213,7 @@ class HeuristicL3Actor:
 
         return L3Output(
             action=SAOAction(
-                action_type="counter",
+                action_type="reject",
                 quantity=q,
                 unit_price=float(p),
                 delivery_time=best_delta + gb.current_step,
@@ -1173,7 +1240,7 @@ class HeuristicL3Actor:
 │  其中:                                                               │
 │  - α: 线程优先级（由 L4 产生，替代传统 DT 的 Return-to-go）           │
 │  - sₜ: 当前状态（报价、谈判进度、全局广播等）                          │
-│  - aₜ: 动作（accept/counter/end）                                  │
+│  - aₜ: 动作（accept/reject/end）                                  │
 │                                                                     │
 │                           ↓                                         │
 │            GPT-style Decoder (因果注意力，只看过去)                   │
@@ -1208,235 +1275,151 @@ class HeuristicL3Actor:
 | 训练 | 需要轨迹回报标注 | BC 阶段固定为 0 |
 | 可控性 | 回报数值抽象 | 直观的行为控制 |
 
-### 5.5.2 L3DecisionTransformer 实现
+### 5.5.2 L3DecisionTransformer 实现（Canonical：Decoder-only + 多分支头）
+
+本节为 **L3 的标准实现口径（v1.8 固定）**：仍然使用 *Decision Transformer / GPT-style causal Transformer* 做序列决策；不再出现 `expected_Q_safe = Σ softmax(time)·Q_safe` 这类“期望缩放”写法。  
+**原则**：模型输出动作（op, q, p, δ），执行时用 `clip_action()` 对 (q,p,δ) 做硬约束裁剪（只裁剪数量上界，不改时间/价格/预算）。
+
+---
+
+#### 5.5.2.1 输入序列与嵌入
+
+对每个谈判线程 i，在第 r 轮开始时构造观测向量：
+
+\[
+o_{i,r} = [x^{local}_{i,r},\ x^{global}_{r},\ \alpha_{i,r}]
+\]
+
+将最近 L 轮组成序列 `state_seq`：
+
+- `state_seq.shape = (B, L, state_dim)`  
+- `state_dim` 是特征拼接后的维度（包含 α；BC 阶段 α 固定填 0.5 占位，RL 阶段用 L4 输出的真实 α）
+
+嵌入为 token：
+
+\[
+s_r = \mathrm{Embed}(o_{i,r}) \in \mathbb{R}^{d_{model}}
+\]
+
+实现上可以用线性层或小 MLP：
 
 ```python
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-class L3DecisionTransformer(nn.Module):
-    """L3 Decision Transformer：基于 α 条件的动作生成器.
-
-    架构遵循 Decision Transformer 论文，但用 α（优先级）替代 Return-to-go。
-    α 由 L4 产生，L3 仅接收作为输入，不输出 α。
-
-    输入序列结构（每个 timestep）：
-    [α_embed, state_embed, action_embed] → 3 tokens per step
-
-    输出：
-    - op_logits: (B, 4) - reject/accept/offer
-    - quantity_ratio: (B, 1) - 数量比例
-    - price_ratio: (B, 1) - 价格比例
-    - time_logits: (B, H+1) - 交货时间
-
-    训练阶段：
-    - BC 阶段：α 固定为 0
-    - RL 阶段：α 由 L4 动态产生
-
-    Args:
-        horizon: 规划视界
-        d_model: 模型隐藏维度
-        n_heads: 注意力头数
-        n_layers: Transformer 层数
-        max_seq_len: 最大序列长度（历史轮数 × 3）
-    """
-
-    def __init__(
-        self,
-        horizon: int = 40,
-        d_model: int = 128,
-        n_heads: int = 4,
-        n_layers: int = 4,
-        max_seq_len: int = 60,  # 20轮 × 3 tokens
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-
-        self.horizon = horizon
-        self.d_model = d_model
-        self.max_seq_len = max_seq_len
-
-        # ========== Token 嵌入 ==========
-        # α 嵌入（线程优先级，由 L4 产生）
-        self.alpha_embed = nn.Sequential(
-            nn.Linear(1, d_model),
-            nn.Tanh(),
-        )
-
-        # 状态嵌入
-        # state = [is_buying, rel_time, offer_q, offer_p, offer_t, goal_gap, Q_safe, B_remaining]
-        self.state_embed = nn.Sequential(
-            nn.Linear(8, d_model),
-            nn.ReLU(),
-            nn.Linear(d_model, d_model),
-        )
-
-        # 动作嵌入
-        # action = [op_onehot(4), q_ratio, p_ratio, time_onehot(H+1)]
-        self.action_embed = nn.Sequential(
-            nn.Linear(3 + 2 + horizon + 1, d_model),
-            nn.ReLU(),
-            nn.Linear(d_model, d_model),
-        )
-
-        # 全局状态嵌入（GlobalBroadcast 精简版）
-        self.global_embed = nn.Linear(32, d_model)  # 精简后的全局特征
-
-        # 角色嵌入
-        self.role_embed = nn.Embedding(2, d_model)  # 0=buyer, 1=seller
-
-        # Token 类型嵌入 (0=α, 1=state, 2=action)
-        self.token_type_embed = nn.Embedding(3, d_model)
-
-        # 位置编码
-        self.pos_embed = nn.Embedding(max_seq_len + 2, d_model)
-
-        # ========== GPT-style Decoder ==========
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=n_heads,
-            dim_feedforward=d_model * 4,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.transformer = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
-
-        # 用于 cross-attention 的 memory（角色 + 全局状态）
-        self.memory_proj = nn.Linear(d_model * 2, d_model)
-
-        # LayerNorm
-        self.ln = nn.LayerNorm(d_model)
-
-        # ========== 输出头 ==========
-        # 动作类型：reject=0, accept=1, offer=2
-        self.op_head = nn.Linear(d_model, 4)
-
-        # 数量比例：[0, 1]
-        self.quantity_head = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
-            nn.Linear(d_model // 2, 1),
-            nn.Sigmoid(),
-        )
-
-        # 价格比例：[0, 1]
-        self.price_head = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
-            nn.Linear(d_model // 2, 1),
-            nn.Sigmoid(),
-        )
-
-        # 时间 logits
-        self.time_head = nn.Linear(d_model, horizon + 1)
-
-    def forward(
-        self,
-        alpha: torch.Tensor,            # (B,): 线程优先级，由 L4 产生
-        history_states: torch.Tensor,   # (B, T, 8): 历史状态序列
-        history_actions: torch.Tensor,  # (B, T-1, action_dim): 历史动作序列
-        current_state: torch.Tensor,    # (B, 8): 当前状态
-        role: torch.Tensor,             # (B,): 0=buyer, 1=seller
-        global_feat: torch.Tensor,      # (B, 32): 精简全局特征
-        time_mask: torch.Tensor,        # (B, H+1): 0 or -inf
-        Q_safe: torch.Tensor,           # (B, H+1)
-        price_range: torch.Tensor,      # (B, 2): [min_price, max_price]
-    ):
-        """前向传播.
-
-        构建序列: [α, s₁, a₁, α, s₂, a₂, ..., α, sₜ] → 预测 aₜ
-
-        注意：α 在每个 timestep 都作为条件输入，但 L3 不输出 α。
-
-        Returns:
-            op_logits: (B, 4)
-            quantity: (B, 1) 缩放后的数量
-            price: (B, 1) 缩放后的价格
-            time_logits: (B, H+1) masked
-        """
-        B = alpha.shape[0]
-        T = history_states.shape[1]
-
-        # 1. 构建输入序列
-        tokens = []
-        token_types = []
-
-        alpha_emb = self.alpha_embed(alpha.unsqueeze(-1))  # (B, d)
-
-        for t in range(T - 1):
-            # α token
-            tokens.append(alpha_emb)
-            token_types.append(torch.zeros(B, dtype=torch.long, device=alpha.device))
-
-            # state token
-            s_emb = self.state_embed(history_states[:, t, :])
-            tokens.append(s_emb)
-            token_types.append(torch.ones(B, dtype=torch.long, device=alpha.device))
-
-            # action token (如果不是最后一个)
-            if t < history_actions.shape[1]:
-                a_emb = self.action_embed(history_actions[:, t, :])
-                tokens.append(a_emb)
-                token_types.append(torch.full((B,), 2, dtype=torch.long, device=alpha.device))
-
-        # 最后一个 timestep：α, current_state（预测 action）
-        tokens.append(alpha_emb)
-        token_types.append(torch.zeros(B, dtype=torch.long, device=alpha.device))
-
-        tokens.append(self.state_embed(current_state))
-        token_types.append(torch.ones(B, dtype=torch.long, device=alpha.device))
-
-        # 堆叠
-        seq = torch.stack(tokens, dim=1)  # (B, L, d)
-        token_types = torch.stack(token_types, dim=1)  # (B, L)
-
-        L = seq.shape[1]
-
-        # 添加 token 类型嵌入和位置编码
-        seq = seq + self.token_type_embed(token_types)
-        positions = torch.arange(L, device=seq.device)
-        seq = seq + self.pos_embed(positions)
-
-        # 2. 构建 memory（角色 + 全局状态）
-        role_emb = self.role_embed(role)  # (B, d)
-        global_emb = self.global_embed(global_feat)  # (B, d)
-        memory = self.memory_proj(torch.cat([role_emb, global_emb], dim=-1))  # (B, d)
-        memory = memory.unsqueeze(1)  # (B, 1, d)
-
-        # 3. 因果掩码
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(L).to(seq.device)
-
-        # 4. Transformer Decoder
-        h = self.transformer(
-            seq,
-            memory,
-            tgt_mask=causal_mask,
-        )
-        h = self.ln(h[:, -1, :])  # 取最后位置 (B, d)
-
-        # 5. 输出头
-        op_logits = self.op_head(h)
-
-        q_ratio = self.quantity_head(h)
-        p_ratio = self.price_head(h)
-        time_logits = self.time_head(h)
-
-        # 应用 time_mask
-        time_logits = time_logits + time_mask
-
-        # 缩放数量
-        time_probs = F.softmax(time_logits, dim=-1)
-        expected_Q_safe = (time_probs * Q_safe).sum(dim=-1, keepdim=True)
-        quantity = q_ratio * expected_Q_safe
-
-        # 缩放价格
-        price = price_range[:, 0:1] + p_ratio * (price_range[:, 1:2] - price_range[:, 0:1])
-
-        return op_logits, quantity, price, time_logits
+self.state_embed = nn.Linear(state_dim, d_model)  # 或 MLP
+self.pos_embed   = nn.Embedding(max_len, d_model)
 ```
 
 ---
+
+#### 5.5.2.2 Transformer 主体（Decoder-only / causal）
+
+为避免“Encoder/Decoder”命名歧义，本方案固定采用 `nn.TransformerDecoder` 的写法（与 v1.5 早期草案一致）。  
+**注意**：PyTorch 的 `TransformerDecoderLayer` 内部包含 cross-attn；我们采用 `memory = tgt` 的方式作为“decoder-only”的工程近似（等价于只用 self-attn 的 causal Transformer 结构，工程实现简单且与旧草案一致）。
+
+```python
+decoder_layer = nn.TransformerDecoderLayer(
+    d_model=d_model,
+    nhead=n_heads,
+    dim_feedforward=4 * d_model,
+    dropout=dropout,
+    batch_first=True,
+)
+self.transformer = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
+```
+
+前向时使用 causal mask（上三角为 True/ -inf）保证不能看未来 token：
+
+```python
+def causal_mask(L: int, device):
+    # True 表示禁止注意
+    return torch.triu(torch.ones(L, L, device=device, dtype=torch.bool), diagonal=1)
+
+x = self.state_embed(state_seq) + self.pos_embed(pos_ids)      # (B, L, d_model)
+mask = causal_mask(L, x.device)                                # (L, L)
+h = self.transformer(tgt=x, memory=x, tgt_mask=mask)           # (B, L, d_model)
+h_last = h[:, -1, :]                                           # (B, d_model)
+```
+
+---
+
+#### 5.5.2.3 输出头：三类 op + Counter 的 (q,p,δ)
+
+动作空间固定为三类：
+
+\[
+op \in \{\text{ACCEPT},\ \text{REJECT},\ \text{END}\}
+\]
+
+其中：
+
+- `ACCEPT` 在 `respond()` 上下文有效：返回 `SAOResponse(ACCEPT_OFFER, offer_in)`
+- `REJECT` 在 `respond/propose` 都有效：返回 `REJECT_OFFER + offer_out` 或 `offer_out`
+- `END` 表示终止该谈判（在 `respond` 中为 `END_NEGOTIATION`；在 `propose/first_proposals` 中为“不发起/不继续”，由控制器补 END）
+
+对应网络输出头：
+
+```python
+self.op_head = nn.Linear(d_model, 3)          # ACCEPT / REJECT / END
+self.time_head = nn.Linear(d_model, H+1)      # δ 头（只在 REJECT 时使用）
+
+self.quantity_head = nn.Sequential(
+    nn.Linear(d_model, d_model // 2),
+    nn.ReLU(),
+    nn.Linear(d_model // 2, 1),
+    nn.Softplus(),   # q_raw >= 0
+)
+
+self.price_head = nn.Sequential(
+    nn.Linear(d_model, d_model // 2),
+    nn.ReLU(),
+    nn.Linear(d_model // 2, 1),
+    nn.Softplus(),   # p_raw >= 0
+)
+```
+
+- `op_logits = op_head(h_last)` → 后续叠加 L1 掩码（仅屏蔽必然违约/浪费/预算不足，不屏蔽价格差）
+- `delta_logits = time_head(h_last)` → 叠加 `time_mask`（不可行 δ 置 -inf）
+- `q_raw = quantity_head(h_last)`，`p_raw = price_head(h_last)` 只在 `REJECT` 时使用
+
+---
+
+#### 5.5.2.4 动作解码（执行一致性：先 δ*，再 q/p，再 clip）
+
+**重要**：避免训练/执行不一致，数量不再按 “E[Q_safe]” 缩放。固定解码顺序：
+
+1) 选 `op* = argmax/采样`（加 L1 的 accept/reject/end mask）  
+2) 若 `op* == END`：输出 END  
+3) 若 `op* == ACCEPT`：输出 ACCEPT（必须携带对手原始 offer_in）  
+4) 若 `op* == REJECT`：  
+   - 先选 `δ* = argmax/采样`（加 `time_mask`）  
+   - 生成数量：`q = round(q_raw)`（q_raw 来自 `quantity_head(h_last)`，要求 q_raw ≥ 0）  
+   - 生成价格：`p = p_raw`（p_raw 来自 `price_head(h_last)`，要求 p_raw ≥ 0；价格无 issue range）  
+   - 调用 `clip_action()`：**仅裁剪数量 q** 到当日剩余安全量上界（使用 `Q_safe_remaining` / `Q_safe_sell_remaining`）；**不修改时间 δ***、**不修改价格 p**。若 δ* 超出 issue range，则 q 直接置 0。  
+   - 将 δ* 转回绝对交付日：`t_abs = day + δ*`（SCML time issue 为绝对 step）
+
+---
+
+#### 5.5.2.5 BC 与 RL 的损失口径（op=3 类）
+
+BC（监督学习）时：
+
+\[
+\mathcal{L}_{BC}=
+\text{CE}(op^*,\hat{op})
++\mathbb{1}[op^*=\text{REJECT}]\Big(
+\text{CE}(\delta^*,\hat{\delta})
++\lambda_q\|q-\hat{q}\|^2
++\lambda_p\|p-\hat{p}\|^2
+\Big)
+\]
+
+RL（MAPPO/PPO）时，logprob 由：
+
+- `log π(op*)`
+- 若 REJECT：`log π(δ*) + log π(q_raw) + log π(p_raw)`（q_raw/p_raw 可建模为 LogNormal / Gamma / TruncatedNormal；若暂时用点估计，可先用行为克隆 warm start + RL 微调）
+
+---
+
+（注：本节只回滚结构，不改变 v1.7 的其他结论：不使用 expected_Q_safe；op=3；ThreadState=11；统一 remaining 口径。）
 
 ## 六、Agent 层修改（对齐“方案A：L4=网络 + α”）
 
@@ -1451,7 +1434,7 @@ class L3DecisionTransformer(nn.Module):
 | L4 成员 | `self.l4 = L4ThreadCoordinator(...)`（输出 weights+modulation） | `self.l4_monitor = L4GlobalMonitor(...)` + `self.l4_coord = GlobalCoordinator(...)`（输出 α） |
 | L4 输入 | `thread_feat + target_time + role + global_feat` | **仍然是显式特征**（不接 L3 hidden），但需**去除 baseline 依赖**（见 6.3） |
 | 线程调度 | `batch_planner` 依赖 L4 weights 顺序裁剪 Q/B | **移除**。不再做“按权重顺序扣减并裁剪动作” |
-| L3 输出 | `(Δq, Δp, Δt)` 残差 + hidden_state | **完整 SAOAction**：`accept/counter/end(q,p,t_abs)` |
+| L3 输出 | `(Δq, Δp, Δt)` 残差 + hidden_state | **完整 SAOAction**：`accept/reject/end(q,p,t_abs)` |
 | L1 输出 | baseline + mask | **仅 mask**（time_mask、Q_safe、Q_safe_sell、B_free），不再有 baseline |
 | 安全裁剪 | clip_action 输入为 `(q,p,delta_t)` | **仍用 clip_action**，但必须做 **abs_t ↔ delta_t** 转换（见 6.2） |
 | 接受动作可行性 | `_should_accept()` 内含价格阈值 + 资源检查 | **接受动作的 mask/校验仅做硬约束**（不含价格），价格优劣交给策略/在线学习（见 6.2.2） |
@@ -1519,55 +1502,45 @@ def _compute_alpha_map(self) -> dict[str, float]:
 
 ```python
 def respond(self, negotiator_id: str, state: SAOState) -> SAOResponse:
-    offer = state.current_offer
-    if offer is None:
-        return SAOResponse(ResponseType.END_NEGOTIATION, None)  # SCML: REJECT_OFFER 必须带 counter_offer
+    # 1) L4 广播 + α（每次决策前快照化）
+    gb = self.monitor.get_broadcast()
+    alpha_map = self._compute_alpha_map(gb)  # {negotiator_id: α_i}
+    alpha_i = alpha_map.get(negotiator_id, 1.0 / max(1, gb.n_active_threads))
 
-    # 1) L4 广播 + α
-    gb = self.l4_monitor.compute_broadcast()
-    alpha_map = self._compute_alpha_map()
-    alpha = alpha_map.get(negotiator_id, 0.0)
-
-    # 2) L3 输入
-    l3_input = self._build_l3_input(negotiator_id, state, gb=gb, alpha=alpha)
-    l3_out = self.l3.compute(l3_input)
-    action = l3_out.action
-
-    # 3) “接受动作”的硬约束校验（只管能不能履约，不管划不划算）
-    if action.op == 0:  # ACCEPT
-        if not self._is_accept_feasible(negotiator_id, offer, gb):
-            # 不可行则强制拒绝（或改为 offer）
-            return SAOResponse(ResponseType.END_NEGOTIATION, None)  # SCML: REJECT_OFFER 必须带 counter_offer
-        return SAOResponse(ResponseType.ACCEPT_OFFER, offer)
-
-    if action.op == 2:  # END (END_NEGOTIATION)
+    offer_in = state.current_offer
+    if offer_in is None:
         return SAOResponse(ResponseType.END_NEGOTIATION, None)
-
-    # 4) offer：转 Outcome + L1 安全裁剪（注意 time 变换）
-    outcome = action.to_outcome()
-    if outcome is None or outcome[0] <= 0:
-        return SAOResponse(ResponseType.END_NEGOTIATION, None)
-
-    q, abs_t, p = outcome
-    delta_t = int(abs_t) - int(gb.current_step)
-    delta_t = max(0, min(delta_t, self.horizon))
 
     is_buying = self._is_buying(negotiator_id)
-    l1_out = self._step_l1_buy if is_buying else self._step_l1_sell
 
-    # 关键：clip_action 期望 (q,p,delta_t)
-    q2, p2, dt2 = self.l1.clip_action(
-        action=(q, p, delta_t),
-        Q_safe=(l1_out.Q_safe if is_buying else np.zeros_like(l1_out.Q_safe)),
-        B_free=l1_out.B_free,
-        is_buying=is_buying,
-        Q_safe_sell=(l1_out.Q_safe_sell if not is_buying else None),
+    # 2) L3 产出三类动作：ACCEPT / REJECT / END
+    action = self.l3.act(
+        l3_input=build_l3_input(gb=gb, negotiator_id=negotiator_id, offer_in=offer_in, alpha=alpha_i),
+        l1_masks=gb.l1_masks_for(is_buying=is_buying, offer_in=offer_in),
     )
-    if q2 <= 0:
+
+    # 3) ACCEPT：必须带上对方 offer_in（同一个 Outcome）
+    if action.op == OP_ACCEPT:
+        if not accept_feasible(offer_in=offer_in, gb=gb, is_buying=is_buying):
+            # 若不可行（必然违约/浪费/资金不足），降级为 END（或你也可以改成强制 REJECT）
+            return SAOResponse(ResponseType.END_NEGOTIATION, None)
+        return SAOResponse(ResponseType.ACCEPT_OFFER, offer_in)
+
+    # 4) END：结束谈判
+    if action.op == OP_END:
         return SAOResponse(ResponseType.END_NEGOTIATION, None)
 
-    clipped_abs_t = int(gb.current_step) + int(dt2)
-    return SAOResponse(ResponseType.REJECT_OFFER, (int(q2), clipped_abs_t, float(p2)))
+    # 5) REJECT：REJECT_OFFER 必须带 counter_offer
+    q = int(round(action.q_raw))
+    abs_t = int(action.t_abs)    # 绝对交货日（不做时间裁剪）
+    p = float(action.p_raw)      # 不做价格裁剪
+
+    # ====== 关键：clip_action 只裁剪数量 q（不改时间，不改价格） ======
+    delta_t = abs_t - int(gb.current_step)  # 仅用于索引 remaining 向量
+    q_cap = gb.Q_safe_remaining[delta_t] if is_buying else gb.Q_safe_sell_remaining[delta_t]
+    q2 = min(q, int(q_cap))  # 只裁剪超出“交货日剩余安全数量”的部分
+
+    return SAOResponse(ResponseType.REJECT_OFFER, (int(q2), abs_t, float(p)))
 ```
 
 #### 6.2.3 接受动作“只屏蔽必然违约/浪费”的实现点
@@ -1618,103 +1591,70 @@ def _is_accept_feasible(self, negotiator_id: str, offer: Outcome, gb: GlobalBroa
 
 这样仍然是“显式特征”，并可从在线状态与离线日志中重建。
 
-### 6.4 ThreadState v2（去 baseline）——需要在文档与代码中显式落地的修改点
+### 6.4 ThreadState v3（11维，无 baseline）——需要在文档与代码中显式落地的修改点
 
-> 你提到的 `_build_l4_thread_state()` **确实必须改**：旧实现把 `baseline_action=(q_base,p_base,t_base)` 当作 L4 的输入特征之一（同时还用 `t_base` 做 `target_delta` 的兜底），而新设计里 **L1 不再输出 baseline**，因此旧字段不可能再被可靠重建。
+你指出的关键点非常正确：旧实现 `_build_l4_thread_state()` 依赖 `baseline_action`，而新设计 **L1 已不输出 baseline**，因此这块必须整体重写。
 
-下面给出**最小侵入**的改法：尽量不改 `thread_feat_dim=24`，只把 baseline 相关的维度替换成“可从 AOP 谈判历史直接重建”的字段；并把 `target_delta` 的兜底逻辑改为“由 L2 目标 + L1 可行性”推导。
+#### 6.4.1 旧实现中 baseline 被用在什么地方（为什么会炸）
 
-#### 6.4.1 旧实现中 baseline 被用在什么地方
+旧代码通常会做：
 
-旧实现（`agent.py::_build_l4_thread_state`）对 baseline 的依赖主要有 2 处：
+- `baseline_q, baseline_p, baseline_t = ctx.l1_output.baseline_action`
+- 把 baseline 当作线程“默认动作锚点”：
+  - 用 baseline_t 作为 target_delta 兜底
+  - 用 baseline_q/baseline_p 填 thread_feat
+  - 甚至用于 L3 residual 合成
 
-1) **特征向量里直接塞 baseline 的 (q,p)**  
-`feat[4] = baseline_q / max_inv`  
-`feat[5] = baseline_p / max_price`
+新设计移除 baseline 后，这些字段全部失效。
 
-2) **当 `ctx.last_delta_t` 缺失时，用 baseline_t 兜底得到 `target_delta`**  
-```python
-if ctx.last_delta_t is None:
-    target_delta = int(baseline_t)
-else:
-    target_delta = int(ctx.last_delta_t)
-```
+#### 6.4.2 新实现：统一 11 维 ThreadState（与 4.2.1 对齐）
 
-这两处在“无 baseline”的新设计里都会失效，因此必须改。
-
-#### 6.4.2 推荐的 ThreadState/thread_feat 改法（保持 24 维不变）
-
-我们保持 `thread_feat ∈ R^{24}` 的整体结构不变（减少对 `GlobalCoordinator` 的连锁修改），仅替换 baseline 相关维度：
-
-- `feat[4]`：从 **baseline_q** 改为 **last_opp_q（或 last_offer_q）**
-- `feat[5]`：从 **baseline_p** 改为 **last_opp_p（或 last_offer_p）**
-- `target_delta` 兜底：从 **baseline_t** 改为 **由 L2 目标推断的 fallback_delta**
-
-**last_opp_q/last_opp_p 如何取？**
-
-- 若处在 `respond()`（有 `state.current_offer`），直接用“对手当前报价”作为 last_opp_offer
-- 若处在 `propose()`（对手未报），则用 `ctx.history` 中最新一条 `is_my_turn=False` 的记录；若不存在则退化为“最新一条报价”（不区分我方/对手）；再不行则置 0。
-
-这样做的关键好处是：**完全不依赖 baseline**，并且可以从 strict JSON 日志（offer_made/offer_received 序列）离线重建。
-
-#### 6.4.3 `target_delta` 的新兜底逻辑（不依赖 baseline_t）
-
-当 `ctx.last_delta_t` 缺失时，我们需要一个“合理的交期关注点”，否则 L4 的线程特征里会出现大量不稳定噪声。
-
-一种简单且可解释的兜底方法：
-
-1) 先从 L2 目标里选一个“最重要桶”  
-- 买方线程：`bucket* = argmax_b Q_buy[b]`
-- 卖方线程：`bucket* = argmax_b Q_sell[b]`
-
-2) 在该桶的 δ 范围内，选一个 **最早可行** 的 δ  
-- 可行标准只看 L1：`time_mask[δ]` 可行 且（买方）`Q_safe[δ] > 0`（卖方可用 `Q_safe_sell[δ] > 0`）
-
-3) 如果桶内都不可行，则在全局 δ∈[0,H] 扫描最早可行者；若仍无可行则默认 δ=0
-
-伪代码：
+在代码层建议落成一个函数：
 
 ```python
-def fallback_target_delta(is_buying, l1_out, l2_out, H):
-    # 1) pick bucket
-    goals = l2_out.goal_vector.reshape(4, 4)  # [bucket, (Q_buy,P_buy,Q_sell,P_sell)]
-    q_idx = 0 if is_buying else 2
-    bucket = int(np.argmax(goals[:, q_idx]))
-
-    # 2) scan delta inside bucket
-    dmin, dmax = BUCKET_RANGES[bucket]
-    dmin, dmax = max(0, dmin), min(H, dmax)
-    for d in range(dmin, dmax + 1):
-        if l1_out.time_mask[d] != -np.inf:
-            if is_buying and l1_out.Q_safe[d] > 0:
-                return d
-            if (not is_buying) and l1_out.Q_safe_sell[d] > 0:
-                return d
-
-    # 3) scan globally
-    for d in range(0, H + 1):
-        if l1_out.time_mask[d] != -np.inf:
-            if is_buying and l1_out.Q_safe[d] > 0:
-                return d
-            if (not is_buying) and l1_out.Q_safe_sell[d] > 0:
-                return d
-    return 0
+def build_thread_state_11(
+    *,
+    is_buying: bool,
+    sao_state: "SAOState",
+    current_step: int,
+    horizon: int,
+    gb: "GlobalBroadcast",   # 必须用 remaining
+    bucket_id: int,
+    q_scale: float,
+    p_scale: float,
+    max_rounds: int,
+) -> np.ndarray:
+    """return s_k ∈ R^{11}."""
 ```
 
-> 注意：这个兜底只是为了让 L4 的输入“稳定且可重建”，不是为了替代 L3 的决策。
+核心原则：
 
-#### 6.4.4 这是否需要同步修改 L4 输入与 data pipeline？
+- **只用显式可得信息**（state / ctx.history / gb / l2）构造
+- **只用 remaining**（`gb.Q_safe_remaining`, `gb.B_remaining`），不要用 `l1_out.Q_safe`/`B_free`
+- **不需要 baseline 兜底**：当 `offer_in=None` 时，
+  - `has_offer=0`
+  - δ、q、p 置 0
+  - bucket_id 可以用“本线程当前主要目标桶”兜底（或 0）
 
-**需要。**原因很简单：你改了 `_build_l4_thread_state()` 的显式特征定义，那么：
+> 这一步会同步影响：  
+> - L4 的输入（`thread_states: (K,11)`）  
+> - Data pipeline 的特征重建（必须能从日志算出同样的 11 维）
 
-- 在线推理时 L4 网络看到的是新 thread_feat
-- 离线训练/蒸馏时也必须构造**同样定义**的 thread_feat，否则会出现“训练—推理分布不一致”（distribution shift）
+#### 6.4.3 这是否需要同步修改 L4 输入与 data pipeline？——是的（而且要一次性对齐）
 
-因此文档里必须写清楚：
-- thread_feat 每一维的语义（至少把 baseline 相关维度替换规则写清）
-- 离线 pipeline 如何在 strict JSON ONLY 条件下重建 last_opp_offer 与 fallback_target_delta
+**答案：必须同步**，否则 offline/online 输入分布会错位。
 
-（下面 Data Pipeline 章节会补上对应修改点。）
+- 在线：Agent 在每次 `respond/propose` 时构造 `thread_states`（K×11）喂给 L4
+- 离线：Pipeline 必须能从 tracker JSON 重建同样的 11 维（至少重建出其中与 op/q/p/δ、relative_time、资源 remaining、bucket_gap 相关的项）
+
+因此，在 tracker 里建议显式记录（或可推导出）：
+
+- `state.step`, `state.relative_time`, `state.current_offer`
+- 当前日 `current_step`
+- 该日的 `GlobalBroadcast`（至少 goal_gap + remaining + q_scale）
+- 本线程 `is_buying` + bucket_id（或由 δ 推导 bucket）
+
+如果你们坚持 strict JSON ONLY，最稳妥的做法是：**Tracker 直接写入 thread_state_11**（作为调试字段），同时也写入构造它所需的原始字段，便于校验与回放。
 
 ## 七、Data Pipeline 修改
 
@@ -1727,10 +1667,10 @@ class MicroSample:
 
     变化：
     - 移除 baseline, residual（不再是残差学习）
-    - 新增 action_op 标签（ACCEPT/COUNTER/END）
+    - 新增 action_op 标签（ACCEPT/REJECT/END）
     - 新增全局状态特征
     """
-    negotiation_id: str
+    negotiation_id: str          # partner+day+mechanism_id（无 mechanism_id 时用计数回退）
 
     # ========== 输入特征 ==========
     history: np.ndarray          # shape (T, 4): [q, p, delta_t, is_my_turn]
@@ -1751,14 +1691,16 @@ class MicroSample:
     X_temporal: np.ndarray       # shape (H+1, 10)
     time_mask: np.ndarray        # shape (H+1,)
     Q_safe: np.ndarray           # shape (H+1,)
-    B_free: float
+    B_remaining: float
 
     # ========== 标签 ==========
-    action_op: int               # 0=ACCEPT, 1=COUNTER, 2=END
-    # 说明：PenguinAgent 的 END 多为“隐式 END”（first_proposals/counter_all 省略键 → 控制器补 END）。因此 BC 必须包含 END，且需要 tracker 显式补齐该标签（见 7.2.4）。
+    action_op: int               # 0=ACCEPT, 1=REJECT, 2=END
+    # 说明：PenguinAgent 的 END 多为“隐式 END”（counter_all 省略键 → 控制器补 END）。因此 BC 必须包含 END，且需要 tracker 显式记录该标签（见 7.2.4）。
     target_quantity: Optional[int] = None
     target_price: Optional[float] = None
     target_time: Optional[int] = None  # delta_t
+    # 约束：target_quantity/target_price 保留 tracker 原始 counter offer，不因 time_mask 不可行而改写
+    # time 可行性由 time_mask/time_valid 单独处理，训练时对无效样本仅做 op 监督
 
     reward: Optional[float] = None
 ```
@@ -1777,34 +1719,34 @@ class MicroSample:
 
 #### 7.2.1 目标：从同一条谈判生成“多条”AOP 样本
 
-- **每次我方出价（offer_made）** → 产生一个 `action_op=COUNTER` 的样本（propose 或 counter-offer）  
+- **每次我方出价（offer_made）** → 产生一个 `action_op=REJECT` 的样本（propose 或 counter-offer）  
 - **每次我方收到对手报价（offer_received）** → 产生一个 respond 样本，其 `action_op` 由我方当轮响应决定：  
   - 当轮出现 `accept` → `action_op=ACCEPT`  
-  - 当轮出现我方 `offer_made(reason==counter_offer)` → `action_op=COUNTER`（还价）  
-  - 否则（既未 accept 也未 counter）：在 SCML 语义下应视为 **结束谈判** → `action_op=END`  
+  - 当轮出现我方 `offer_made(reason==counter_offer)` → `action_op=REJECT`（还价）  
+  - 否则（既未 accept 也未 reject）：在 SCML 语义下应视为 **结束谈判** → `action_op=END`  
     > 因为“拒绝但不提出还价（REJECT_OFFER 且 outcome=None）”是不合法的。若控制器采用“未响应=END”的默认补全逻辑，则应在 tracker/pipeline 中把这类情况标注为 END。
 
 > 说明：如果你使用的日志只记录 `offer_made/offer_received/success/failure`，没有显式 `accept/end`，仍可通过 **同一 round 内是否出现 counter_offer、以及成功时最后一条 offer 的 source** 做推断，但会有少量歧义。
 
   - **数据量与可行性提醒（结合当前代码/日志现状）**：
-    - 你目前给的示例 strict-JSON 日志中，`negotiation` 事件只有 `started/offer_made/offer_received/success/failure`，**没有显式的 accept/counter/end 动作事件（也没有 reject_no_counter 这种显式事件）**（因此 `END` 样本在现有日志里几乎无法可靠构造）。
+    - 你目前给的示例 strict-JSON 日志中，`negotiation` 事件只有 `started/offer_made/offer_received/success/failure`，**没有显式的 accept/reject/end 动作事件（也没有 reject_no_counter 这种显式事件）**（因此 `END` 样本在现有日志里几乎无法可靠构造）。
     - 同时，现版本 `tracker_mixin.py::patched_on_negotiation_failure()` 记录的 `partner` 可能等于 self.id（示例日志里确实如此），这会进一步破坏“按 partner 复原谈判轨迹”的推断方法。
     - 结论：**如果不改日志采集，`END` 标签要么数量≈0，要么只能靠非常噪声的后验推断**（不建议在 BC 初期做）。
 
   - **必须做法：在采集阶段直接记录 AOP 动作类型（用于 END/ACCEPT 标签，避免 OOD）**  
-    既然新 L3 会显式输出 `op∈{ACCEPT, COUNTER, END}`，最稳妥的做法是在 `respond()/propose()` 里（或在 tracker 里 hook 住它们）写入一条自定义事件，例如：
+    既然新 L3 会显式输出 `op∈{ACCEPT, REJECT, END}`，最稳妥的做法是在 `respond()/propose()` 里（或在 tracker 里 hook 住它们）写入一条自定义事件，例如：
     ```json
     {"category":"custom","event":"aop_action",
      "data":{"negotiator_id": "...", "partner":"...", "role":"buyer/seller",
-             "round": r, "action_op":"ACCEPT/COUNTER/END",
+             "round": r, "action_op":"ACCEPT/REJECT/END",
              "offer": {"q":..,"p":..,"delta_t":..}}}
     ```
     这样离线 pipeline 就能**无歧义**统计并抽取 END（结束谈判）样本，并且可以做 class-weight/重采样。
 
   - **样本量怎么快速统计？**（一行公式 + 一个脚本就够）
-    设三类动作样本数为 `N_end, N_accept, N_counter`，则：
+    设三类动作样本数为 `N_end, N_accept, N_reject`，则：
     \[
-        \text{end\_ratio}=\frac{N_{end}}{N_{end}+N_{accept}+N_{counter}}
+        \text{end\_ratio}=\frac{N_{end}}{N_{end}+N_{accept}+N_{reject}}
     \]
     你只要把所有日志里 `event=="aop_action"` 的 `action_op` 计数即可。
 
@@ -1860,9 +1802,9 @@ def extract_l3_samples_aop(neg_logs, daily_states, horizon=40):
                 sim_step=day,
                 relative_time=rel_time,
                 time_mask=l1_out.time_mask,
-                Q_safe=(l1_out.Q_safe if is_buyer else l1_out.Q_safe_sell),
-                B_free=float(l1_out.B_free),
-                action_op=1,                    # COUNTER（出价/还价）
+                Q_safe=(gb.Q_safe_remaining if is_buyer else gb.Q_safe_sell_remaining),
+                B_free=float(gb.B_remaining),
+                action_op=1,                    # REJECT（出价/还价）
                 target_q=int(h["quantity"]),
                 target_p=float(h["price"]),
                 target_delta_t=int(h["delta_t"]),
@@ -1879,15 +1821,15 @@ def extract_l3_samples_aop(neg_logs, daily_states, horizon=40):
                 sim_step=day,
                 relative_time=rel_time,
                 time_mask=l1_out.time_mask,
-                Q_safe=(l1_out.Q_safe if is_buyer else l1_out.Q_safe_sell),
-                B_free=float(l1_out.B_free),
+                Q_safe=(gb.Q_safe_remaining if is_buyer else gb.Q_safe_sell_remaining),
+                B_free=float(gb.B_remaining),
                 action_op=0,          # ACCEPT
                 target_q=0, target_p=0.0, target_delta_t=0,
             ))
 
         # END（结束谈判）样本：**必须**纳入 BC（用于复刻 PenguinAgent 的“筛掉对手/终止谈判”行为）。
         # - 新数据：直接使用 tracker 记录的 aop_action.action_op==END
-        # - 旧数据：按 7.2.1 的“收到 offer 但无 accept/无 counter”后验推断为 END（噪声更大）
+        # - 旧数据：按 7.2.1 的“收到 offer 但无 accept/无 reject”后验推断为 END（噪声更大）
     return samples
 ```
 
@@ -1902,7 +1844,7 @@ def extract_l3_samples_aop(neg_logs, daily_states, horizon=40):
 #### 7.2.4 Tracker 必须修改：显式记录 `aop_action`（含 PenguinAgent 的“隐式 END”）
 
 > 结论先说清楚：**要在 BC 阶段覆盖 `END_NEGOTIATION`，我们必须改 tracker**。  
-> 仅靠 `offer_history + final_status` 的后验推断，`ACCEPT` 勉强可行，`END` 会非常噪声（且会漏掉 PenguinAgent 在 first_proposals 阶段“直接不谈”的隐式筛选）。
+> 仅靠 `offer_history + final_status` 的后验推断，`ACCEPT` 勉强可行，`END` 会非常噪声（且会漏掉 PenguinAgent 在 `counter_all()` 返回 dict 里省略响应键导致的隐式 END）。
 
 我们建议把“**我方在每一轮对每个 negotiator 的最终响应**”写成一条显式事件（这也是你后续做 MAPPO/CTDE 时最需要的 ground-truth action 记录）。
 
@@ -1914,7 +1856,8 @@ def extract_l3_samples_aop(neg_logs, daily_states, horizon=40):
   "event": "aop_action",
   "data": {
     "sim_step": 12,
-    "negotiation_id": "neg_...",
+    "mechanism_id": "mech_...",
+    "negotiator_id": "nid_...",
     "partner": "agent_...",
     "role": "buyer|seller",
     "round": 3,
@@ -1925,15 +1868,19 @@ def extract_l3_samples_aop(neg_logs, daily_states, horizon=40):
       "unit_price": 23.5,
       "delivery_day": 15
     },
-    "reason": "respond|propose|first_proposal|omit_in_first_proposals|omit_in_counter_all"
+    "reason": "respond|propose|first_proposal|omit_in_counter_all"
   }
 }
 ```
 
-- `action_op` 采用统一编码：`0=ACCEPT, 1=COUNTER, 2=END`  
+> **记录原则补充：**
+> - `negotiation:started` 必须携带 `mechanism_id/negotiator_id`，用于区分同一对手的不同谈判。
+> - 若对手发起谈判导致缺失 `started`，需在第一次 `offer_received`/`counter_all` 时补写 `started`，并做“已见谈判”去重，避免重复记录。
+
+- `action_op` 采用统一编码：`0=ACCEPT, 1=REJECT, 2=END`  
 - `offer` 的语义：
   - `ACCEPT`：`offer` **必须等于**对手当前 offer（SCML 语义要求：接受要带相同 outcome）
-  - `COUNTER`：`offer` 为我方 counter-offer / propose 的 outcome
+  - `REJECT`：`offer` 为我方 counter-offer / propose 的 outcome
   - `END`：`offer = null`
 
 ##### 7.2.4.1 对我们的 HRL 代理怎么打点（StdAgent / respond/propose）
@@ -1943,60 +1890,55 @@ def extract_l3_samples_aop(neg_logs, daily_states, horizon=40):
   - `REJECT_OFFER` → `action_op=1`，`offer=counter_offer`
   - `END_NEGOTIATION` → `action_op=2`，`offer=null`
 - 在 `propose()` 里：
-  - 返回 `Outcome` → `action_op=1`（COUNTER/主动出价）
-  - 返回 `None` → `action_op=2`（END：不开局/不出价/直接结束该谈判）
+  - 返回 `Outcome` → `action_op=1`（REJECT/主动出价）
+  - 返回 `None` → **不记录**（不开局不计入样本）
 
 ##### 7.2.4.2 对 PenguinAgent 怎么打点（StdSyncAgent / first_proposals + counter_all）
 
-PenguinAgent 的“结束谈判”大多不是显式 `END_NEGOTIATION`，而是：
+PenguinAgent 的动作语义与 SCML/SAO 完全一致，但有两个容易踩坑的点：
 
-- `first_proposals()`：**不在返回字典里给某些 negotiator 提 proposal**（隐式筛选，不谈这些对手）
-- `counter_all()`：**不在返回字典里包含某些 negotiator 的响应**（控制器会补 `END_NEGOTIATION`）
+1) **ACCEPT 必须带上对手的 offer_in**（即 `SAOResponse(ResponseType.ACCEPT_OFFER, offer_in)`）。  
+2) **REJECT 必须带 counter offer_out**（即 `SAOResponse(ResponseType.REJECT_OFFER, offer_out)`）。  
+   不存在“拒绝但不给还价”的合法动作。  
+3) `END_NEGOTIATION` 往往是**隐式**发生：在 `counter_all()` 返回 dict 里缺失某个 negotiator，控制器会默认补 `END_NEGOTIATION`。
 
-因此我们需要在 tracker/mixin 里对这两个函数做 hook，并把“缺失键”显式记录为 `END`：
-
-**(A) hook first_proposals():**
-
-- 令 `active_ids = list(self.negotiators.keys())`
-- 令 `out = super().first_proposals()`（或原函数返回 dict）
-- 对每个 `nid in active_ids`：
-  - 若 `nid in out`：记录 `aop_action(action_op=COUNTER, reason="first_proposal", offer=out[nid])`
-  - 若 `nid not in out`：记录 `aop_action(action_op=END, reason="omit_in_first_proposals", offer=null)`
-
-**(B) hook counter_all(offers, states):**
-
-- `active_ids = offers.keys()`（或与 states 对齐）
-- `out = super().counter_all(offers, states)` 返回 `dict[nid -> SAOResponse]`
-- 对每个 `nid in active_ids`：
-  - 若 `nid in out`：读取 `resp = out[nid]`
-    - `resp.response == ResponseType.ACCEPT_OFFER` → `action_op=ACCEPT`，`offer=resp.outcome`（应等于 `offers[nid]`）
-    - `resp.response == ResponseType.REJECT_OFFER` → `action_op=COUNTER`，`offer=resp.outcome`（必须非空；为空则当作 END）
-    - `resp.response == ResponseType.END_NEGOTIATION` → `action_op=END`
-  - 若 `nid not in out`：记录 `action_op=END, reason="omit_in_counter_all"`
-
-> 这样一来：**BC 阶段的 END 样本就是“真实的 PenguinAgent 筛选行为”，不是噪声推断**。
+因此，我们需要在 tracker/mixin 里对这两个函数做 hook，并把每次决策记录为统一字段 `aop_action`（三类：ACCEPT/REJECT/END）。
 
 ---
 
-#### 7.2.5 Pipeline 侧修改：优先用 `aop_action` 生成 MicroSample（推荐）
+**(A) hook first_proposals(): 只记录“实际发出的首轮报价”**
 
-当我们有 `aop_action` 事件后，MicroSample 的构造会非常直接：
+- 令 `out = super().first_proposals()`（返回 dict: nid -> offer_out）
+- 对每个 `nid in out`：记录一条 `aop_action`  
+  - `op=REJECT`
+  - `offer_out = out[nid]`（绝对时间 outcome）
+  - `reason="first_proposal"`
+- 对于 `nid not in out`：**不记录 END**  
+  - 因为这代表“根本没有发起谈判/没有提出过任何报价”，不等价于“结束一个已开始的谈判”。
 
-- `history`：仍由 `offer_made/offer_received` 聚合（或直接从你现有的 `offer_history` 复用）
-- `action_op`：直接来自 `aop_action.action_op`
-- `target(q,p,t)`：仅在 `action_op==COUNTER` 时读取 `aop_action.offer`
-- `ACCEPT/END`：不需要 `q,p,t` 标签（对应 head loss 直接 mask）
-
-伪代码要点：
-
-```python
-if action_op == COUNTER:
-    loss = CE(op) + Huber(q) + Huber(p) + CE(time_bucket)
-else:
-    loss = CE(op)  # q/p/t 不回传梯度
-```
+> 你们可以（可选）额外打点一个分析日志：`event="skipped_in_first_proposals"`，但它不进入 BC 的 action_op 标签。
 
 ---
+
+**(B) hook counter_all(): 记录三类响应 + 隐式 END（缺失键）**
+
+`counter_all(self, states: Dict[nid, SAOState]) -> Dict[nid, SAOResponse]`
+
+- 令 `out = super().counter_all(states)`
+- 对每个 `nid in states.keys()`（注意：states 里的 negotiation 才是“已开始/正在进行”的谈判）：
+
+  1. 若 `nid in out`：解析 `resp = out[nid]`
+     - 若 `resp.response == ACCEPT_OFFER`：  
+       记录 `op=ACCEPT`, `offer_in=states[nid].current_offer`, `offer_out=null`
+     - 若 `resp.response == REJECT_OFFER`：  
+       记录 `op=REJECT`, `offer_in=states[nid].current_offer`, `offer_out=resp.offer`
+     - 若 `resp.response == END_NEGOTIATION`：  
+       记录 `op=END`, `offer_in=states[nid].current_offer`, `offer_out=null`
+
+  2. 若 `nid not in out`：这是 **隐式 END**  
+     - 记录 `op=END`, `reason="omit_in_counter_all"`, `offer_in=states[nid].current_offer`
+
+这样 Pipeline 可以**直接用 `aop_action.op` 作为 BC 标签**，不再做危险的“事后推断”。
 
 ### 7.3 L2 目标标签怎么建：推荐用 `first_proposals` 聚合（而不是 signed contracts）
 
@@ -2010,7 +1952,7 @@ else:
 
 - **first_proposals（开局的第一轮出价集合）✅ 推荐**  
   - 这是 PenguinAgent 在看到当日状态后**主动给出的计划**：  
-    1) 它决定“要谈哪些对手”（没出现在返回 dict 的 negotiator 就被隐式 END）；  
+    1) 它决定“要谈哪些对手”（没出现在返回 dict 的 negotiator 代表当日不发起谈判/不投首轮报价）；  
     2) 它决定“每个交货期大概想要多少量/什么价格锚点”（至少对近几天有明确出价）。  
   - 因此 first_proposals 比 signed contracts 更像“目标/意图”，也更适合做 L2 的监督信号。
 
@@ -2156,7 +2098,6 @@ class BCTrainer:
             global_feat=batch['global_feat'],
             time_mask=batch['time_mask'],
             Q_safe=batch['Q_safe'],
-            price_range=batch['price_range'],
         )
 
         # 多任务损失
@@ -2411,7 +2352,7 @@ def apply_safety_during_training(self, action_logits, time_mask, Q_safe, B_free)
 
 - [ ] 新增/重写 `l3_executor.py`：输出 `L3Output(action=SAOAction(...))`
 - [ ] 动作头：`op_logits (3,)` + `time_logits (H+1,)` + `quantity_ratio` + `price_ratio`
-- [ ] 训练损失：对 `action_op` 与 `time` 用 CE；对 `q/p` 用 MSE（仅在 `action_op==COUNTER`（还价/出价）时计算）
+- [ ] 训练损失：`action_op` 用 CE；`q/p/time` 仅在 `action_op==REJECT` 且 `target_time` 在 `time_mask` 内可行时计算（否则仅训练 `action_op`）
 - [ ] 推理：实现 `argmax`/采样两套策略；并支持 mask（time_mask；accept_feasible mask）
 
 ### Phase 3：L4 改造（保留网络，但不再调制 L3 残差）
@@ -2456,8 +2397,8 @@ def apply_safety_during_training(self, action_logits, time_mask, Q_safe, B_free)
       \]
     - [ ] 输出约束：`Q≥0`（ReLU/softplus），必要时可在输出端 **clip 到 L1 的上限**（如 `Q <= Q_safe_bucket_sum`，`buy_cost <= B_free`），但不在 mask 阶段用价格筛选
   - [ ] **L3（必须）**：用专家（PenguinAgent）AOP 动作做 BC（`α=0` 或固定中性值），学习三类动作：
-    - `op ∈ {ACCEPT, COUNTER, END}`（其中 END 包含 PenguinAgent 的“隐式 END”，由 tracker 补齐）
-    - 仅当 `op==COUNTER` 时回归/分类 `(q,p,delta_t)`（其它 op 对应 head loss mask 掉）
+    - `op ∈ {ACCEPT, REJECT, END}`（其中 END 包含 PenguinAgent 的“隐式 END”，由 tracker 补齐）
+    - 仅当 `op==REJECT` 时回归/分类 `(q,p,delta_t)`（其它 op 对应 head loss mask 掉）
   - [ ] **L2→L3 的输入对齐（建议）**：
     - 起步：用 **label 的 `g_d`（teacher forcing）** 当作 L3 的输入（更容易收敛、对齐专家轨迹）
     - 稳定后：逐步混入 `\hat g_d = L2(state_d)`（scheduled sampling），减少上线时 L2 预测误差带来的分布偏移

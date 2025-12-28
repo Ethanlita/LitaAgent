@@ -39,6 +39,47 @@ except ImportError:
     TRACKER_AVAILABLE = False
 
 
+def _get_world_id_from_awi(awi: Any) -> str:
+    if awi is None:
+        return "unknown"
+    world = getattr(awi, "_world", None)
+    if world is not None:
+        world_id = getattr(world, "id", None)
+        if world_id is not None:
+            return str(world_id)
+    return "unknown"
+
+
+def _world_id_hash(world_id: str, length: int = 8) -> str:
+    try:
+        return hashlib.sha1(world_id.encode("utf-8")).hexdigest()[:length]
+    except Exception:
+        return "unknown"
+
+
+def _compose_tracker_agent_id(agent_id: str, world_id: str) -> str:
+    if not world_id or world_id == "unknown":
+        return agent_id
+    return f"{agent_id}#W{_world_id_hash(world_id)}"
+
+
+def _ensure_tracker_logger(
+    agent: Any,
+    agent_id: str,
+    agent_type: str,
+    current_logger: Optional["AgentLogger"],
+) -> Optional["AgentLogger"]:
+    if not TRACKER_AVAILABLE:
+        return None
+    world_id = _get_world_id_from_awi(getattr(agent, "awi", None))
+    logger_key = (agent_id, agent_type, world_id)
+    if current_logger is None or getattr(agent, "_tracker_logger_key", None) != logger_key:
+        logger_agent_id = _compose_tracker_agent_id(agent_id, world_id)
+        current_logger = TrackerManager.get_logger(logger_agent_id, agent_type)
+        setattr(agent, "_tracker_logger_key", logger_key)
+    return current_logger
+
+
 class LitaTrackerMixin:
     """
     为 LitaAgent 提供 Tracker 功能的 Mixin
@@ -60,10 +101,14 @@ class LitaTrackerMixin:
         if not TRACKER_AVAILABLE or not self._tracker_enabled:
             return None
         
-        if self._tracker_logger is None:
-            agent_id = getattr(self, 'id', 'unknown')
-            agent_type = type(self).__name__
-            self._tracker_logger = TrackerManager.get_logger(agent_id, agent_type)
+        agent_id = getattr(self, 'id', 'unknown')
+        agent_type = type(self).__name__
+        self._tracker_logger = _ensure_tracker_logger(
+            self,
+            agent_id=str(agent_id),
+            agent_type=str(agent_type),
+            current_logger=self._tracker_logger,
+        )
         
         return self._tracker_logger
     
@@ -80,20 +125,61 @@ class LitaTrackerMixin:
     def track_negotiation(self, event: str, partner: str, **data):
         """记录协商事件"""
         if self.tracker:
+            mechanism_id = data.get("mechanism_id")
+            negotiator_id = data.get("negotiator_id")
             if event == "started":
-                self.tracker.negotiation_started(partner, data.get("issues", {}), data.get("is_seller", False))
+                self.tracker.negotiation_started(
+                    partner,
+                    data.get("issues", {}),
+                    data.get("is_seller", False),
+                    mechanism_id=mechanism_id,
+                    negotiator_id=negotiator_id,
+                )
             elif event == "offer_made":
-                self.tracker.negotiation_offer_made(partner, data.get("offer", {}), data.get("reason", ""))
+                self.tracker.negotiation_offer_made(
+                    partner,
+                    data.get("offer", {}),
+                    data.get("reason", ""),
+                    mechanism_id=mechanism_id,
+                    negotiator_id=negotiator_id,
+                )
             elif event == "offer_received":
-                self.tracker.negotiation_offer_received(partner, data.get("offer", {}))
+                self.tracker.negotiation_offer_received(
+                    partner,
+                    data.get("offer", {}),
+                    mechanism_id=mechanism_id,
+                    negotiator_id=negotiator_id,
+                )
             elif event == "accept":
-                self.tracker.negotiation_accept(partner, data.get("offer", {}), data.get("reason", ""))
+                self.tracker.negotiation_accept(
+                    partner,
+                    data.get("offer", {}),
+                    data.get("reason", ""),
+                    mechanism_id=mechanism_id,
+                    negotiator_id=negotiator_id,
+                )
             elif event == "reject":
-                self.tracker.negotiation_reject(partner, data.get("offer", {}), data.get("reason", ""))
+                self.tracker.negotiation_reject(
+                    partner,
+                    data.get("offer", {}),
+                    data.get("reason", ""),
+                    mechanism_id=mechanism_id,
+                    negotiator_id=negotiator_id,
+                )
             elif event == "success":
-                self.tracker.negotiation_success(partner, data.get("agreement", {}))
+                self.tracker.negotiation_success(
+                    partner,
+                    data.get("agreement", {}),
+                    mechanism_id=mechanism_id,
+                    negotiator_id=negotiator_id,
+                )
             elif event == "failure":
-                self.tracker.negotiation_failure(partner, data.get("reason", ""))
+                self.tracker.negotiation_failure(
+                    partner,
+                    data.get("reason", ""),
+                    mechanism_id=mechanism_id,
+                    negotiator_id=negotiator_id,
+                )
     
     def track_contract(self, contract_id: str, partner: str, quantity: int, 
                        price: float, delivery_day: int, is_seller: bool):
@@ -252,6 +338,19 @@ def _build_commitments_from_future(
     return Q_in, Q_out, Payables, Receivables, has_nonzero
 
 
+def _get_initial_balance(awi: Any, agent_id: Optional[str]) -> float:
+    world = getattr(awi, "_world", None)
+    if world is not None:
+        initial_balances = getattr(world, "initial_balances", None)
+        if isinstance(initial_balances, dict) and agent_id in initial_balances:
+            try:
+                return float(initial_balances[agent_id])
+            except Exception:
+                pass
+    value = getattr(awi, "initial_balance", None)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
 def _extract_offers_snapshot(awi, current_step: int) -> Dict[str, Any]:
     """提取当前活跃谈判的报价快照，用于离线重建 6-8 通道.
     
@@ -337,13 +436,146 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
     def get_tracker(self) -> Optional[AgentLogger]:
         if not self._tracker_enabled:
             return None
-        if self._tracker_logger is None:
-            agent_id = getattr(self, 'id', 'unknown')
-            agent_type = type(self).__name__
-            self._tracker_logger = TrackerManager.get_logger(agent_id, agent_type)
+        agent_id = getattr(self, 'id', 'unknown')
+        agent_type = type(self).__name__
+        self._tracker_logger = _ensure_tracker_logger(
+            self,
+            agent_id=str(agent_id),
+            agent_type=str(agent_type),
+            current_logger=self._tracker_logger,
+        )
         return self._tracker_logger
     
     agent_class.tracker = property(get_tracker)
+
+    def _get_nmi(self, partner_id: str):
+        try:
+            return self.get_nmi(partner_id)
+        except Exception:
+            return None
+
+    def _get_mechanism_id(self, partner_id: str, state=None) -> Optional[str]:
+        nmi = _get_nmi(self, partner_id)
+        mech_id = getattr(nmi, "mechanism_id", None) if nmi is not None else None
+        if not mech_id and state is not None:
+            mech_id = getattr(state, "mechanism_id", None) or getattr(state, "id", None)
+        return str(mech_id) if mech_id else None
+
+    def _infer_is_seller(self, partner_id: str) -> bool:
+        """尽量用 nmi.annotation 判断买卖方向，避免硬猜污染数据。"""
+        nmi = _get_nmi(self, partner_id)
+        annotation = getattr(nmi, "annotation", {}) or {}
+
+        product_index = annotation.get("product", None)
+        if hasattr(product_index, "__len__") and not isinstance(product_index, (str, int)):
+            product_index = product_index[0] if len(product_index) > 0 else None
+
+        my_input_product = getattr(self.awi, "my_input_product", None)
+        my_output_product = getattr(self.awi, "my_output_product", None)
+
+        if product_index is not None:
+            if my_output_product is not None and product_index == my_output_product:
+                return True
+            if my_input_product is not None and product_index == my_input_product:
+                return False
+
+        seller = annotation.get("seller", None)
+        buyer = annotation.get("buyer", None)
+        if seller is not None and seller == getattr(self, "id", None):
+            return True
+        if buyer is not None and buyer == getattr(self, "id", None):
+            return False
+
+        if getattr(self.awi, "is_first_level", False):
+            return True
+        if getattr(self.awi, "is_last_level", False):
+            return False
+        return False
+
+    def _ensure_negotiation_started(self, partner_id: str, state=None, issues: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        tracker = self.tracker
+        if not tracker:
+            return None
+        mechanism_id = _get_mechanism_id(self, partner_id, state)
+        sim_step = int(getattr(self.awi, "current_step", 0) or 0)
+        if mechanism_id:
+            seen_key = (mechanism_id, partner_id)
+        else:
+            seen_key = (partner_id, sim_step, "no_mechanism")
+        seen = getattr(self, "_tracker_seen_negotiations", None)
+        if seen is None:
+            seen = set()
+            setattr(self, "_tracker_seen_negotiations", seen)
+        if seen_key in seen:
+            return mechanism_id
+        is_seller = _infer_is_seller(self, partner_id)
+        issues_payload = issues
+        if issues_payload is None:
+            issues_payload = {}
+            nmi = _get_nmi(self, partner_id)
+            if nmi is not None:
+                try:
+                    issues_payload = {"issues": getattr(nmi, "issues", None)}
+                except Exception:
+                    issues_payload = {}
+        tracker.negotiation_started(
+            partner_id,
+            issues_payload,
+            is_seller=is_seller,
+            mechanism_id=mechanism_id,
+            negotiator_id=partner_id,
+        )
+        seen.add(seen_key)
+        return mechanism_id
+
+    def _pack_aop_offer(offer):
+        if offer is None:
+            return None
+        try:
+            qty, delivery_day, price = offer
+        except Exception:
+            return None
+        return {
+            "quantity": int(qty),
+            "unit_price": float(price),
+            "delivery_day": int(delivery_day),
+        }
+
+    def _normalize_response_type(resp):
+        if resp is None:
+            return "unknown"
+        name = getattr(resp, "name", None)
+        if name:
+            return name
+        if isinstance(resp, (int, float)):
+            value = int(resp)
+        else:
+            text = str(resp)
+            if text.startswith("ResponseType."):
+                return text.split("ResponseType.", 1)[1]
+            try:
+                value = int(text)
+            except Exception:
+                value = None
+        if value is not None:
+            if value == 0:
+                return "ACCEPT_OFFER"
+            if value == 1:
+                return "REJECT_OFFER"
+            if value == 2:
+                return "END_NEGOTIATION"
+            if value == 3:
+                return "NO_RESPONSE"
+            if value == 4:
+                return "WAIT"
+        text = str(resp)
+        if "ACCEPT" in text:
+            return "ACCEPT_OFFER"
+        if "REJECT" in text:
+            return "REJECT_OFFER"
+        if "END" in text:
+            return "END_NEGOTIATION"
+        return "unknown"
     
     # 包装 init 方法
     if original_init:
@@ -450,58 +682,6 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                         awi, current_step, max_len
                     )
                     
-                    # 回退：旧接口 signed_contracts（兼容旧版本）
-                    signed_contracts = getattr(awi, 'signed_contracts', None)
-                    if (not has_future) and signed_contracts:
-                        tracked_ids = getattr(self, "_tracked_contract_ids", None)
-                        if tracked_ids is None:
-                            tracked_ids = set()
-                            self._tracked_contract_ids = tracked_ids
-                        for contract in signed_contracts:
-                            try:
-                                qty, price, delivery, buyer, seller, product_index = _extract_contract_terms(contract)
-                                agent_id = tracker.agent_id if tracker else None
-                                is_buying = _infer_is_buying_for_contract(
-                                    agent_id,
-                                    my_input_product,
-                                    getattr(awi, 'is_first_level', True),
-                                    buyer,
-                                    product_index,
-                                )
-                                
-                                delta = delivery - current_step
-                                if 0 <= delta < len(Q_in):
-                                    if is_buying:
-                                        Q_in[delta] += qty
-                                        Payables[delta] += qty * price
-                                    else:
-                                        Q_out[delta] += qty
-                                        Receivables[delta] += qty * price
-                                
-                                # 额外记录 contract_signed，用于离线 L2 目标反推
-                                contract_id = getattr(contract, 'id', None)
-                                if contract_id is None:
-                                    agreement = getattr(contract, 'agreement', None)
-                                    contract_id = getattr(agreement, 'id', None) if agreement is not None else None
-                                if contract_id is None:
-                                    contract_id = f"{buyer}-{seller}-{delivery}-{qty}-{price}"
-                                contract_id = str(contract_id)
-                                if contract_id not in tracked_ids and qty > 0 and price >= 0:
-                                    partner = seller if is_buying else buyer
-                                    if partner is None:
-                                        partner = "UNKNOWN"
-                                    tracker.contract_signed(
-                                        contract_id,
-                                        partner,
-                                        qty,
-                                        price,
-                                        delivery,
-                                        is_seller=not is_buying,
-                                    )
-                                    tracked_ids.add(contract_id)
-                            except Exception:
-                                pass
-                    
                     # 记录基本库存状态
                     tracker.inventory_state(
                         raw_material=inventory_input,
@@ -517,7 +697,7 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                         # 财务状态
                         score=score,
                         balance=balance,
-                        initial_balance=getattr(awi, 'initial_balance', 10000.0) or 10000.0,
+                        initial_balance=_get_initial_balance(awi, getattr(self, "id", None)),
                         # 外生合同（系统分配）
                         exo_input_qty=exo_input_qty,
                         exo_input_price=exo_input_price,
@@ -688,6 +868,7 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                     for partner_id, offer in offers.items():
                         state = states.get(partner_id)
                         response = responses.get(partner_id)
+                        mechanism_id = _ensure_negotiation_started(self, partner_id, state=state)
                         
                         # 解析报价 (quantity, time, unit_price)
                         offer_qty = offer[0] if offer else 0
@@ -695,41 +876,108 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                         offer_price = offer[2] if offer and len(offer) > 2 else 0
                         
                         # 记录收到的报价
-                        tracker.negotiation_offer_received(partner_id, {
-                            "quantity": offer_qty,
-                            "delivery_day": offer_time,
-                            "unit_price": offer_price,
-                            "round": state.step if state else 0,
-                        })
+                        tracker.negotiation_offer_received(
+                            partner_id,
+                            {
+                                "quantity": offer_qty,
+                                "delivery_day": offer_time,
+                                "unit_price": offer_price,
+                                "round": state.step if state else 0,
+                            },
+                            mechanism_id=mechanism_id,
+                            negotiator_id=partner_id,
+                        )
                         
                         # 记录我们的响应
                         if response:
-                            response_type = str(response.response) if response.response else "unknown"
+                            response_type = _normalize_response_type(response.response)
                             counter_offer = response.outcome
                             
-                            if response_type == "ResponseType.ACCEPT_OFFER":
-                                tracker.negotiation_accept(partner_id, {
-                                    "quantity": offer_qty,
-                                    "delivery_day": offer_time,
-                                    "unit_price": offer_price,
-                                }, reason="accepted_in_counter_all")
-                            elif response_type == "ResponseType.REJECT_OFFER" and counter_offer:
+                            if response_type == "ACCEPT_OFFER":
+                                tracker.negotiation_accept(
+                                    partner_id,
+                                    {
+                                        "quantity": offer_qty,
+                                        "delivery_day": offer_time,
+                                        "unit_price": offer_price,
+                                    },
+                                    reason="accepted_in_counter_all",
+                                    mechanism_id=mechanism_id,
+                                    negotiator_id=partner_id,
+                                )
+                            elif response_type == "REJECT_OFFER" and counter_offer:
                                 counter_qty = counter_offer[0] if counter_offer else 0
                                 counter_time = counter_offer[1] if counter_offer and len(counter_offer) > 1 else 0
                                 counter_price = counter_offer[2] if counter_offer and len(counter_offer) > 2 else 0
                                 
-                                tracker.negotiation_offer_made(partner_id, {
-                                    "quantity": counter_qty,
-                                    "delivery_day": counter_time,
-                                    "unit_price": counter_price,
-                                    "round": state.step if state else 0,
-                                }, reason="counter_offer")
-                            elif response_type == "ResponseType.END_NEGOTIATION":
-                                tracker.negotiation_reject(partner_id, {
-                                    "quantity": offer_qty,
-                                    "delivery_day": offer_time,
-                                    "unit_price": offer_price,
-                                }, reason="end_negotiation")
+                                tracker.negotiation_offer_made(
+                                    partner_id,
+                                    {
+                                        "quantity": counter_qty,
+                                        "delivery_day": counter_time,
+                                        "unit_price": counter_price,
+                                        "round": state.step if state else 0,
+                                    },
+                                    reason="counter_offer",
+                                    mechanism_id=mechanism_id,
+                                    negotiator_id=partner_id,
+                                )
+                            elif response_type == "END_NEGOTIATION":
+                                tracker.negotiation_reject(
+                                    partner_id,
+                                    {
+                                        "quantity": offer_qty,
+                                        "delivery_day": offer_time,
+                                        "unit_price": offer_price,
+                                    },
+                                    reason="end_negotiation",
+                                    mechanism_id=mechanism_id,
+                                    negotiator_id=partner_id,
+                                )
+                    
+                    # AOP 动作记录（覆盖 states.keys()，补齐隐式 END）
+                    for partner_id, state in states.items():
+                        response = responses.get(partner_id)
+                        current_offer = getattr(state, "current_offer", None) if state else None
+                        is_seller = _infer_is_seller(self, partner_id)
+                        round_idx = int(getattr(state, "step", 0) or 0)
+                        sim_step = int(getattr(self.awi, "current_step", 0) or 0)
+                        mechanism_id = _get_mechanism_id(self, partner_id, state)
+
+                        action_op = "END"
+                        response_type = "END_NEGOTIATION"
+                        offer_payload = None
+                        reason = "omit_in_counter_all"
+
+                        if response is not None:
+                            response_type = _normalize_response_type(response.response)
+                            reason = "counter_all"
+                            if response_type == "ACCEPT_OFFER":
+                                action_op = "ACCEPT"
+                                offer_payload = _pack_aop_offer(current_offer)
+                            elif response_type == "REJECT_OFFER":
+                                counter_offer = response.outcome
+                                if counter_offer is not None:
+                                    action_op = "REJECT"
+                                    offer_payload = _pack_aop_offer(counter_offer)
+                                else:
+                                    action_op = "END"
+                            elif response_type == "END_NEGOTIATION":
+                                action_op = "END"
+
+                        tracker.custom(
+                            "aop_action",
+                            sim_step=sim_step,
+                            negotiator_id=partner_id,
+                            mechanism_id=mechanism_id,
+                            partner=partner_id,
+                            role="seller" if is_seller else "buyer",
+                            round=round_idx,
+                            action_op=action_op,
+                            response_type=response_type,
+                            offer=offer_payload,
+                            reason=reason,
+                        )
                 except Exception:
                     pass
             
@@ -786,24 +1034,45 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                             prop_qty = proposal[0] if proposal else 0
                             prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
                             prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
-                            
-                            # 判断是买方还是卖方（必须准确，否则会污染后续离线训练标签）
-                            is_seller = _infer_is_seller(partner_id)
-                            
-                            # 记录协商开始
-                            tracker.negotiation_started(partner_id, {
+
+                            issues_payload = {
                                 "quantity_range": str(prop_qty),
                                 "time_range": str(prop_time),
                                 "price_range": str(prop_price),
-                            }, is_seller=is_seller)
-                            
+                            }
+                            mechanism_id = _ensure_negotiation_started(
+                                self,
+                                partner_id,
+                                issues=issues_payload,
+                            )
+
                             # 记录初始报价
-                            tracker.negotiation_offer_made(partner_id, {
-                                "quantity": prop_qty,
-                                "delivery_day": prop_time,
-                                "unit_price": prop_price,
-                                "round": 0,
-                            }, reason="first_proposal")
+                            tracker.negotiation_offer_made(
+                                partner_id,
+                                {
+                                    "quantity": prop_qty,
+                                    "delivery_day": prop_time,
+                                    "unit_price": prop_price,
+                                    "round": 0,
+                                },
+                                reason="first_proposal",
+                                mechanism_id=mechanism_id,
+                                negotiator_id=partner_id,
+                            )
+
+                            tracker.custom(
+                                "aop_action",
+                                sim_step=int(getattr(self.awi, "current_step", 0) or 0),
+                                negotiator_id=partner_id,
+                                mechanism_id=mechanism_id,
+                                partner=partner_id,
+                                role="seller" if _infer_is_seller(partner_id) else "buyer",
+                                round=0,
+                                action_op="REJECT",
+                                response_type="REJECT_OFFER",
+                                offer=_pack_aop_offer(proposal),
+                                reason="first_proposal",
+                            )
                 except Exception:
                     pass
             
@@ -939,10 +1208,14 @@ def create_tracked_agent(
             """获取 Tracker Logger"""
             if not self._tracker_enabled:
                 return None
-            if self._tracker_logger is None:
-                agent_id = getattr(self, 'id', 'unknown')
-                agent_type = type(self).__bases__[0].__name__  # 使用父类名称
-                self._tracker_logger = TrackerManager.get_logger(agent_id, agent_type)
+            agent_id = getattr(self, 'id', 'unknown')
+            agent_type = type(self).__bases__[0].__name__  # 使用父类名称
+            self._tracker_logger = _ensure_tracker_logger(
+                self,
+                agent_id=str(agent_id),
+                agent_type=str(agent_type),
+                current_logger=self._tracker_logger,
+            )
             return self._tracker_logger
         
         def init(self):
@@ -1019,60 +1292,6 @@ def create_tracked_agent(
                         awi, current_step, max_len
                     )
                     
-                    # 回退：旧接口 signed_contracts（兼容旧版本）
-                    signed_contracts = getattr(awi, 'signed_contracts', None)
-                    if (not has_future) and signed_contracts:
-                        for contract in signed_contracts:
-                            try:
-                                agreement = getattr(contract, 'agreement', contract)
-                                if isinstance(agreement, dict):
-                                    qty = int(agreement.get('quantity', 0))
-                                    price = float(agreement.get('unit_price', 0))
-                                    delivery = int(agreement.get('time', 0))
-                                else:
-                                    qty = int(getattr(agreement, 'quantity', 0))
-                                    price = float(getattr(agreement, 'unit_price', 0))
-                                    delivery = int(getattr(agreement, 'time', 0))
-                                
-                                delta = delivery - current_step
-                                if 0 <= delta < len(Q_in):
-                                    # 判断买卖方向：
-                                    # 1. 首选：使用合约的 buyer/seller 字段
-                                    # 2. 备选：基于 product_index 和 my_input/output_product
-                                    # 3. 回退：基于 is_first_level（不推荐）
-                                    
-                                    is_buying = None
-                                    agent_id = tracker.agent_id if tracker else None
-                                    
-                                    # 方法1：检查合约的 buyer 字段
-                                    buyer = getattr(contract, 'buyer', None)
-                                    if buyer is not None and agent_id:
-                                        is_buying = (agent_id == buyer)
-                                    
-                                    # 方法2：基于 product_index
-                                    if is_buying is None:
-                                        product_index = None
-                                        annotation = getattr(contract, 'annotation', {})
-                                        if isinstance(annotation, dict):
-                                            product_index = annotation.get('product', None)
-                                        
-                                        if product_index is not None:
-                                            is_buying = (product_index == my_input_product)
-                                    
-                                    # 方法3：回退方案（不推荐）
-                                    if is_buying is None:
-                                        is_buying = getattr(awi, 'is_first_level', True)
-                                    
-                                    if is_buying:
-                                        Q_in[delta] += qty
-                                        Payables[delta] += qty * price
-                                    else:
-                                        Q_out[delta] += qty
-                                        Receivables[delta] += qty * price
-                            except Exception:
-                                pass
-                    
-                    # === HRL-XF 6-8通道：获取活跃谈判快照 ===
                     offers_snapshot = _extract_offers_snapshot(awi, current_step)
                     
                     tracker.inventory_state(
@@ -1086,7 +1305,7 @@ def create_tracked_agent(
                     tracker.custom("daily_status",
                         score=score,
                         balance=balance,
-                        initial_balance=getattr(awi, 'initial_balance', 10000.0) or 10000.0,
+                        initial_balance=_get_initial_balance(awi, getattr(self, "id", None)),
                         exo_input_qty=exo_input_qty,
                         exo_input_price=exo_input_price,
                         exo_output_qty=exo_output_qty,
@@ -1209,6 +1428,136 @@ def create_tracked_agent(
                     tracker.negotiation_failure(partner, "negotiation_ended_without_agreement")
                 except Exception:
                     pass
+
+        def _infer_is_seller(self, partner_id: str) -> bool:
+            nmi = None
+            try:
+                nmi = self.get_nmi(partner_id)
+            except Exception:
+                nmi = None
+
+            annotation = getattr(nmi, "annotation", {}) or {}
+            product_index = annotation.get("product", None)
+            if hasattr(product_index, "__len__") and not isinstance(product_index, (str, int)):
+                product_index = product_index[0] if len(product_index) > 0 else None
+
+            my_input_product = getattr(self.awi, "my_input_product", None)
+            my_output_product = getattr(self.awi, "my_output_product", None)
+
+            if product_index is not None:
+                return my_output_product is not None and product_index == my_output_product
+
+            seller = annotation.get("seller", None)
+            buyer = annotation.get("buyer", None)
+            if seller is not None and seller == getattr(self, "id", None):
+                return True
+            if buyer is not None and buyer == getattr(self, "id", None):
+                return False
+            if getattr(self.awi, "is_first_level", False):
+                return True
+            if getattr(self.awi, "is_last_level", False):
+                return False
+            return False
+
+        def _get_mechanism_id(self, partner_id: str, state=None) -> Optional[str]:
+            nmi = None
+            try:
+                nmi = self.get_nmi(partner_id)
+            except Exception:
+                nmi = None
+            mech_id = getattr(nmi, "mechanism_id", None) if nmi is not None else None
+            if not mech_id and state is not None:
+                mech_id = getattr(state, "mechanism_id", None) or getattr(state, "id", None)
+            return str(mech_id) if mech_id else None
+
+        def _ensure_negotiation_started(self, partner_id: str, state=None, issues: Optional[Dict[str, Any]] = None) -> Optional[str]:
+            tracker = self.tracker
+            if not tracker:
+                return None
+            mechanism_id = self._get_mechanism_id(partner_id, state)
+            sim_step = int(getattr(self.awi, "current_step", 0) or 0)
+            if mechanism_id:
+                seen_key = (mechanism_id, partner_id)
+            else:
+                seen_key = (partner_id, sim_step, "no_mechanism")
+            seen = getattr(self, "_tracker_seen_negotiations", None)
+            if seen is None:
+                seen = set()
+                setattr(self, "_tracker_seen_negotiations", seen)
+            if seen_key in seen:
+                return mechanism_id
+            is_seller = self._infer_is_seller(partner_id)
+            issues_payload = issues
+            if issues_payload is None:
+                issues_payload = {}
+                nmi = None
+                try:
+                    nmi = self.get_nmi(partner_id)
+                except Exception:
+                    nmi = None
+                if nmi is not None:
+                    try:
+                        issues_payload = {"issues": getattr(nmi, "issues", None)}
+                    except Exception:
+                        issues_payload = {}
+            tracker.negotiation_started(
+                partner_id,
+                issues_payload,
+                is_seller=is_seller,
+                mechanism_id=mechanism_id,
+                negotiator_id=partner_id,
+            )
+            seen.add(seen_key)
+            return mechanism_id
+
+        def _pack_aop_offer(self, offer):
+            if offer is None:
+                return None
+            try:
+                qty, delivery_day, price = offer
+            except Exception:
+                return None
+            return {
+                "quantity": int(qty),
+                "unit_price": float(price),
+                "delivery_day": int(delivery_day),
+            }
+
+        def _normalize_response_type(self, resp):
+            if resp is None:
+                return "unknown"
+            name = getattr(resp, "name", None)
+            if name:
+                return name
+            if isinstance(resp, (int, float)):
+                value = int(resp)
+            else:
+                text = str(resp)
+                if text.startswith("ResponseType."):
+                    return text.split("ResponseType.", 1)[1]
+                try:
+                    value = int(text)
+                except Exception:
+                    value = None
+            if value is not None:
+                if value == 0:
+                    return "ACCEPT_OFFER"
+                if value == 1:
+                    return "REJECT_OFFER"
+                if value == 2:
+                    return "END_NEGOTIATION"
+                if value == 3:
+                    return "NO_RESPONSE"
+                if value == 4:
+                    return "WAIT"
+            text = str(resp)
+            if "ACCEPT" in text:
+                return "ACCEPT_OFFER"
+            if "REJECT" in text:
+                return "REJECT_OFFER"
+            if "END" in text:
+                return "END_NEGOTIATION"
+            return "unknown"
         
         def counter_all(self, offers, states):
             """记录协商报价"""
@@ -1219,45 +1568,113 @@ def create_tracked_agent(
                     for partner_id, offer in offers.items():
                         state = states.get(partner_id)
                         response = responses.get(partner_id)
+                        mechanism_id = self._ensure_negotiation_started(partner_id, state=state)
                         
                         offer_qty = offer[0] if offer else 0
                         offer_time = offer[1] if offer and len(offer) > 1 else 0
                         offer_price = offer[2] if offer and len(offer) > 2 else 0
                         
-                        tracker.negotiation_offer_received(partner_id, {
-                            "quantity": offer_qty,
-                            "delivery_day": offer_time,
-                            "unit_price": offer_price,
-                            "round": state.step if state else 0,
-                        })
+                        tracker.negotiation_offer_received(
+                            partner_id,
+                            {
+                                "quantity": offer_qty,
+                                "delivery_day": offer_time,
+                                "unit_price": offer_price,
+                                "round": state.step if state else 0,
+                            },
+                            mechanism_id=mechanism_id,
+                            negotiator_id=partner_id,
+                        )
                         
                         if response:
-                            response_type = str(response.response) if response.response else "unknown"
+                            response_type = self._normalize_response_type(response.response)
                             counter_offer = response.outcome
                             
-                            if response_type == "ResponseType.ACCEPT_OFFER":
-                                tracker.negotiation_accept(partner_id, {
-                                    "quantity": offer_qty,
-                                    "delivery_day": offer_time,
-                                    "unit_price": offer_price,
-                                }, reason="accepted_in_counter_all")
-                            elif response_type == "ResponseType.REJECT_OFFER" and counter_offer:
+                            if response_type == "ACCEPT_OFFER":
+                                tracker.negotiation_accept(
+                                    partner_id,
+                                    {
+                                        "quantity": offer_qty,
+                                        "delivery_day": offer_time,
+                                        "unit_price": offer_price,
+                                    },
+                                    reason="accepted_in_counter_all",
+                                    mechanism_id=mechanism_id,
+                                    negotiator_id=partner_id,
+                                )
+                            elif response_type == "REJECT_OFFER" and counter_offer:
                                 counter_qty = counter_offer[0] if counter_offer else 0
                                 counter_time = counter_offer[1] if counter_offer and len(counter_offer) > 1 else 0
                                 counter_price = counter_offer[2] if counter_offer and len(counter_offer) > 2 else 0
                                 
-                                tracker.negotiation_offer_made(partner_id, {
-                                    "quantity": counter_qty,
-                                    "delivery_day": counter_time,
-                                    "unit_price": counter_price,
-                                    "round": state.step if state else 0,
-                                }, reason="counter_offer")
-                            elif response_type == "ResponseType.END_NEGOTIATION":
-                                tracker.negotiation_reject(partner_id, {
-                                    "quantity": offer_qty,
-                                    "delivery_day": offer_time,
-                                    "unit_price": offer_price,
-                                }, reason="end_negotiation")
+                                tracker.negotiation_offer_made(
+                                    partner_id,
+                                    {
+                                        "quantity": counter_qty,
+                                        "delivery_day": counter_time,
+                                        "unit_price": counter_price,
+                                        "round": state.step if state else 0,
+                                    },
+                                    reason="counter_offer",
+                                    mechanism_id=mechanism_id,
+                                    negotiator_id=partner_id,
+                                )
+                            elif response_type == "END_NEGOTIATION":
+                                tracker.negotiation_reject(
+                                    partner_id,
+                                    {
+                                        "quantity": offer_qty,
+                                        "delivery_day": offer_time,
+                                        "unit_price": offer_price,
+                                    },
+                                    reason="end_negotiation",
+                                    mechanism_id=mechanism_id,
+                                    negotiator_id=partner_id,
+                                )
+
+                    # AOP 动作记录（覆盖 states.keys()，补齐隐式 END）
+                    for partner_id, state in states.items():
+                        response = responses.get(partner_id)
+                        current_offer = getattr(state, "current_offer", None) if state else None
+                        is_seller = self._infer_is_seller(partner_id)
+                        round_idx = int(getattr(state, "step", 0) or 0)
+                        sim_step = int(getattr(self.awi, "current_step", 0) or 0)
+                        mechanism_id = self._get_mechanism_id(partner_id, state)
+
+                        action_op = "END"
+                        response_type = "END_NEGOTIATION"
+                        offer_payload = None
+                        reason = "omit_in_counter_all"
+
+                        if response is not None:
+                            response_type = self._normalize_response_type(response.response)
+                            reason = "counter_all"
+                            if response_type == "ACCEPT_OFFER":
+                                action_op = "ACCEPT"
+                                offer_payload = self._pack_aop_offer(current_offer)
+                            elif response_type == "REJECT_OFFER":
+                                counter_offer = response.outcome
+                                if counter_offer is not None:
+                                    action_op = "REJECT"
+                                    offer_payload = self._pack_aop_offer(counter_offer)
+                                else:
+                                    action_op = "END"
+                            elif response_type == "END_NEGOTIATION":
+                                action_op = "END"
+
+                        tracker.custom(
+                            "aop_action",
+                            sim_step=sim_step,
+                            negotiator_id=partner_id,
+                            mechanism_id=mechanism_id,
+                            partner=partner_id,
+                            role="seller" if is_seller else "buyer",
+                            round=round_idx,
+                            action_op=action_op,
+                            response_type=response_type,
+                            offer=offer_payload,
+                            reason=reason,
+                        )
                 except Exception:
                     pass
             return responses
@@ -1273,50 +1690,43 @@ def create_tracked_agent(
                             prop_qty = proposal[0] if proposal else 0
                             prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
                             prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
-                            
-                            # 方向判定必须尽量准确：中间层同时存在买卖谈判，不能用层级硬猜
-                            nmi = None
-                            try:
-                                nmi = self.get_nmi(partner_id)
-                            except Exception:
-                                nmi = None
-
-                            annotation = getattr(nmi, "annotation", {}) or {}
-                            product_index = annotation.get("product", None)
-                            if hasattr(product_index, "__len__") and not isinstance(product_index, (str, int)):
-                                product_index = product_index[0] if len(product_index) > 0 else None
-
-                            my_input_product = getattr(self.awi, "my_input_product", None)
-                            my_output_product = getattr(self.awi, "my_output_product", None)
-
-                            if product_index is not None:
-                                is_seller = (my_output_product is not None and product_index == my_output_product)
-                            else:
-                                seller = annotation.get("seller", None)
-                                buyer = annotation.get("buyer", None)
-                                if seller is not None and seller == getattr(self, "id", None):
-                                    is_seller = True
-                                elif buyer is not None and buyer == getattr(self, "id", None):
-                                    is_seller = False
-                                elif getattr(self.awi, "is_first_level", False):
-                                    is_seller = True
-                                elif getattr(self.awi, "is_last_level", False):
-                                    is_seller = False
-                                else:
-                                    is_seller = False
-                            
-                            tracker.negotiation_started(partner_id, {
+                            is_seller = self._infer_is_seller(partner_id)
+                            issues_payload = {
                                 "quantity_range": str(prop_qty),
                                 "time_range": str(prop_time),
                                 "price_range": str(prop_price),
-                            }, is_seller=is_seller)
+                            }
+                            mechanism_id = self._ensure_negotiation_started(
+                                partner_id,
+                                issues=issues_payload,
+                            )
                             
-                            tracker.negotiation_offer_made(partner_id, {
-                                "quantity": prop_qty,
-                                "delivery_day": prop_time,
-                                "unit_price": prop_price,
-                                "round": 0,
-                            }, reason="first_proposal")
+                            tracker.negotiation_offer_made(
+                                partner_id,
+                                {
+                                    "quantity": prop_qty,
+                                    "delivery_day": prop_time,
+                                    "unit_price": prop_price,
+                                    "round": 0,
+                                },
+                                reason="first_proposal",
+                                mechanism_id=mechanism_id,
+                                negotiator_id=partner_id,
+                            )
+
+                            tracker.custom(
+                                "aop_action",
+                                sim_step=int(getattr(self.awi, "current_step", 0) or 0),
+                                negotiator_id=partner_id,
+                                mechanism_id=mechanism_id,
+                                partner=partner_id,
+                                role="seller" if is_seller else "buyer",
+                                round=0,
+                                action_op="REJECT",
+                                response_type="REJECT_OFFER",
+                                offer=self._pack_aop_offer(proposal),
+                                reason="first_proposal",
+                            )
                 except Exception:
                     pass
             return proposals

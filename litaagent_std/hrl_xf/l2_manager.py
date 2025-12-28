@@ -111,7 +111,7 @@ class L2Output:
 class HeuristicL2Manager:
     """启发式 L2 管理器（无需训练）.
     
-    ⚠️ 警告：此类仅用于开发调试和冷启动 fallback。
+    警告：此类仅用于开发调试和冷启动 fallback。
     生产环境中 L2-L4 层应使用 neural 模式，heuristic 模式
     的参数未经调优，可能导致次优决策。
     
@@ -274,113 +274,64 @@ if TORCH_AVAILABLE:
                 nn.ReLU(),
                 nn.Linear(64, 1)
             )
-        
-    def forward(
-        self,
-        x_static: "torch.Tensor",
-        X_temporal: "torch.Tensor",
-        x_role: "torch.Tensor"
-    ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-        """前向传播.
-        
-        Args:
-            x_static: (B, 12) - 静态特征
-            X_temporal: (B, H+1, 10) - 时序特征
-            x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
-                
-            Returns:
-                mean: (B, 16) - 目标向量均值
-                log_std: (B, 16) - 目标向量对数标准差
-                value: (B, 1) - 价值估计
-            """
-            # 时序塔 (需要转置为 B, C, L)
+
+        def forward(
+            self,
+            x_static: "torch.Tensor",
+            X_temporal: "torch.Tensor",
+            x_role: "torch.Tensor",
+        ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+            """Forward pass."""
             x_t = X_temporal.permute(0, 2, 1)  # (B, 10, H)
             x_t = F.relu(self.conv1(x_t))
             x_t = F.relu(self.conv2(x_t))
             h_temp = self.pool(x_t).squeeze(-1)  # (B, 64)
-            
-            # 静态嵌入
             h_static = F.relu(self.static_embed(x_static))  # (B, 32)
-            
-            # 角色嵌入 (Linear 接受 Multi-Hot)
             h_role = F.relu(self.role_embed(x_role))  # (B, d_role)
-            
-            # 融合
             h = torch.cat([h_temp, h_static, h_role], dim=-1)
             h = F.relu(self.fusion(h))  # (B, 128)
-            
-            # Actor
             mean = self.actor_mean(h)
             log_std = self.actor_log_std(h)
-            log_std = torch.clamp(log_std, -20, 2)  # 数值稳定性
-            
-            # Critic
+            log_std = torch.clamp(log_std, -20, 2)
             value = self.critic(h)
-            
             return mean, log_std, value
-        
-    def sample_action(
-        self,
-        x_static: "torch.Tensor",
-        X_temporal: "torch.Tensor",
-        x_role: "torch.Tensor"
+
+        def sample_action(
+            self,
+            x_static: "torch.Tensor",
+            X_temporal: "torch.Tensor",
+            x_role: "torch.Tensor",
         ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-            """采样动作并计算 log_prob.
-            
-            Args:
-                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
-            
-            Returns:
-                action: (B, 16) - 采样的目标向量
-                log_prob: (B,) - 对数概率
-                value: (B, 1) - 价值估计
-            """
+            """Sample action and return log_prob/value."""
             mean, log_std, value = self.forward(x_static, X_temporal, x_role)
             std = torch.exp(log_std)
             dist = torch.distributions.Normal(mean, std)
             action = dist.rsample()
             log_prob = dist.log_prob(action).sum(dim=-1)
             return action, log_prob, value
-        
-    def evaluate_actions(
-        self,
-        x_static: "torch.Tensor",
-        X_temporal: "torch.Tensor",
-        x_role: "torch.Tensor",
-        actions: "torch.Tensor"
+
+        def evaluate_actions(
+            self,
+            x_static: "torch.Tensor",
+            X_temporal: "torch.Tensor",
+            x_role: "torch.Tensor",
+            actions: "torch.Tensor",
         ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-            """评估给定动作的 log_prob 和熵.
-            
-            Args:
-                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
-                actions: (B, 16) - 要评估的动作
-                
-            Returns:
-                log_prob: (B,)
-                entropy: (B,)
-                value: (B, 1)
-            """
+            """Evaluate log_prob/entropy/value for actions."""
             mean, log_std, value = self.forward(x_static, X_temporal, x_role)
             std = torch.exp(log_std)
             dist = torch.distributions.Normal(mean, std)
             log_prob = dist.log_prob(actions).sum(dim=-1)
             entropy = dist.entropy().sum(dim=-1)
             return log_prob, entropy, value
-        
-    def get_deterministic_action(
-        self,
-        x_static: "torch.Tensor",
-        X_temporal: "torch.Tensor",
-        x_role: "torch.Tensor"
+
+        def get_deterministic_action(
+            self,
+            x_static: "torch.Tensor",
+            X_temporal: "torch.Tensor",
+            x_role: "torch.Tensor",
         ) -> "torch.Tensor":
-            """获取确定性动作（均值）.
-            
-            Args:
-                x_role: (B, 2) - 角色 Multi-Hot [can_buy, can_sell]
-            
-            Returns:
-                action: (B, 16)
-            """
+            """Return deterministic (mean) action."""
             mean, _, _ = self.forward(x_static, X_temporal, x_role)
             return mean
 

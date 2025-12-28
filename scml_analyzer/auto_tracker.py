@@ -199,64 +199,124 @@ class AgentLogger:
     
     # ========== 协商相关 ==========
     
-    def negotiation_started(self, partner: str, issues: Dict, is_seller: bool):
+    def negotiation_started(
+        self,
+        partner: str,
+        issues: Dict,
+        is_seller: bool,
+        mechanism_id: Optional[str] = None,
+        negotiator_id: Optional[str] = None,
+    ):
         """协商开始"""
         self._stats["negotiations_started"] += 1
-        self._log("negotiation", "started", {
+        data = {
             "partner": partner,
             "issues": str(issues),
             "role": "seller" if is_seller else "buyer",
-        })
+        }
+        if mechanism_id:
+            data["mechanism_id"] = mechanism_id
+        if negotiator_id:
+            data["negotiator_id"] = negotiator_id
+        self._log("negotiation", "started", data)
     
-    def negotiation_offer_received(self, partner: str, offer: Dict):
+    def negotiation_offer_received(
+        self,
+        partner: str,
+        offer: Dict,
+        mechanism_id: Optional[str] = None,
+        negotiator_id: Optional[str] = None,
+    ):
         """收到报价"""
-        self._log("negotiation", "offer_received", {
-            "partner": partner,
-            "offer": offer,
-        })
+        data = {"partner": partner, "offer": offer}
+        if mechanism_id:
+            data["mechanism_id"] = mechanism_id
+        if negotiator_id:
+            data["negotiator_id"] = negotiator_id
+        self._log("negotiation", "offer_received", data)
     
-    def negotiation_offer_made(self, partner: str, offer: Dict, reason: str = ""):
+    def negotiation_offer_made(
+        self,
+        partner: str,
+        offer: Dict,
+        reason: str = "",
+        mechanism_id: Optional[str] = None,
+        negotiator_id: Optional[str] = None,
+    ):
         """发出报价"""
         self._stats["offers_made"] += 1
-        self._log("negotiation", "offer_made", {
-            "partner": partner,
-            "offer": offer,
-            "reason": reason,
-        })
+        data = {"partner": partner, "offer": offer, "reason": reason}
+        if mechanism_id:
+            data["mechanism_id"] = mechanism_id
+        if negotiator_id:
+            data["negotiator_id"] = negotiator_id
+        self._log("negotiation", "offer_made", data)
     
-    def negotiation_accept(self, partner: str, offer: Dict, reason: str = ""):
+    def negotiation_accept(
+        self,
+        partner: str,
+        offer: Dict,
+        reason: str = "",
+        mechanism_id: Optional[str] = None,
+        negotiator_id: Optional[str] = None,
+    ):
         """接受报价"""
         self._stats["offers_accepted"] += 1
-        self._log("negotiation", "accept", {
-            "partner": partner,
-            "offer": offer,
-            "reason": reason,
-        })
+        data = {"partner": partner, "offer": offer, "reason": reason}
+        if mechanism_id:
+            data["mechanism_id"] = mechanism_id
+        if negotiator_id:
+            data["negotiator_id"] = negotiator_id
+        self._log("negotiation", "accept", data)
     
-    def negotiation_reject(self, partner: str, offer: Dict, reason: str = ""):
+    def negotiation_reject(
+        self,
+        partner: str,
+        offer: Dict,
+        reason: str = "",
+        mechanism_id: Optional[str] = None,
+        negotiator_id: Optional[str] = None,
+    ):
         """拒绝报价"""
         self._stats["offers_rejected"] += 1
-        self._log("negotiation", "reject", {
-            "partner": partner,
-            "offer": offer,
-            "reason": reason,
-        })
+        data = {"partner": partner, "offer": offer, "reason": reason}
+        if mechanism_id:
+            data["mechanism_id"] = mechanism_id
+        if negotiator_id:
+            data["negotiator_id"] = negotiator_id
+        self._log("negotiation", "reject", data)
     
-    def negotiation_success(self, partner: str, agreement: Dict):
+    def negotiation_success(
+        self,
+        partner: str,
+        agreement: Dict,
+        mechanism_id: Optional[str] = None,
+        negotiator_id: Optional[str] = None,
+    ):
         """协商成功"""
         self._stats["negotiations_success"] += 1
-        self._log("negotiation", "success", {
-            "partner": partner,
-            "agreement": agreement,
-        })
+        data = {"partner": partner, "agreement": agreement}
+        if mechanism_id:
+            data["mechanism_id"] = mechanism_id
+        if negotiator_id:
+            data["negotiator_id"] = negotiator_id
+        self._log("negotiation", "success", data)
     
-    def negotiation_failure(self, partner: str, reason: str = ""):
+    def negotiation_failure(
+        self,
+        partner: str,
+        reason: str = "",
+        mechanism_id: Optional[str] = None,
+        negotiator_id: Optional[str] = None,
+    ):
         """协商失败"""
         self._stats["negotiations_failed"] += 1
-        self._log("negotiation", "failure", {
-            "partner": partner,
-            "reason": reason,
-        })
+        data = {"partner": partner, "reason": reason}
+        if mechanism_id:
+            data["mechanism_id"] = mechanism_id
+        if negotiator_id:
+            data["negotiator_id"] = negotiator_id
+        self._log("negotiation", "failure", data)
     
     # ========== 合同相关 ==========
     

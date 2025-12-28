@@ -4,6 +4,11 @@
 
 ---
 
+## 终端与编码（Windows）
+
+- Windows 下若出现乱码，优先用 PowerShell 7.x 的 `pwsh` 运行命令，默认 UTF-8。
+- macOS/Ubuntu 默认 UTF-8，此项不适用。
+
 ## SCML 2024+ API 重要变更
 
 > **关键信息**: 从 2024 年开始，SCML 统一了 OneShot 和 Standard 赛道的 API 接口。

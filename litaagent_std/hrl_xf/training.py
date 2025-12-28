@@ -108,28 +108,43 @@ class L2Dataset(Dataset):
 
 
 class L3Dataset(Dataset):
-    """L3 微观数据集."""
-    
+    """L3 微观数据集（AOP）。"""
+
     def __init__(self, samples: List[MicroSample], max_history_len: int = 20, horizon: int = 40):
         self.samples = samples
         self.max_len = max_history_len
-        self.horizon = horizon  # 用于动态确定 time_mask 长度
-    
+        self.horizon = horizon
+
     def __len__(self):
         return len(self.samples)
-    
+
+    def _build_context(self, s: MicroSample) -> np.ndarray:
+        step_progress = float(s.x_static[3]) if s.x_static is not None and len(s.x_static) > 3 else 0.0
+        is_buying = 1.0 if s.role == 0 else 0.0
+        context = np.concatenate([
+            np.asarray(s.l2_goal, dtype=np.float32),
+            np.asarray(s.goal_gap_buy, dtype=np.float32),
+            np.asarray(s.goal_gap_sell, dtype=np.float32),
+            np.array([
+                step_progress,
+                float(s.relative_time),
+                0.0,  # α 在 BC 阶段固定为 0
+                is_buying,
+                float(s.B_free) / 10000.0,
+            ], dtype=np.float32),
+        ])
+        return context
+
     def __getitem__(self, idx):
         s = self.samples[idx]
-        
-        # 填充/截断历史
+
         history = s.history
         if len(history) > self.max_len:
             history = history[-self.max_len:]
         elif len(history) < self.max_len:
-            pad = np.zeros((self.max_len - len(history), 3))
+            pad = np.zeros((self.max_len - len(history), 4))
             history = np.vstack([pad, history])
 
-        # 重要：delta_t 作为离散时间索引，必须落在 [0, horizon]，否则会导致 time_embed 越界
         try:
             history = np.asarray(history, dtype=np.float32)
             if history.ndim == 2 and history.shape[1] >= 3:
@@ -141,30 +156,38 @@ class L3Dataset(Dataset):
                 )
                 history[:, 2] = np.clip(history[:, 2], 0.0, float(self.horizon))
         except Exception:
-            # 极端情况下回退为全零，避免训练直接崩溃
-            history = np.zeros((self.max_len, 3), dtype=np.float32)
-        
-        # time_mask 动态长度：使用 horizon+1，若缺失则默认全部允许 (0.0)
+            history = np.zeros((self.max_len, 4), dtype=np.float32)
+
         tm_len = self.horizon + 1
-        if s.time_mask is not None:
-            time_mask = s.time_mask
-            # 如果长度不匹配，截断或填充
-            if len(time_mask) > tm_len:
-                time_mask = time_mask[:tm_len]
-            elif len(time_mask) < tm_len:
-                time_mask = np.concatenate([time_mask, np.zeros(tm_len - len(time_mask))])
-        else:
-            time_mask = np.zeros(tm_len, dtype=np.float32)
-        
+        time_mask = np.asarray(s.time_mask, dtype=np.float32) if s.time_mask is not None else np.zeros(tm_len, dtype=np.float32)
+        if len(time_mask) > tm_len:
+            time_mask = time_mask[:tm_len]
+        elif len(time_mask) < tm_len:
+            time_mask = np.concatenate([time_mask, np.zeros(tm_len - len(time_mask))])
+
+        context = self._build_context(s)
+
+        target_q = float(s.target_quantity) if s.target_quantity is not None else 0.0
+        target_p = float(s.target_price) if s.target_price is not None else 0.0
+        target_t = int(s.target_time) if s.target_time is not None else 0
+
+        time_valid = 1.0
+        if target_t < 0 or target_t >= len(time_mask):
+            time_valid = 0.0
+            target_t = 0 if len(time_mask) == 0 else max(0, min(target_t, len(time_mask) - 1))
+        elif time_mask[target_t] == -np.inf:
+            time_valid = 0.0
+
         return {
             'history': torch.FloatTensor(history),
-            'role': torch.LongTensor([s.role]),
-            'goal': torch.FloatTensor(s.goal),
-            'baseline': torch.FloatTensor(s.baseline),
-            'residual': torch.FloatTensor(s.residual),
-            'time_label': torch.LongTensor([s.time_label]),
+            'context': torch.FloatTensor(context),
+            'action_op': torch.LongTensor([int(s.action_op)]),
+            'target_q': torch.FloatTensor([target_q]),
+            'target_p': torch.FloatTensor([target_p]),
+            'target_t': torch.LongTensor([target_t]),
             'time_mask': torch.FloatTensor(time_mask),
-            'reward': torch.FloatTensor([s.reward if s.reward else 0.0]),
+            'time_valid': torch.FloatTensor([time_valid]),
+            'reward': torch.FloatTensor([s.reward if s.reward is not None else 0.0]),
         }
 
 
@@ -180,11 +203,9 @@ class L4Dataset(Dataset):
     def __getitem__(self, idx):
         s = self.samples[idx]
         return {
-            "global_feat": torch.FloatTensor(np.asarray(s.global_feat, dtype=np.float32)),
-            "thread_feats": torch.FloatTensor(np.asarray(s.thread_feats, dtype=np.float32)),
-            "thread_times": torch.LongTensor(np.asarray(s.thread_times, dtype=np.int64)),
-            "thread_roles": torch.LongTensor(np.asarray(s.thread_roles, dtype=np.int64)),
-            "teacher_weights": torch.FloatTensor(np.asarray(s.teacher_weights, dtype=np.float32)),
+            "global_state": torch.FloatTensor(np.asarray(s.global_state, dtype=np.float32)),
+            "thread_states": torch.FloatTensor(np.asarray(s.thread_states, dtype=np.float32)),
+            "teacher_alpha": torch.FloatTensor(np.asarray(s.teacher_alpha, dtype=np.float32)),
         }
 
 
@@ -194,42 +215,29 @@ def collate_l4(batch: List[Dict[str, "torch.Tensor"]]) -> Dict[str, "torch.Tenso
         raise ValueError("Empty batch")
 
     B = len(batch)
-    max_k = max(int(item["thread_feats"].shape[0]) for item in batch)
-    d_thread = int(batch[0]["thread_feats"].shape[1])
-    d_global = int(batch[0]["global_feat"].shape[0])
+    max_k = max(int(item["thread_states"].shape[0]) for item in batch)
+    d_thread = int(batch[0]["thread_states"].shape[1])
+    d_global = int(batch[0]["global_state"].shape[0])
 
-    global_feat = torch.zeros((B, d_global), dtype=torch.float32)
-    thread_feats = torch.zeros((B, max_k, d_thread), dtype=torch.float32)
-    thread_times = torch.zeros((B, max_k), dtype=torch.long)
-    thread_roles = torch.zeros((B, max_k), dtype=torch.long)
-    teacher_weights = torch.zeros((B, max_k), dtype=torch.float32)
+    global_state = torch.zeros((B, d_global), dtype=torch.float32)
+    thread_states = torch.zeros((B, max_k, d_thread), dtype=torch.float32)
+    teacher_alpha = torch.zeros((B, max_k), dtype=torch.float32)
     thread_mask = torch.zeros((B, max_k), dtype=torch.bool)
 
     for i, item in enumerate(batch):
-        gf = item["global_feat"]
-        tf = item["thread_feats"]
-        tt = item["thread_times"]
-        tr = item["thread_roles"]
-        tw = item["teacher_weights"]
-
-        k = int(tf.shape[0])
-        global_feat[i, : gf.shape[0]] = gf
-        thread_feats[i, :k, :] = tf
-        thread_times[i, :k] = tt[:k]
-        thread_roles[i, :k] = tr[:k]
-        teacher_weights[i, :k] = tw[:k]
+        gs = item["global_state"]
+        ts = item["thread_states"]
+        ta = item["teacher_alpha"]
+        k = int(ts.shape[0])
+        global_state[i, : gs.shape[0]] = gs
+        thread_states[i, :k, :] = ts
+        teacher_alpha[i, :k] = ta[:k]
         thread_mask[i, :k] = True
 
-    # 归一化 teacher（防止数值误差导致 sum!=1）
-    denom = teacher_weights.sum(dim=-1, keepdim=True).clamp_min(1e-8)
-    teacher_weights = teacher_weights / denom
-
     return {
-        "global_feat": global_feat,
-        "thread_feats": thread_feats,
-        "thread_times": thread_times,
-        "thread_roles": thread_roles,
-        "teacher_weights": teacher_weights,
+        "global_state": global_state,
+        "thread_states": thread_states,
+        "teacher_alpha": teacher_alpha,
         "thread_mask": thread_mask,
     }
 
@@ -421,24 +429,32 @@ def train_l3_bc(
         
         for batch in loader:
             history_seq = batch['history'].to(config.device)
-            role = batch['role'].squeeze(-1).to(config.device)
-            goal = batch['goal'].to(config.device)
-            baseline = batch['baseline'].to(config.device)
-            residual_target = batch['residual'].to(config.device)
-            time_target = batch['time_label'].squeeze(-1).to(config.device)
-            time_mask = batch['time_mask'].to(config.device)  # 使用真实的 L1 time_mask
-            
-            # 前向
-            delta_q, delta_p, time_logits = model(
-                history_seq, goal, role, time_mask, baseline
+            context = batch['context'].to(config.device)
+            action_op = batch['action_op'].squeeze(-1).to(config.device)
+            target_q = batch['target_q'].to(config.device)
+            target_p = batch['target_p'].to(config.device)
+            target_t = batch['target_t'].squeeze(-1).to(config.device)
+            time_mask = batch['time_mask'].to(config.device)
+            time_valid = batch['time_valid'].squeeze(-1).to(config.device)
+
+            op_logits, quantity, price, time_logits = model(
+                history_seq, context, time_mask
             )
-            
-            # 损失
-            loss_q = F.mse_loss(delta_q, residual_target[:, 0:1])
-            loss_p = F.mse_loss(delta_p, residual_target[:, 1:2])
-            loss_t = F.cross_entropy(time_logits, time_target)
-            
-            loss = loss_q + loss_p + loss_t
+
+            loss_op = F.cross_entropy(op_logits, action_op)
+
+            counter_mask = action_op == 1
+            valid_mask = counter_mask & (time_valid > 0.5)
+            if valid_mask.any():
+                loss_q = F.mse_loss(quantity[valid_mask], target_q[valid_mask])
+                loss_p = F.mse_loss(price[valid_mask], target_p[valid_mask])
+                loss_t = F.cross_entropy(time_logits[valid_mask], target_t[valid_mask])
+            else:
+                loss_q = torch.tensor(0.0, device=config.device)
+                loss_p = torch.tensor(0.0, device=config.device)
+                loss_t = torch.tensor(0.0, device=config.device)
+
+            loss = loss_op + loss_q + loss_p + loss_t
             
             # 反向
             optimizer.zero_grad()
@@ -573,35 +589,42 @@ def train_l3_awr(
         
         for batch in loader:
             history_seq = batch['history'].to(config.device)
-            role = batch['role'].squeeze(-1).to(config.device)
-            goal = batch['goal'].to(config.device)
-            baseline = batch['baseline'].to(config.device)
-            residual_target = batch['residual'].to(config.device)
-            time_target = batch['time_label'].squeeze(-1).to(config.device)
+            context = batch['context'].to(config.device)
+            action_op = batch['action_op'].squeeze(-1).to(config.device)
+            target_q = batch['target_q'].to(config.device)
+            target_p = batch['target_p'].to(config.device)
+            target_t = batch['target_t'].squeeze(-1).to(config.device)
             rewards = batch['reward'].squeeze(-1).to(config.device)
-            time_mask = batch['time_mask'].to(config.device)  # 使用真实的 L1 time_mask
-            
-            # 计算优势权重
-            # 简化版：使用 exp(reward / beta) 作为权重
+            time_mask = batch['time_mask'].to(config.device)
+            time_valid = batch['time_valid'].squeeze(-1).to(config.device)
+
             B = history_seq.size(0)
-            advantages = rewards  # 简化
+            advantages = rewards
             weights = torch.exp(advantages / config.awr_beta)
             weights = torch.clamp(weights, max=config.awr_clip)
-            weights = weights / weights.sum() * B  # 归一化
-            weights_resid = weights.unsqueeze(-1)
-            
-            # 前向
-            delta_q, delta_p, time_logits = model(
-                history_seq, goal, role, time_mask, baseline
+            weights = weights / weights.sum() * B
+
+            op_logits, quantity, price, time_logits = model(
+                history_seq, context, time_mask
             )
-            
-            # 加权损失
-            loss_q = (weights_resid * (delta_q - residual_target[:, 0:1]) ** 2).mean()
-            loss_p = (weights_resid * (delta_p - residual_target[:, 1:2]) ** 2).mean()
-            loss_t = F.cross_entropy(time_logits, time_target, reduction='none')
-            loss_t = (weights * loss_t).mean()
-            
-            loss = loss_q + loss_p + loss_t
+
+            loss_op = F.cross_entropy(op_logits, action_op, reduction='none')
+            loss_op = (weights * loss_op).mean()
+
+            counter_mask = action_op == 1
+            valid_mask = counter_mask & (time_valid > 0.5)
+            if valid_mask.any():
+                w_counter = weights[valid_mask].unsqueeze(-1)
+                loss_q = (w_counter * (quantity[valid_mask] - target_q[valid_mask]) ** 2).mean()
+                loss_p = (w_counter * (price[valid_mask] - target_p[valid_mask]) ** 2).mean()
+                loss_t = F.cross_entropy(time_logits[valid_mask], target_t[valid_mask], reduction='none')
+                loss_t = (weights[valid_mask] * loss_t).mean()
+            else:
+                loss_q = torch.tensor(0.0, device=config.device)
+                loss_p = torch.tensor(0.0, device=config.device)
+                loss_t = torch.tensor(0.0, device=config.device)
+
+            loss = loss_op + loss_q + loss_p + loss_t
             
             optimizer.zero_grad()
             loss.backward()
@@ -678,18 +701,15 @@ def train_l4_distill(
         n_batches = 0
 
         for batch in loader:
-            global_feat = batch["global_feat"].to(config.device)
-            thread_feats = batch["thread_feats"].to(config.device)
-            thread_times = batch["thread_times"].to(config.device)
-            thread_roles = batch["thread_roles"].to(config.device)
-            teacher = batch["teacher_weights"].to(config.device)
+            global_state = batch["global_state"].to(config.device)
+            thread_states = batch["thread_states"].to(config.device)
+            teacher = batch["teacher_alpha"].to(config.device)
             mask = batch["thread_mask"].to(config.device)
 
-            pred, _ = model(thread_feats, thread_times, thread_roles, global_feat, thread_mask=mask)
-            pred = pred.clamp_min(1e-8)
+            pred = model(thread_states, global_state, thread_mask=mask)
 
-            ce = -(teacher * torch.log(pred)).sum(dim=-1)
-            loss = ce.mean()
+            diff = pred - teacher
+            loss = (diff * diff * mask.float()).sum() / mask.float().sum().clamp_min(1.0)
 
             optimizer.zero_grad()
             loss.backward()

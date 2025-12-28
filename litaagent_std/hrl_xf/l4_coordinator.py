@@ -1,12 +1,8 @@
-"""L4 全局协调层 - 时空注意力网络.
+"""L4 全局监控器 + α 协调器.
 
-L4 是并发协调器，处理多个谈判线程之间的资源冲突，
-通过注意力权重调节各 L3 实例的激进程度。
-
-核心机制：
-- 时空注意力：考虑线程间的时间冲突
-- 门控权重：控制各线程的激进程度
-- 资源调制：根据全局目标调整 L3 输出
+L4 由两部分组成：
+1) L4GlobalMonitor：规则监控器，计算全局广播状态
+2) GlobalCoordinator：自注意力网络，为每个线程输出优先级 α
 """
 
 from __future__ import annotations
@@ -15,468 +11,354 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 
-# 尝试导入 PyTorch（可选依赖）
 try:
     import torch
     import torch.nn as nn
-    import torch.nn.functional as F
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
     torch = None
     nn = None
-    F = None
+
+
+BUCKET_RANGES = [(0, 2), (3, 7), (8, 14), (15, 40)]
+
+
+def delta_to_bucket(delta: int) -> int:
+    """将相对交货时间映射到桶索引."""
+    for i, (lo, hi) in enumerate(BUCKET_RANGES):
+        if lo <= delta <= hi:
+            return i
+    return 3
 
 
 @dataclass
 class ThreadState:
-    """谈判线程状态."""
+    """单个谈判线程的状态（供 L4 使用）."""
     thread_id: str
-    thread_feat: np.ndarray  # 线程显式特征（手工构建/可离线重建）
-    target_time: int  # 意向交货时间
-    role: int  # 0=Buyer, 1=Seller
-    priority: float = 1.0  # 线程优先级
+    is_buying: bool
+    negotiation_step: int
+    relative_time: float
+    current_offer: Optional[Tuple[int, int, float]]  # (q, delta_t, price)
+    history_len: int
+    target_bucket: int
+    goal_gap: float
+    Q_safe_at_t: float
+    B_remaining: float
 
 
 @dataclass
-class L4Output:
-    """L4 协调层的输出.
-    
-    Attributes:
-        thread_ids: 线程 ID 列表，与 weights/modulation_factors 对齐
-        weights: 各线程的权重，shape (K,)
-        modulation_factors: 调制因子，shape (K,)
-        conflict_scores: 冲突得分矩阵，shape (K, K)
-    """
-    thread_ids: Optional[List[str]]
-    weights: np.ndarray
-    modulation_factors: np.ndarray
-    conflict_scores: Optional[np.ndarray] = None
+class ThreadPriority:
+    """L4 为单个线程计算的优先级."""
+    thread_id: str
+    alpha: float
+    attention_weight: Optional[float] = None
 
 
-# ============== 启发式 L4（无需训练） ==============
+@dataclass
+class GlobalBroadcast:
+    """L4 广播给每个 L3 线程的全局状态."""
+    current_step: int
+    n_steps: int
+    step_progress: float
+    l2_goal: np.ndarray
+    goal_gap_buy: np.ndarray
+    goal_gap_sell: np.ndarray
+    today_bought_qty: float
+    today_bought_value: float
+    today_sold_qty: float
+    today_sold_value: float
+    B_remaining: float
+    Q_safe_remaining: np.ndarray
+    Q_safe_sell_remaining: np.ndarray
+    n_active_buy_threads: int
+    n_active_sell_threads: int
+    x_static: np.ndarray
+    X_temporal: np.ndarray
 
-class HeuristicL4Coordinator:
-    """启发式 L4 协调器（无需训练）.
-    
-    ⚠️ 警告：此类仅用于开发调试和冷启动 fallback。
-    生产环境中 L2-L4 层应使用 neural 模式，heuristic 模式
-    的参数未经调优，可能导致次优决策。
-    
-    基于规则分配线程权重，作为神经网络 L4 的基线。
-    
-    策略：
-    - 时间冲突：交货时间相近的线程需要协调
-    - 优先级：紧急交易获得更高权重
-    - 角色平衡：买卖双方资源均衡分配
-    """
-    
-    def __init__(
-        self,
-        horizon: int = 40,
-        conflict_threshold: int = 3,  # 时间差小于此值视为冲突
-    ):
+
+class L4GlobalMonitor:
+    """L4 全局监控器（无可训练参数）."""
+
+    def __init__(self, horizon: int = 40):
         self.horizon = horizon
-        self.conflict_threshold = conflict_threshold
-    
-    def compute(
+        self._reset_daily_stats()
+        self._awi = None
+        self._l1_buy = None
+        self._l1_sell = None
+        self._l2_output = None
+        self._state_dict = None
+
+    def _reset_daily_stats(self) -> None:
+        self.today_bought: List[Tuple[float, float, int]] = []
+        self.today_sold: List[Tuple[float, float, int]] = []
+        self._committed_buy_qty = np.zeros(self.horizon + 1, dtype=np.float32)
+        self._committed_sell_qty = np.zeros(self.horizon + 1, dtype=np.float32)
+        self._committed_buy_budget = 0.0
+
+    def on_step_begin(self, awi, l1_buy, l1_sell, l2_output, state_dict) -> None:
+        self._reset_daily_stats()
+        self._awi = awi
+        self._l1_buy = l1_buy
+        self._l1_sell = l1_sell
+        self._l2_output = l2_output
+        self._state_dict = state_dict
+
+    def on_contract_signed(
         self,
-        threads: List[ThreadState],
-        global_feat: np.ndarray
-    ) -> L4Output:
-        """计算线程权重.
-        
-        Args:
-            threads: 活跃的谈判线程列表
-            global_feat: 全局上下文特征（可选，启发式默认不使用）
-            
-        Returns:
-            L4Output
-        """
-        K = len(threads)
-        
-        if K == 0:
-            return L4Output(
-                thread_ids=[],
-                weights=np.array([]),
-                modulation_factors=np.array([]),
-                conflict_scores=None
-            )
-        
-        # 计算冲突得分矩阵
-        times = np.array([t.target_time for t in threads])
-        time_diff = np.abs(times[:, np.newaxis] - times[np.newaxis, :])
-        conflict_scores = np.exp(-time_diff / self.conflict_threshold)
-        np.fill_diagonal(conflict_scores, 0)  # 自身不冲突
-        
-        # 计算每个线程的冲突度
-        conflict_degree = conflict_scores.sum(axis=1)  # (K,)
-        
-        # 计算紧急度（时间越近越紧急）
-        urgency = 1.0 / (times + 1)  # (K,)
-        
-        # 计算优先级得分
-        priorities = np.array([t.priority for t in threads])
-        
-        # 综合权重：紧急度高、冲突少、优先级高 -> 权重大
-        raw_weights = urgency * priorities / (1 + conflict_degree)
-        
-        # 归一化
-        weights = raw_weights / (raw_weights.sum() + 1e-8)
-        
-        # 调制因子：权重高的线程更激进
-        modulation_factors = 1.0 + weights
-        
-        return L4Output(
-            thread_ids=[t.thread_id for t in threads],
-            weights=weights,
-            modulation_factors=modulation_factors,
-            conflict_scores=conflict_scores
+        quantity: int,
+        unit_price: float,
+        delivery_time: int,
+        is_buying: bool,
+    ) -> None:
+        if self._awi is None:
+            return
+        delta_t = int(delivery_time) - int(self._awi.current_step)
+        delta_t = max(0, min(delta_t, self.horizon))
+
+        if is_buying:
+            self.today_bought.append((float(quantity), float(unit_price), delta_t))
+            self._committed_buy_budget += float(quantity) * float(unit_price)
+            self._committed_buy_qty[delta_t] += float(quantity)
+        else:
+            self.today_sold.append((float(quantity), float(unit_price), delta_t))
+            self._committed_sell_qty[delta_t] += float(quantity)
+
+    def _compute_goal_gaps(self) -> Tuple[np.ndarray, np.ndarray]:
+        goal = self._l2_output.goal_vector
+        bought_by_bucket = np.zeros(4, dtype=np.float32)
+        sold_by_bucket = np.zeros(4, dtype=np.float32)
+
+        for qty, _, delta_t in self.today_bought:
+            bought_by_bucket[delta_to_bucket(delta_t)] += float(qty)
+        for qty, _, delta_t in self.today_sold:
+            sold_by_bucket[delta_to_bucket(delta_t)] += float(qty)
+
+        goal_gap_buy = np.zeros(4, dtype=np.float32)
+        goal_gap_sell = np.zeros(4, dtype=np.float32)
+        for i in range(4):
+            goal_gap_buy[i] = max(0.0, float(goal[i * 4]) - bought_by_bucket[i])
+            goal_gap_sell[i] = max(0.0, float(goal[i * 4 + 2]) - sold_by_bucket[i])
+
+        return goal_gap_buy, goal_gap_sell
+
+    def compute_broadcast(
+        self,
+        n_active_buy_threads: int = 0,
+        n_active_sell_threads: int = 0,
+    ) -> GlobalBroadcast:
+        goal_gap_buy, goal_gap_sell = self._compute_goal_gaps()
+
+        B_remaining = max(0.0, float(self._l1_buy.B_free) - float(self._committed_buy_budget))
+        Q_safe_remaining = np.maximum(0.0, self._l1_buy.Q_safe - self._committed_buy_qty)
+        Q_safe_sell_remaining = np.maximum(0.0, self._l1_sell.Q_safe_sell - self._committed_sell_qty)
+
+        return GlobalBroadcast(
+            current_step=int(self._awi.current_step),
+            n_steps=int(self._awi.n_steps),
+            step_progress=float(self._awi.current_step / max(1, self._awi.n_steps)),
+            l2_goal=self._l2_output.goal_vector.copy(),
+            goal_gap_buy=goal_gap_buy,
+            goal_gap_sell=goal_gap_sell,
+            today_bought_qty=float(sum(q for q, _, _ in self.today_bought)),
+            today_bought_value=float(sum(q * p for q, p, _ in self.today_bought)),
+            today_sold_qty=float(sum(q for q, _, _ in self.today_sold)),
+            today_sold_value=float(sum(q * p for q, p, _ in self.today_sold)),
+            B_remaining=B_remaining,
+            Q_safe_remaining=Q_safe_remaining,
+            Q_safe_sell_remaining=Q_safe_sell_remaining,
+            n_active_buy_threads=int(n_active_buy_threads),
+            n_active_sell_threads=int(n_active_sell_threads),
+            x_static=self._state_dict.x_static.copy(),
+            X_temporal=self._state_dict.X_temporal.copy(),
         )
-    
-    def modulate_action(
-        self,
-        delta_q: float,
-        delta_p: float,
-        modulation_factor: float
-    ) -> Tuple[float, float]:
-        """使用调制因子调整动作.
-        
-        Args:
-            delta_q: 数量残差
-            delta_p: 价格残差
-            modulation_factor: 调制因子
-            
-        Returns:
-            (modulated_delta_q, modulated_delta_p)
-        """
-        return delta_q * modulation_factor, delta_p * modulation_factor
 
 
-# ============== PyTorch L4 网络 ==============
+class HeuristicAlphaGenerator:
+    """启发式 α 生成器（用于离线预训练伪标签）."""
+
+    def __init__(self, urgency_threshold: float = 0.3):
+        self.urgency_threshold = urgency_threshold
+
+    def compute_alpha(self, thread_state: ThreadState, global_broadcast: GlobalBroadcast) -> float:
+        alpha = 0.0
+
+        if thread_state.is_buying:
+            denom = max(1.0, float(global_broadcast.l2_goal[0]) * 10.0)
+            resource_ratio = float(thread_state.B_remaining) / denom
+            if resource_ratio < self.urgency_threshold:
+                alpha += 0.3 * (1.0 - resource_ratio / self.urgency_threshold)
+
+        bucket = int(thread_state.target_bucket)
+        gap = float(global_broadcast.goal_gap_buy[bucket]) if thread_state.is_buying else float(global_broadcast.goal_gap_sell[bucket])
+        if gap > 0:
+            alpha += 0.3 * min(1.0, gap / 10.0)
+
+        alpha += 0.2 * float(thread_state.relative_time)
+
+        if bucket <= 1:
+            alpha += 0.2
+
+        alpha = max(-1.0, min(1.0, alpha * 2.0 - 0.5))
+        return float(alpha)
+
 
 if TORCH_AVAILABLE:
-    
+
     class GlobalCoordinator(nn.Module):
-        """L4 全局协调层 - 时空注意力网络.
-        
-        使用多头注意力和时间偏置处理线程间的协调。
-        
-        架构：
-        - 全局上下文编码：global_feat 作为上下文
-        - 线程状态投影：thread_feat 投影
-        - 时间嵌入：交货时间嵌入
-        - 角色嵌入：买卖角色嵌入
-        - 多头注意力：带时间偏置的注意力
-        - 门控输出：生成线程权重
-        
-        Args:
-            d_model: 模型维度
-            n_heads: 注意力头数
-            horizon: 规划视界
-            thread_feat_dim: 线程特征维度
-            global_feat_dim: 全局特征维度
-        """
-        
+        """L4 全局协调器：为每个活跃线程计算优先级 α."""
+
         def __init__(
             self,
-            d_model: int = 64,
+            d_thread: int = 64,
+            d_global: int = 32,
             n_heads: int = 4,
-            horizon: int = 40,
-            thread_feat_dim: int = 24,
-            global_feat_dim: int = 30,
+            n_layers: int = 2,
         ):
             super().__init__()
-            
-            self.d_model = d_model
-            self.horizon = horizon
-            self.n_heads = n_heads
-            
-            # 全局上下文编码
-            self.global_encoder = nn.Linear(global_feat_dim, d_model)
-             
-            # 线程隐状态投影
-            self.thread_proj = nn.Linear(thread_feat_dim, d_model)
-            
-            # 时间嵌入 (H+1 维，支持 δt ∈ {0, 1, ..., H})
-            self.time_embed = nn.Embedding(horizon + 1, d_model)
-            
-            # 角色嵌入
-            self.role_embed = nn.Embedding(2, d_model)
-            
-            # 多头自注意力
-            self.mha = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-            
-            # 时间偏置矩阵 (H+1 × H+1)
-            self.time_bias = nn.Parameter(torch.zeros(horizon + 1, horizon + 1))
-            nn.init.normal_(self.time_bias, std=0.1)
-            
-            # 输出门控
-            self.gate = nn.Sequential(
-                nn.Linear(d_model, 32),
+            self.thread_encoder = nn.Sequential(
+                nn.Linear(11, d_thread),
+                nn.ReLU(),
+                nn.Linear(d_thread, d_thread),
+            )
+            self.global_encoder = nn.Sequential(
+                nn.Linear(12, d_global),
+                nn.ReLU(),
+                nn.Linear(d_global, d_global),
+            )
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_thread + d_global,
+                nhead=n_heads,
+                dim_feedforward=(d_thread + d_global) * 4,
+                dropout=0.1,
+                batch_first=True,
+            )
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+            self.alpha_head = nn.Sequential(
+                nn.Linear(d_thread + d_global, 32),
                 nn.ReLU(),
                 nn.Linear(32, 1),
-                nn.Sigmoid()
+                nn.Tanh(),
             )
-        
+
         def forward(
             self,
-            thread_feats: "torch.Tensor",
-            thread_times: "torch.Tensor",
-            thread_roles: "torch.Tensor",
+            thread_states: "torch.Tensor",
             global_state: "torch.Tensor",
             thread_mask: Optional["torch.Tensor"] = None,
-        ) -> Tuple["torch.Tensor", "torch.Tensor"]:
-            """前向传播.
-            
-            Args:
-                thread_feats: (B, K, thread_feat_dim) - K 个线程的线程特征
-                thread_times: (B, K) - 每个线程的意向交货时间
-                thread_roles: (B, K) - 每个线程的角色
-                global_state: (B, global_feat_dim) - 全局上下文特征
-                thread_mask: (B, K) - True=有效线程，False=padding（可选）
-                
-            Returns:
-                weights: (B, K) - 线程重要性权重
-                attn_output: (B, K, d_model) - 注意力输出
-            """
-            B, K, _ = thread_feats.shape
-            n_heads = self.mha.num_heads
-            
-            # 1. 投影线程状态
-            h = self.thread_proj(thread_feats)  # (B, K, d)
-            
-            # 2. 添加时间嵌入
-            # 确保时间在有效范围内
-            thread_times_clamped = thread_times.clamp(0, self.horizon).long()
-            t_emb = self.time_embed(thread_times_clamped)  # (B, K, d)
-            h = h + t_emb
-            
-            # 3. 添加角色嵌入
-            r_emb = self.role_embed(thread_roles.long())  # (B, K, d)
-            h = h + r_emb
-            
-            # 4. 全局上下文作为 Query
-            q = self.global_encoder(global_state).unsqueeze(1)  # (B, 1, d)
-            q = q.expand(-1, K, -1)  # (B, K, d)
-            
-            # 5. 构建时间偏置掩码
-            time_diff = thread_times.unsqueeze(-1) - thread_times.unsqueeze(-2)  # (B, K, K)
-            time_diff = time_diff.abs().float()
-            
-            # 时间距离越近 -> 偏置越大（需要更多协调）
-            # 方案A修复：将可学习的 time_bias 矩阵并入 attn_bias
-            # time_bias[i,j] 表示线程 i 与线程 j 的交货时间组合对注意力的额外偏置
-            attn_bias = -time_diff  # (B, K, K)
-            
-            # 使用 thread_times_clamped 索引 time_bias 矩阵
-            # time_bias shape: (H+1, H+1)
-            # thread_times_clamped shape: (B, K)
-            # 需要构建 (B, K, K) 的偏置矩阵
-            t_i = thread_times_clamped.unsqueeze(-1).expand(-1, -1, K)  # (B, K, K)
-            t_j = thread_times_clamped.unsqueeze(-2).expand(-1, K, -1)  # (B, K, K)
-            learned_time_bias = self.time_bias[t_i, t_j]  # (B, K, K)
-            attn_bias = attn_bias + learned_time_bias
-            
-            if thread_mask is not None:
-                # 将 padding key 屏蔽掉，避免其参与任何 query 的注意力计算
-                pad_keys = ~thread_mask.bool()  # (B, K)
-                attn_bias = attn_bias.masked_fill(pad_keys.unsqueeze(1), float("-inf"))
-            
-            # 扩展到多头格式
-            attn_bias = attn_bias.unsqueeze(1).expand(-1, n_heads, -1, -1)
-            attn_bias = attn_bias.reshape(B * n_heads, K, K)
-            
-            # 6. 多头注意力
-            attn_output, _ = self.mha(q, h, h, attn_mask=attn_bias)
-            
-            # 7. 计算门控权重
-            gate_values = self.gate(attn_output).squeeze(-1)  # (B, K)
-            if thread_mask is not None:
-                gate_values = gate_values.masked_fill(~thread_mask.bool(), float("-inf"))
-            
-            # 8. 归一化权重
-            weights = F.softmax(gate_values, dim=-1)  # (B, K)
-            
-            return weights, attn_output
-        
-        def modulate_l3_outputs(
-            self,
-            delta_q: "torch.Tensor",
-            delta_p: "torch.Tensor",
-            weights: "torch.Tensor"
-        ) -> Tuple["torch.Tensor", "torch.Tensor"]:
-            """使用权重调制 L3 输出.
-            
-            高权重 -> 更激进（放大残差）
-            低权重 -> 更保守（缩小残差）
-            
-            Args:
-                delta_q: (B, K, 1) 或 (B, K)
-                delta_p: (B, K, 1) 或 (B, K)
-                weights: (B, K)
-                
-            Returns:
-                modulated_delta_q: 调制后的数量残差
-                modulated_delta_p: 调制后的价格残差
-            """
-            # 确保维度匹配
-            if delta_q.dim() == 3:
-                amplify = 1.0 + weights.unsqueeze(-1)
-            else:
-                amplify = 1.0 + weights
-            
-            modulated_q = delta_q * amplify
-            modulated_p = delta_p * amplify
-            
-            return modulated_q, modulated_p
+        ) -> "torch.Tensor":
+            B, N, _ = thread_states.shape
+            thread_emb = self.thread_encoder(thread_states)
+            global_emb = self.global_encoder(global_state).unsqueeze(1).expand(-1, N, -1)
+            combined = torch.cat([thread_emb, global_emb], dim=-1)
+
+            attn_mask = ~thread_mask if thread_mask is not None else None
+            hidden = self.transformer(combined, src_key_padding_mask=attn_mask)
+            alpha = self.alpha_head(hidden).squeeze(-1)
+            return alpha
 
 else:
-    # PyTorch 不可用时的占位类
+
     class GlobalCoordinator:
         def __init__(self, *args, **kwargs):
             raise ImportError("PyTorch is required for GlobalCoordinator")
 
 
-# ============== L4 包装器 ==============
+class L4Layer:
+    """L4 层统一接口：监控器 + 协调器."""
 
-class L4ThreadCoordinator:
-    """L4 协调层的统一接口.
-    
-    支持：
-    - 启发式模式（无需训练）
-    - 神经网络模式（需要 PyTorch）
-    
-    Args:
-        mode: "heuristic" 或 "neural"
-        horizon: 规划视界
-        model_path: 预训练模型路径（neural 模式）
-    """
-    
     def __init__(
         self,
-        mode: str = "heuristic",
         horizon: int = 40,
+        use_neural_alpha: bool = True,
         model_path: Optional[str] = None,
-        thread_feat_dim: int = 24,
-        global_feat_dim: int = 30,
     ):
-        self.mode = mode
-        self.horizon = horizon
-        self.thread_feat_dim = thread_feat_dim
-        self.global_feat_dim = global_feat_dim
-        
-        if mode == "heuristic":
-            self._impl = HeuristicL4Coordinator(horizon=horizon)
-        elif mode == "neural":
-            if not TORCH_AVAILABLE:
-                raise ImportError("PyTorch is required for neural mode")
-            self._model = GlobalCoordinator(
-                horizon=horizon,
-                thread_feat_dim=thread_feat_dim,
-                global_feat_dim=global_feat_dim,
-            )
+        self.monitor = L4GlobalMonitor(horizon=horizon)
+        self.use_neural_alpha = bool(use_neural_alpha and TORCH_AVAILABLE)
+        self.heuristic_alpha = HeuristicAlphaGenerator()
+        self.coordinator = None
+        if self.use_neural_alpha:
+            self.coordinator = GlobalCoordinator()
             if model_path:
                 self._load_model(model_path)
-            self._impl = None
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
-    
-    def compute(
+
+    def compute_alphas(
         self,
-        threads: List[ThreadState],
-        global_feat: np.ndarray
-    ) -> L4Output:
-        """计算线程权重.
-        
-        Args:
-            threads: 活跃的谈判线程列表
-            global_feat: 全局上下文特征，shape (G,)
-            
-        Returns:
-            L4Output
-        """
-        if self.mode == "heuristic":
-            return self._impl.compute(threads, global_feat)
-        else:
-            return self._compute_neural(threads, global_feat)
-    
-    def _compute_neural(
-        self,
-        threads: List[ThreadState],
-        global_feat: np.ndarray
-    ) -> L4Output:
-        """使用神经网络计算权重."""
-        K = len(threads)
-        
-        if K == 0:
-            return L4Output(
-                thread_ids=[],
-                weights=np.array([]),
-                modulation_factors=np.array([]),
-                conflict_scores=None
-            )
-        
-        # 构建张量
-        thread_feats = np.stack([t.thread_feat for t in threads]).astype(np.float32)  # (K, feat_dim)
-        times = np.array([t.target_time for t in threads])
-        roles = np.array([t.role for t in threads])
-        
-        # 添加批次维度
-        thread_feats_t = torch.from_numpy(thread_feats).float().unsqueeze(0)  # (1, K, d)
-        thread_times_t = torch.from_numpy(times).long().unsqueeze(0)  # (1, K)
-        thread_roles_t = torch.from_numpy(roles).long().unsqueeze(0)  # (1, K)
-        global_t = torch.from_numpy(global_feat).float().unsqueeze(0)  # (1, G)
-        
+        thread_states: List[ThreadState],
+        broadcast: GlobalBroadcast,
+    ) -> List[ThreadPriority]:
+        if not thread_states:
+            return []
+
+        if not self.use_neural_alpha or self.coordinator is None:
+            return [
+                ThreadPriority(
+                    thread_id=ts.thread_id,
+                    alpha=self.heuristic_alpha.compute_alpha(ts, broadcast),
+                )
+                for ts in thread_states
+            ]
+
+        thread_tensor = self._encode_threads(thread_states)
+        global_tensor = self._encode_global(broadcast)
         with torch.no_grad():
-            weights, _ = self._model.forward(
-                thread_feats_t, thread_times_t, thread_roles_t, global_t
-            )
-        
-        weights_np = weights.squeeze(0).numpy()
-        modulation_factors = 1.0 + weights_np
-        
-        # 计算冲突得分（用于调试）
-        time_diff = np.abs(times[:, np.newaxis] - times[np.newaxis, :])
-        conflict_scores = np.exp(-time_diff / 3)
-        np.fill_diagonal(conflict_scores, 0)
-        
-        return L4Output(
-            thread_ids=[t.thread_id for t in threads],
-            weights=weights_np,
-            modulation_factors=modulation_factors,
-            conflict_scores=conflict_scores
-        )
-    
-    def modulate_action(
-        self,
-        delta_q: float,
-        delta_p: float,
-        modulation_factor: float
-    ) -> Tuple[float, float]:
-        """使用调制因子调整动作.
-        
-        Args:
-            delta_q: 数量残差
-            delta_p: 价格残差
-            modulation_factor: 调制因子
-            
-        Returns:
-            (modulated_delta_q, modulated_delta_p)
-        """
-        return delta_q * modulation_factor, delta_p * modulation_factor
-    
+            alphas = self.coordinator(thread_tensor, global_tensor)
+        alphas_np = alphas.squeeze(0).cpu().numpy().astype(np.float32)
+        priorities: List[ThreadPriority] = []
+        for i, ts in enumerate(thread_states):
+            priorities.append(ThreadPriority(thread_id=ts.thread_id, alpha=float(alphas_np[i])))
+        return priorities
+
+    def _encode_threads(self, threads: List[ThreadState]) -> "torch.Tensor":
+        features = []
+        for t in threads:
+            offer = t.current_offer
+            if offer is None:
+                has_offer = 0.0
+                q_val, delta_val, price_val = 0.0, 0.0, 0.0
+            else:
+                has_offer = 1.0
+                q_val, delta_val, price_val = offer
+            features.append([
+                0.0 if t.is_buying else 1.0,
+                float(t.relative_time),
+                float(t.negotiation_step) / 20.0,
+                has_offer,
+                float(q_val) / 10.0,
+                float(price_val) / 40.0,
+                float(delta_val) / 40.0,
+                float(t.target_bucket) / 3.0,
+                float(t.goal_gap) / 10.0,
+                float(t.Q_safe_at_t) / 100.0,
+                float(t.B_remaining) / 10000.0,
+            ])
+        return torch.tensor(features, dtype=torch.float32).unsqueeze(0)
+
+    def _encode_global(self, gb: GlobalBroadcast) -> "torch.Tensor":
+        features = [
+            float(gb.step_progress),
+            float(gb.B_remaining) / 10000.0,
+            *[float(g) / 10.0 for g in gb.goal_gap_buy],
+            *[float(g) / 10.0 for g in gb.goal_gap_sell],
+            float(gb.n_active_buy_threads) / 10.0,
+            float(gb.n_active_sell_threads) / 10.0,
+        ]
+        return torch.tensor(features, dtype=torch.float32).unsqueeze(0)
+
     def _load_model(self, path: str) -> None:
-        """加载预训练模型."""
-        state_dict = torch.load(path, map_location='cpu')
-        self._model.load_state_dict(state_dict)
-        self._model.eval()
+        state_dict = torch.load(path, map_location="cpu")
+        self.coordinator.load_state_dict(state_dict)
+        self.coordinator.eval()
 
 
 __all__ = [
-    "L4Output",
-    "L4ThreadCoordinator",
-    "HeuristicL4Coordinator",
-    "GlobalCoordinator",
+    "BUCKET_RANGES",
+    "delta_to_bucket",
     "ThreadState",
+    "ThreadPriority",
+    "GlobalBroadcast",
+    "L4GlobalMonitor",
+    "HeuristicAlphaGenerator",
+    "GlobalCoordinator",
+    "L4Layer",
 ]
