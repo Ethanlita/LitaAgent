@@ -316,6 +316,7 @@ trainer.save_all("bc_example")
 
 **默认 epoch**：L2/L3/L4 各 10（可通过参数覆盖）。  
 **自动续训**：会在 `checkpoints/` 下寻找最新的 `*.ckpt.pt`/`l4_distill_epoch_*.pt`，再次运行会继续训练；用 `--no-resume` 可关闭。  
+**默认验证集**：按 world 级别切分（默认 `--val-ratio 0.1`，`--test-ratio 0.0`），训练结束后会输出验证集指标。  
 
 示例：
 ```bash
@@ -337,6 +338,10 @@ python -m runners.run_hrl_bc_awr_train --l2-epochs 30 --l3-epochs 30 --l4-epochs
 - `--l3-goal-backfill l2|v2|none`：L3 回填方式（默认 l2）  
 - `--l4-goal-source l2|v2|none`：L4 目标来源（默认 l2）  
 - `--num-workers N`：并行解析进程数（Windows 默认 1 更稳）  
+- `--val-ratio/--test-ratio`：验证/测试切分比例（world 级别）  
+- `--split-seed`：切分随机种子  
+- `--regen-split`：重新生成切分文件  
+- `--val-ratio 0 --test-ratio 0`：关闭切分，使用全量训练  
 
 ### 5.2 在线微调（预留）
 当前代码实现层面：  
