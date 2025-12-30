@@ -85,14 +85,14 @@ PY
 MPLCONFIGDIR=./.mpl_cache MPLBACKEND=Agg .venv/bin/python - <<'PY'
 from litaagent_std.hrl_xf import training, data_pipeline
 from litaagent_std.hrl_xf.l2_manager import HorizonManagerPPO
-from litaagent_std.hrl_xf.l3_executor import TemporalDecisionTransformer
+from litaagent_std.hrl_xf.l3_executor import L3DecisionTransformer
 
 data_dir = "tournament_history/hrl_data_<timestamp>_std"
 macro_ds, _ = data_pipeline.load_tournament_data(data_dir, agent_name="Pe", goal_backfill="none")
 
 cfg = training.TrainConfig(l2_epochs=10, l3_epochs=10, output_dir=f"{data_dir}/checkpoints", horizon=40)
 l2_model = HorizonManagerPPO(horizon=cfg.horizon)
-l3_model = TemporalDecisionTransformer(horizon=cfg.horizon)
+l3_model = L3DecisionTransformer(horizon=cfg.horizon)
 trainer = training.HRLXFTrainer(l2_model, l3_model, None, cfg)
 
 # 1) 先训 L2（v2 标签）
@@ -168,7 +168,7 @@ PY
 MPLCONFIGDIR=./.mpl_cache MPLBACKEND=Agg .venv/bin/python - <<'PY'
 from litaagent_std.hrl_xf import training, data_pipeline
 from litaagent_std.hrl_xf.l2_manager import HorizonManagerPPO
-from litaagent_std.hrl_xf.l3_executor import TemporalDecisionTransformer
+from litaagent_std.hrl_xf.l3_executor import L3DecisionTransformer
 
 data_dir = "tournament_history/hrl_data_<timestamp>_std"
 macro_ds, micro_ds = data_pipeline.load_tournament_data(data_dir, agent_name="Pe", num_workers=4)
@@ -182,7 +182,7 @@ cfg = training.TrainConfig(
     l3_bc_resume_path=f"{data_dir}/checkpoints/l3_bc_epoch10.ckpt.pt",
 )
 l2_model = HorizonManagerPPO(horizon=cfg.horizon)
-l3_model = TemporalDecisionTransformer(horizon=cfg.horizon)
+l3_model = L3DecisionTransformer(horizon=cfg.horizon)
 trainer = training.HRLXFTrainer(l2_model, l3_model, None, cfg)
 trainer.train_phase0_bc(macro_ds, micro_ds)
 PY

@@ -1116,8 +1116,10 @@ def main():
     parallelism_label = args.parallelism
     parallelism = args.parallelism
     if args.parallelism.startswith("loky"):
-        os.environ["SCML_PARALLELISM"] = args.parallelism
-        parallelism_label = f"{args.parallelism} (via SCML_PARALLELISM)"
+        # 默认强制使用全部 CPU（loky:1.0）；显式传入 loky:<fraction> 则保留用户设置
+        loky_mode = args.parallelism if ":" in args.parallelism else "loky:1.0"
+        os.environ["SCML_PARALLELISM"] = loky_mode
+        parallelism_label = f"{loky_mode} (via SCML_PARALLELISM)"
         parallelism = "parallel"
 
     print("\n" + "=" * 60)

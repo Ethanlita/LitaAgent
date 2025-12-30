@@ -275,7 +275,7 @@ save_samples(macro_ds, micro_ds, "./data/hrlxf_samples", horizon=40)
 ```python
 from litaagent_std.hrl_xf import training, data_pipeline
 from litaagent_std.hrl_xf.l2_manager import HorizonManagerPPO
-from litaagent_std.hrl_xf.l3_executor import TemporalDecisionTransformer
+from litaagent_std.hrl_xf.l3_executor import L3DecisionTransformer
 
 data_dir = "./tournament_history/hrl_data_<timestamp>_std"
 macro_ds, _ = data_pipeline.load_tournament_data(
@@ -287,7 +287,7 @@ macro_ds, _ = data_pipeline.load_tournament_data(
 
 cfg = training.TrainConfig(l2_epochs=10, l3_epochs=10, output_dir="./out_hrlxf")
 l2_model = HorizonManagerPPO(horizon=cfg.horizon)
-l3_model = TemporalDecisionTransformer(horizon=cfg.horizon)
+l3_model = L3DecisionTransformer(horizon=cfg.horizon)
 trainer = training.HRLXFTrainer(l2_model, l3_model, None, cfg)
 
 # 1) 先训 L2（micro.goal 此时往往为占位 0，不建议直接训 L3）
@@ -306,6 +306,37 @@ trainer.train_phase0_bc([], micro_goalhat)
 trainer.save_all("bc_example")
 ```
 > “占位模型”意为简单可运行的线性/MLP 示例；实际项目应替换为更强的 Transformer/PPO 等模型。
+
+### 5.1.1 一键 BC/AWR 训练脚本（自动续训）
+提供 `runners/run_hrl_bc_awr_train.py` 用于**比赛结束后直接跑训练**，流程为：
+1) 解析数据并统计（macro/micro 数量、动作分布、time_mask 异常等）  
+2) L2 BC  
+3) L3 BC（可选 AWR）  
+4) L4 蒸馏  
+
+**默认 epoch**：L2/L3/L4 各 10（可通过参数覆盖）。  
+**自动续训**：会在 `checkpoints/` 下寻找最新的 `*.ckpt.pt`/`l4_distill_epoch_*.pt`，再次运行会继续训练；用 `--no-resume` 可关闭。  
+
+示例：
+```bash
+# 默认使用 tournament_history 下全部比赛日志
+python -m runners.run_hrl_bc_awr_train
+
+# 指定目录 + 只训练 L2/L3（仅使用该目录）
+python -m runners.run_hrl_bc_awr_train --tournament-dir tournament_history/hrl_data_xxx --phases l2,l3
+
+# 只训练 L3（需要已有 L2 权重用于回填）
+python -m runners.run_hrl_bc_awr_train --phases l3 --l2-model-path <L2权重路径>
+
+# 调整 epoch
+python -m runners.run_hrl_bc_awr_train --l2-epochs 30 --l3-epochs 30 --l4-epochs 20
+```
+
+参数要点：
+- `--phases l2,l3,l4`：选择训练阶段  
+- `--l3-goal-backfill l2|v2|none`：L3 回填方式（默认 l2）  
+- `--l4-goal-source l2|v2|none`：L4 目标来源（默认 l2）  
+- `--num-workers N`：并行解析进程数（Windows 默认 1 更稳）  
 
 ### 5.2 在线微调（预留）
 当前代码实现层面：  
@@ -360,7 +391,7 @@ $env:MPLCONFIGDIR = ".\\.mpl_cache"
 from pathlib import Path
 from litaagent_std.hrl_xf import training, data_pipeline
 from litaagent_std.hrl_xf.l2_manager import HorizonManagerPPO
-from litaagent_std.hrl_xf.l3_executor import TemporalDecisionTransformer
+from litaagent_std.hrl_xf.l3_executor import L3DecisionTransformer
 
 data_dir = "tournament_history/hrl_data_<timestamp>_std"
 
@@ -378,7 +409,7 @@ macro_ds, _ = data_pipeline.load_tournament_data(
 # 注意：TrainConfig.horizon 应与 save_samples 的 horizon 一致
 cfg = training.TrainConfig(output_dir="./checkpoints_hrlxf", horizon=40)
 l2_model = HorizonManagerPPO(horizon=cfg.horizon)
-l3_model = TemporalDecisionTransformer(horizon=cfg.horizon)
+l3_model = L3DecisionTransformer(horizon=cfg.horizon)
 trainer = training.HRLXFTrainer(l2_model, l3_model, None, cfg)
 
 # 1) 先训 L2（v2 标签）

@@ -73,6 +73,24 @@ python runners/run_default_std.py --output-dir tournament_history/my_run
 
 这些运行器使用 negmas tournament API (`anac2024_oneshot()`/`anac2024_std()`)，数据会自动导入到 `tournament_history/`。
 
+### HRL 数据采集与 BC 闭环验证
+
+- `hrl_data_runner.py`：用于生成 HRL 训练所需的 Tracker JSON。默认规模已对齐 `anac2024_std`（configs=5、runs=1）。
+- `run_hrl_bc_smoke.py`：一键小规模闭环（比赛 → 数据处理 → L2/L3 BC 训练）。
+
+示例：
+
+```bash
+# HRL 数据采集（默认规模）
+python -m runners.hrl_data_runner
+
+# 一键小规模闭环（推荐用于冒烟验证）
+python -m runners.run_hrl_bc_smoke
+
+# 复用已存在目录（跳过比赛，只跑数据处理与训练）
+python -m runners.run_hrl_bc_smoke --output-dir tournament_history/xxx --skip-run
+```
+
 ### 🔸 早期/测试运行器
 
 | 运行器 | 说明 | API |
