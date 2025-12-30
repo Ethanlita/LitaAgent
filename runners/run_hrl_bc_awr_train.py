@@ -43,6 +43,45 @@ def _default_num_workers() -> int:
     return max(1, cpu_cnt - 1)
 
 
+class _ProgressBar:
+    def __init__(self, total: int, *, prefix: str) -> None:
+        self.total = max(0, int(total))
+        self.prefix = f"{prefix} " if prefix else ""
+        self.width = 30
+        self.current = 0
+        self._done = False
+        self._update_every = max(1, self.total // 200) if self.total > 0 else 1
+        self._last_printed = 0
+        self._render(done=self.total == 0)
+
+    def step(self) -> None:
+        if self._done:
+            return
+        self.current += 1
+        if self.current >= self.total:
+            self.current = self.total
+            self._render(done=True)
+            self._done = True
+            return
+        if self.current == 1 or (self.current - self._last_printed) >= self._update_every:
+            self._render(done=False)
+            self._last_printed = self.current
+
+    def _render(self, *, done: bool) -> None:
+        if self.total <= 0:
+            print(f"{self.prefix}[{'-' * self.width}] 0/0", flush=True)
+            return
+        filled = int(self.width * self.current / self.total)
+        bar = "#" * filled + "-" * (self.width - filled)
+        percent = (self.current / self.total) * 100.0
+        end = "\n" if done else ""
+        print(
+            f"\r{self.prefix}[{bar}] {self.current}/{self.total} {percent:5.1f}%",
+            end=end,
+            flush=True,
+        )
+
+
 def _load_world_dirs(tournament_dir: Path) -> List[str]:
     return data_pipeline._find_world_dirs(str(tournament_dir))
 
@@ -128,11 +167,15 @@ def _load_samples_from_world_dirs(
     goal_backfill: str,
     l2_model_path: Optional[str],
     num_workers: int,
+    progress_label: str,
 ) -> Tuple[List[data_pipeline.MacroSample], List[data_pipeline.MicroSample]]:
     macro_samples: List[data_pipeline.MacroSample] = []
     micro_samples: List[data_pipeline.MicroSample] = []
     if not world_dirs:
         return macro_samples, micro_samples
+
+    print(f"[INFO] Parsing {progress_label}: {len(world_dirs)} world(s)")
+    progress = _ProgressBar(len(world_dirs), prefix=f"[PARSE {progress_label}]")
 
     def _merge(result: Dict[str, Any]) -> None:
         macro_samples.extend(result.get("macro_samples", []))
@@ -149,6 +192,7 @@ def _load_samples_from_world_dirs(
                     l2_model_path=l2_model_path,
                 )
             )
+            progress.step()
     else:
         ctx = mp.get_context("spawn")
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
@@ -163,6 +207,7 @@ def _load_samples_from_world_dirs(
             )
             for result in results_iter:
                 _merge(result)
+                progress.step()
 
     return macro_samples, micro_samples
 
@@ -175,10 +220,14 @@ def _load_l4_samples_from_world_dirs(
     goal_source: str,
     l2_model_path: Optional[str],
     num_workers: int,
+    progress_label: str,
 ) -> List[data_pipeline.L4DistillSample]:
     l4_samples: List[data_pipeline.L4DistillSample] = []
     if not world_dirs:
         return l4_samples
+
+    print(f"[INFO] Parsing {progress_label}: {len(world_dirs)} world(s)")
+    progress = _ProgressBar(len(world_dirs), prefix=f"[PARSE {progress_label}]")
 
     def _merge(result: Dict[str, Any]) -> None:
         l4_samples.extend(result.get("l4_samples", []))
@@ -194,6 +243,7 @@ def _load_l4_samples_from_world_dirs(
                     l2_model_path=l2_model_path,
                 )
             )
+            progress.step()
     else:
         ctx = mp.get_context("spawn")
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
@@ -208,6 +258,7 @@ def _load_l4_samples_from_world_dirs(
             )
             for result in results_iter:
                 _merge(result)
+                progress.step()
 
     return l4_samples
 
@@ -613,7 +664,7 @@ def main() -> None:
     parser.add_argument("--l2-batch-size", type=int, default=64)
     parser.add_argument("--l3-batch-size", type=int, default=32)
     parser.add_argument("--l4-batch-size", type=int, default=32)
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--log-every", type=int, default=1)
 
@@ -622,6 +673,12 @@ def main() -> None:
 
     if not training_mod.TORCH_AVAILABLE:
         raise RuntimeError("PyTorch not available")
+
+    if args.device == "cuda":
+        import torch
+        if not torch.cuda.is_available():
+            print("[WARN] CUDA not available, fallback to cpu")
+            args.device = "cpu"
 
     base_dir = Path("tournament_history").resolve()
     if args.tournament_dir:
@@ -672,6 +729,7 @@ def main() -> None:
         goal_backfill="none",
         l2_model_path=None,
         num_workers=num_workers,
+        progress_label="train(statics)",
     )
     _summarize_samples(train_macro, train_micro, sample_limit=args.stats_sample, title="train")
 
@@ -688,6 +746,7 @@ def main() -> None:
             goal_backfill="none",
             l2_model_path=None,
             num_workers=num_workers,
+            progress_label="val(statics)",
         )
         _summarize_samples(val_macro, val_micro, sample_limit=args.stats_sample, title="val")
 
@@ -699,6 +758,7 @@ def main() -> None:
             goal_backfill="none",
             l2_model_path=None,
             num_workers=num_workers,
+            progress_label="test(statics)",
         )
         _summarize_samples(test_macro, test_micro, sample_limit=args.stats_sample, title="test")
 
@@ -750,6 +810,7 @@ def main() -> None:
             goal_backfill=args.l3_goal_backfill,
             l2_model_path=str(l2_model_path) if l2_model_path else None,
             num_workers=num_workers,
+            progress_label="train(l3)",
         )
         eval_sets = {}
         if val_dirs:
@@ -760,6 +821,7 @@ def main() -> None:
                 goal_backfill=args.l3_goal_backfill,
                 l2_model_path=str(l2_model_path) if l2_model_path else None,
                 num_workers=num_workers,
+                progress_label="val(l3)",
             )
             eval_sets["val"] = val_micro
         if test_dirs:
@@ -770,6 +832,7 @@ def main() -> None:
                 goal_backfill=args.l3_goal_backfill,
                 l2_model_path=str(l2_model_path) if l2_model_path else None,
                 num_workers=num_workers,
+                progress_label="test(l3)",
             )
             eval_sets["test"] = test_micro
 
@@ -805,6 +868,7 @@ def main() -> None:
             goal_source=args.l4_goal_source,
             l2_model_path=str(l2_model_path) if l2_model_path else None,
             num_workers=num_workers,
+            progress_label="train(l4)",
         )
         eval_sets = {}
         if val_dirs:
@@ -815,6 +879,7 @@ def main() -> None:
                 goal_source=args.l4_goal_source,
                 l2_model_path=str(l2_model_path) if l2_model_path else None,
                 num_workers=num_workers,
+                progress_label="val(l4)",
             )
             eval_sets["val"] = val_l4
         if test_dirs:
@@ -825,6 +890,7 @@ def main() -> None:
                 goal_source=args.l4_goal_source,
                 l2_model_path=str(l2_model_path) if l2_model_path else None,
                 num_workers=num_workers,
+                progress_label="test(l4)",
             )
             eval_sets["test"] = test_l4
 
