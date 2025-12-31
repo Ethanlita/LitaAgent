@@ -11,6 +11,7 @@ import multiprocessing as mp
 import os
 import random
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,6 +53,7 @@ class _ProgressBar:
         self._done = False
         self._update_every = max(1, self.total // 200) if self.total > 0 else 1
         self._last_printed = 0
+        self._start_time = time.monotonic()
         self._render(done=self.total == 0)
 
     def step(self) -> None:
@@ -69,17 +71,49 @@ class _ProgressBar:
 
     def _render(self, *, done: bool) -> None:
         if self.total <= 0:
-            print(f"{self.prefix}[{'-' * self.width}] 0/0", flush=True)
+            print(f"{self.prefix}[{'-' * self.width}] 0/0 elapsed --:--:-- ETA --:--:--", flush=True)
             return
         filled = int(self.width * self.current / self.total)
         bar = "#" * filled + "-" * (self.width - filled)
         percent = (self.current / self.total) * 100.0
+        elapsed = self._format_time(self._elapsed_seconds())
+        eta = self._format_time(self._eta_seconds())
         end = "\n" if done else ""
         print(
-            f"\r{self.prefix}[{bar}] {self.current}/{self.total} {percent:5.1f}%",
+            f"\r{self.prefix}[{bar}] {self.current}/{self.total} {percent:5.1f}% "
+            f"elapsed {elapsed} ETA {eta}",
             end=end,
             flush=True,
         )
+
+    def _elapsed_seconds(self) -> float:
+        return max(0.0, time.monotonic() - self._start_time)
+
+    def _eta_seconds(self) -> Optional[float]:
+        if self.total <= 0:
+            return None
+        if self.current >= self.total:
+            return 0.0
+        if self.current <= 0:
+            return None
+        elapsed = self._elapsed_seconds()
+        if elapsed <= 0:
+            return None
+        rate = self.current / elapsed
+        if rate <= 0:
+            return None
+        remaining = max(0.0, float(self.total - self.current))
+        return remaining / rate
+
+    @staticmethod
+    def _format_time(seconds: Optional[float]) -> str:
+        if seconds is None:
+            return "--:--:--"
+        total = max(0, int(seconds))
+        hours = total // 3600
+        minutes = (total % 3600) // 60
+        secs = total % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def _load_world_dirs(tournament_dir: Path) -> List[str]:
@@ -551,6 +585,7 @@ def _train_l2(
         raise RuntimeError("No macro samples found for L2 training")
     config = TrainConfig(
         output_dir=str(output_dir),
+        l2_lr=args.l2_lr,
         l2_epochs=args.l2_epochs,
         l2_batch_size=args.l2_batch_size,
         device=args.device,
@@ -584,6 +619,7 @@ def _train_l3(
         raise RuntimeError("No micro samples found for L3 training")
     config = TrainConfig(
         output_dir=str(output_dir),
+        l3_lr=args.l3_lr,
         l3_epochs=args.l3_epochs,
         l3_batch_size=args.l3_batch_size,
         device=args.device,
@@ -618,6 +654,7 @@ def _train_l4(
         raise RuntimeError("No L4 distill samples found")
     config = TrainConfig(
         output_dir=str(output_dir),
+        l4_lr=args.l4_lr,
         l4_epochs=args.l4_epochs,
         l4_batch_size=args.l4_batch_size,
         device=args.device,
@@ -664,6 +701,9 @@ def main() -> None:
     parser.add_argument("--l2-batch-size", type=int, default=64)
     parser.add_argument("--l3-batch-size", type=int, default=32)
     parser.add_argument("--l4-batch-size", type=int, default=32)
+    parser.add_argument("--l2-lr", type=float, default=3e-4)
+    parser.add_argument("--l3-lr", type=float, default=1e-4)
+    parser.add_argument("--l4-lr", type=float, default=3e-4)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--log-every", type=int, default=1)

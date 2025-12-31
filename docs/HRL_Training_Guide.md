@@ -340,6 +340,7 @@ python -m runners.run_hrl_bc_awr_train --l2-epochs 30 --l3-epochs 30 --l4-epochs
 - `--l4-goal-source l2|v2|none`：L4 目标来源（默认 l2）  
 - `--num-workers N`：并行解析进程数（Windows 默认 1 更稳）  
 - `--device cuda|cpu`：默认使用 GPU（CUDA 不可用时自动回退到 CPU）  
+- `--l2-lr/--l3-lr/--l4-lr`：学习率（默认 3e-4/1e-4/3e-4）  
 - `--val-ratio/--test-ratio`：验证/测试切分比例（world 级别）  
 - `--split-seed`：切分随机种子  
 - `--regen-split`：重新生成切分文件  
