@@ -46,11 +46,8 @@ def _configure_unbuffered_output() -> None:
 
 
 def _default_num_workers() -> int:
-    # Windows 下多进程容易触发 <stdin> 等问题，默认串行更稳。
-    if os.name == "nt":
-        return 1
     cpu_cnt = os.cpu_count() or 1
-    return max(1, cpu_cnt - 1)
+    return max(1, cpu_cnt)
 
 
 def _resolve_backfill_workers(num_workers: int, device: str) -> int:
@@ -970,7 +967,7 @@ def main() -> None:
     parser.add_argument("--agent-name", type=str, default="PenguinAgent", help="agent name filter")
     parser.add_argument("--phases", type=str, default="l2,l3,l4", help="comma list: l2,l3,l4")
     parser.add_argument("--allow-csv", action="store_true", help="allow CSV fallback (not recommended)")
-    parser.add_argument("--num-workers", type=int, default=24, help="data pipeline workers")
+    parser.add_argument("--num-workers", type=int, default=0, help="data pipeline workers (0=auto)")
     parser.add_argument("--stats-sample", type=int, default=0, help="limit stats to first N micro samples")
     parser.add_argument("--stats-only", action="store_true", help="only run data + stats")
     parser.add_argument("--no-resume", action="store_true", help="disable auto-resume from checkpoints")
@@ -1003,13 +1000,14 @@ def main() -> None:
     parser.add_argument("--l3-pre-tensorize", action="store_true", help="pre-tensorize L3 dataset")
     parser.add_argument("--tensorize-workers", type=int, default=8, help="tensorize workers (0=auto)")
     parser.add_argument("--dataloader-workers", type=int, default=8, help="DataLoader workers")
-    parser.add_argument("--dataloader-pin-memory", action="store_true", help="pin memory for DataLoader")
+    parser.add_argument("--dataloader-pin-memory", action="store_true", default=True, help="pin memory for DataLoader")
+    parser.add_argument("--no-dataloader-pin-memory", action="store_false", dest="dataloader_pin_memory", help="disable pin memory for DataLoader")
     parser.add_argument("--dataloader-persistent-workers", action="store_true", help="keep DataLoader workers")
     parser.add_argument("--dataloader-prefetch-factor", type=int, default=2, help="prefetch factor when workers > 0")
     parser.add_argument("--dataloader-drop-last", action="store_true", help="drop last incomplete batch")
     parser.add_argument("--batch-log-every", type=int, default=50, help="log loss every N batches (0=off)")
     parser.add_argument("--no-progress-bar", action="store_true", help="disable batch progress bar")
-    parser.add_argument("--backfill-world-chunk", type=int, default=128, help="worlds per L2 backfill batch")
+    parser.add_argument("--backfill-world-chunk", type=int, default=256, help="worlds per L2 backfill batch")
 
     args = parser.parse_args()
     phases = _parse_phases(args.phases)
@@ -1040,13 +1038,15 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else (tournament_dir / "checkpoints")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    num_workers = args.num_workers if args.num_workers is not None else _default_num_workers()
+    auto_num_workers = args.num_workers is None or args.num_workers <= 0
+    num_workers = _default_num_workers() if auto_num_workers else args.num_workers
     strict_json_only = not args.allow_csv
 
     print(f"[INFO] tournament_dir: {tournament_dir}")
     print(f"[INFO] output_dir: {output_dir}")
     print(f"[INFO] phases: {phases}")
-    print(f"[INFO] num_workers: {num_workers}")
+    suffix = " (auto)" if auto_num_workers else ""
+    print(f"[INFO] num_workers: {num_workers}{suffix}")
     print(f"[INFO] l2_backfill_device: {args.l2_backfill_device}")
     print(f"[INFO] l2_backfill_batch_size: {args.l2_backfill_batch_size}")
     print(f"[INFO] dataloader_workers: {args.dataloader_workers}")
