@@ -341,10 +341,16 @@ python -m runners.run_hrl_bc_awr_train --l2-epochs 30 --l3-epochs 30 --l4-epochs
 - `--num-workers N`：并行解析进程数（Windows 默认 1 更稳）  
 - `--device cuda|cpu`：默认使用 GPU（CUDA 不可用时自动回退到 CPU）  
 - `--l2-lr/--l3-lr/--l4-lr`：学习率（默认 3e-4/1e-4/3e-4）  
+- `--l2-q-transform none|log1p|sqrt`：L2 的 Q 维损失变换（仅影响训练损失）  
+- `--l2-q-weight`：L2 的 Q 维损失权重（默认 1.0）  
+- `--l2-backfill-device cuda|cpu`：L2 回填用的设备（默认 cuda；不可用时自动回退到 CPU）  
+- `--l2-backfill-batch-size`：L2 回填推理 batch size（默认 256）  
 - `--val-ratio/--test-ratio`：验证/测试切分比例（world 级别）  
 - `--split-seed`：切分随机种子  
 - `--regen-split`：重新生成切分文件  
 - `--val-ratio 0 --test-ratio 0`：关闭切分，使用全量训练  
+
+说明：当 `l2-backfill-device=cuda` 时，回填解析阶段会自动将 `num_workers` 降为 1，以避免多进程争抢 GPU。  
 
 ### 5.2 在线微调（预留）
 当前代码实现层面：  

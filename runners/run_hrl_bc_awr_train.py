@@ -11,6 +11,7 @@ import multiprocessing as mp
 import os
 import random
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,12 +37,30 @@ from litaagent_std.hrl_xf.l4_coordinator import GlobalCoordinator
 PHASE_CHOICES = ("l2", "l3", "l4")
 
 
+def _configure_unbuffered_output() -> None:
+    try:
+        sys.stdout.reconfigure(line_buffering=True, write_through=True)
+        sys.stderr.reconfigure(line_buffering=True, write_through=True)
+    except Exception:
+        pass
+
+
 def _default_num_workers() -> int:
     # Windows 下多进程容易触发 <stdin> 等问题，默认串行更稳。
     if os.name == "nt":
         return 1
     cpu_cnt = os.cpu_count() or 1
     return max(1, cpu_cnt - 1)
+
+
+def _resolve_backfill_workers(num_workers: int, device: str) -> int:
+    if num_workers <= 1:
+        return num_workers
+    dev = (device or "cpu").lower()
+    if dev.startswith("cuda"):
+        print("[WARN] L2 回填使用 GPU，强制 num_workers=1 避免多进程争抢 GPU")
+        return 1
+    return num_workers
 
 
 class _ProgressBar:
@@ -60,6 +79,22 @@ class _ProgressBar:
         if self._done:
             return
         self.current += 1
+        if self.current >= self.total:
+            self.current = self.total
+            self._render(done=True)
+            self._done = True
+            return
+        if self.current == 1 or (self.current - self._last_printed) >= self._update_every:
+            self._render(done=False)
+            self._last_printed = self.current
+
+    def advance(self, n: int) -> None:
+        if self._done:
+            return
+        n = int(n)
+        if n <= 0:
+            return
+        self.current += n
         if self.current >= self.total:
             self.current = self.total
             self._render(done=True)
@@ -114,6 +149,70 @@ class _ProgressBar:
         minutes = (total % 3600) // 60
         secs = total % 60
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _resolve_tensorize_workers(requested: int, total: int) -> int:
+    if requested is None:
+        requested = 0
+    if requested <= 0:
+        cpu_cnt = os.cpu_count() or 1
+        if total < 10000:
+            return 1
+        return max(1, min(cpu_cnt - 1, 8))
+    return max(1, min(requested, total))
+
+
+def _chunk_list(items: List[Any], chunk_size: int) -> List[List[Any]]:
+    if chunk_size <= 0:
+        return [items]
+    return [items[i: i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+
+def _tensorize_l3_samples(
+    samples: List[data_pipeline.MicroSample],
+    *,
+    config: TrainConfig,
+    num_workers: int,
+    progress_label: str,
+) -> training_mod.L3TensorizedData:
+    total = len(samples)
+    if total == 0:
+        raise RuntimeError("No micro samples found for tensorization")
+    print(f"[INFO] Tensorizing {progress_label}: {total} samples")
+    progress = _ProgressBar(total, prefix=f"[TENSORIZE {progress_label}]")
+
+    if num_workers <= 1:
+        arrays = training_mod.tensorize_l3_samples_chunk(
+            samples,
+            config.l3_max_history_len,
+            config.horizon,
+        )
+        progress.advance(total)
+        return training_mod.L3TensorizedData.from_numpy(arrays)
+
+    chunk_size = max(1, total // (num_workers * 4))
+    chunks = _chunk_list(samples, chunk_size)
+    if len(chunks) < num_workers:
+        num_workers = len(chunks)
+
+    results: List[Dict[str, np.ndarray]] = []
+    ctx = mp.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
+        results_iter = executor.map(
+            training_mod.tensorize_l3_samples_chunk,
+            chunks,
+            itertools.repeat(config.l3_max_history_len),
+            itertools.repeat(config.horizon),
+            chunksize=1,
+        )
+        for chunk, result in zip(chunks, results_iter):
+            results.append(result)
+            progress.advance(len(chunk))
+
+    merged: Dict[str, np.ndarray] = {}
+    for key in results[0].keys():
+        merged[key] = np.concatenate([r[key] for r in results], axis=0)
+    return training_mod.L3TensorizedData.from_numpy(merged)
 
 
 def _load_world_dirs(tournament_dir: Path) -> List[str]:
@@ -200,6 +299,8 @@ def _load_samples_from_world_dirs(
     strict_json_only: bool,
     goal_backfill: str,
     l2_model_path: Optional[str],
+    l2_backfill_device: str,
+    l2_backfill_batch_size: int,
     num_workers: int,
     progress_label: str,
 ) -> Tuple[List[data_pipeline.MacroSample], List[data_pipeline.MicroSample]]:
@@ -224,6 +325,8 @@ def _load_samples_from_world_dirs(
                     strict_json_only,
                     goal_backfill=goal_backfill,
                     l2_model_path=l2_model_path,
+                    l2_backfill_device=l2_backfill_device,
+                    l2_backfill_batch_size=l2_backfill_batch_size,
                 )
             )
             progress.step()
@@ -237,11 +340,112 @@ def _load_samples_from_world_dirs(
                 itertools.repeat(strict_json_only),
                 itertools.repeat(goal_backfill),
                 itertools.repeat(l2_model_path),
+                itertools.repeat(l2_backfill_device),
+                itertools.repeat(l2_backfill_batch_size),
                 chunksize=1,
             )
             for result in results_iter:
                 _merge(result)
                 progress.step()
+
+    return macro_samples, micro_samples
+
+
+def _load_samples_from_world_dirs_batch_backfill(
+    world_dirs: List[str],
+    *,
+    agent_name: str,
+    strict_json_only: bool,
+    l2_model_path: str,
+    l2_backfill_device: str,
+    l2_backfill_batch_size: int,
+    num_workers: int,
+    backfill_world_chunk: int,
+    progress_label: str,
+) -> Tuple[List[data_pipeline.MacroSample], List[data_pipeline.MicroSample]]:
+    macro_samples: List[data_pipeline.MacroSample] = []
+    micro_samples: List[data_pipeline.MicroSample] = []
+    if not world_dirs:
+        return macro_samples, micro_samples
+
+    total_worlds = len(world_dirs)
+    print(f"[INFO] Parsing {progress_label}: {total_worlds} world(s)")
+    parse_progress = _ProgressBar(total_worlds, prefix=f"[PARSE {progress_label}]")
+    backfill_progress = _ProgressBar(total_worlds, prefix=f"[BACKFILL {progress_label}]")
+
+    chunk_size = max(1, int(backfill_world_chunk))
+    errors: List[Tuple[str, str]] = []
+
+    for chunk in _chunk_list(world_dirs, chunk_size):
+        results: List[Dict[str, Any]] = []
+
+        def _ingest(raw: Any) -> None:
+            if isinstance(raw, list):
+                results.extend(raw)
+            else:
+                results.append(raw)
+
+        if num_workers <= 1:
+            for world_dir in chunk:
+                raw = data_pipeline._parse_world_dir_raw(world_dir, agent_name, strict_json_only)
+                _ingest(raw)
+                parse_progress.step()
+        else:
+            ctx = mp.get_context("spawn")
+            with concurrent.futures.ProcessPoolExecutor(max_workers=min(num_workers, len(chunk)), mp_context=ctx) as executor:
+                results_iter = executor.map(
+                    data_pipeline._parse_world_dir_raw,
+                    chunk,
+                    itertools.repeat(agent_name),
+                    itertools.repeat(strict_json_only),
+                    chunksize=1,
+                )
+                for raw in results_iter:
+                    _ingest(raw)
+                    parse_progress.step()
+
+        macro_chunk: List[data_pipeline.MacroSample] = []
+        offsets: List[Tuple[Dict[str, Any], int, int]] = []
+        for res in results:
+            if res.get("error"):
+                errors.append((res.get("world_dir", ""), res["error"]))
+                continue
+            ms = res.get("macro_samples", [])
+            start = len(macro_chunk)
+            macro_chunk.extend(ms)
+            offsets.append((res, start, len(ms)))
+
+        if macro_chunk:
+            goal_hat = data_pipeline._predict_goal_hat_for_macro_samples(
+                macro_chunk,
+                model_path=l2_model_path,
+                device=l2_backfill_device,
+                batch_size=l2_backfill_batch_size,
+            )
+        else:
+            goal_hat = np.zeros((0, 16), dtype=np.float32)
+
+        for res, start, count in offsets:
+            if count > 0:
+                goal_slice = goal_hat[start : start + count]
+                data_pipeline._apply_goal_hat_to_neg_logs(
+                    res.get("neg_logs", []),
+                    res.get("macro_samples", []),
+                    goal_slice,
+                )
+            micro = data_pipeline.extract_l3_residuals(
+                res.get("neg_logs", []),
+                daily_states=res.get("daily_states"),
+            )
+            macro_samples.extend(res.get("macro_samples", []))
+            micro_samples.extend(micro)
+
+        backfill_progress.advance(len(chunk))
+
+    if errors:
+        print(f"[WARN] {len(errors)} world(s) failed to parse during batch backfill")
+        for world_dir, err in errors[:10]:
+            print(f"  - {world_dir}: {err}")
 
     return macro_samples, micro_samples
 
@@ -253,6 +457,8 @@ def _load_l4_samples_from_world_dirs(
     strict_json_only: bool,
     goal_source: str,
     l2_model_path: Optional[str],
+    l2_backfill_device: str,
+    l2_backfill_batch_size: int,
     num_workers: int,
     progress_label: str,
 ) -> List[data_pipeline.L4DistillSample]:
@@ -275,6 +481,8 @@ def _load_l4_samples_from_world_dirs(
                     strict_json_only,
                     goal_source=goal_source,
                     l2_model_path=l2_model_path,
+                    l2_backfill_device=l2_backfill_device,
+                    l2_backfill_batch_size=l2_backfill_batch_size,
                 )
             )
             progress.step()
@@ -288,6 +496,8 @@ def _load_l4_samples_from_world_dirs(
                 itertools.repeat(strict_json_only),
                 itertools.repeat(goal_source),
                 itertools.repeat(l2_model_path),
+                itertools.repeat(l2_backfill_device),
+                itertools.repeat(l2_backfill_batch_size),
                 chunksize=1,
             )
             for result in results_iter:
@@ -417,10 +627,25 @@ def _eval_l2(model, samples, config: TrainConfig, batch_size: int) -> Dict[str, 
     import torch
 
     dataset = L2Dataset(samples)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    loader = training_mod.build_dataloader(dataset, batch_size=batch_size, shuffle=False, config=config)
 
     model.to(config.device)
     model.eval()
+
+    q_indices = [0, 2, 4, 6, 8, 10, 12, 14]
+    q_transform = (config.l2_q_transform or "none").lower()
+    q_weight = float(config.l2_q_weight)
+    if q_weight <= 0:
+        raise ValueError("l2_q_weight 必须 > 0")
+
+    def _apply_q_transform(x: "torch.Tensor") -> "torch.Tensor":
+        if q_transform == "none":
+            return x
+        if q_transform == "log1p":
+            return torch.log1p(torch.clamp(x, min=0.0))
+        if q_transform == "sqrt":
+            return torch.sqrt(torch.clamp(x, min=0.0))
+        raise ValueError(f"未知的 l2_q_transform: {q_transform}")
 
     total_samples = 0
     sum_loss = 0.0
@@ -449,14 +674,25 @@ def _eval_l2(model, samples, config: TrainConfig, batch_size: int) -> Dict[str, 
             for idx in sell_indices:
                 loss_mask[:, idx] = can_sell.squeeze(-1)
 
-            squared_error = (goal_pred - goal_target) ** 2
-            masked_error = squared_error * loss_mask
-            n_valid = loss_mask.sum(dim=1).clamp(min=1.0)
+            err = goal_pred - goal_target
+            if q_transform != "none":
+                err = err.clone()
+                err[:, q_indices] = _apply_q_transform(goal_pred[:, q_indices]) - _apply_q_transform(goal_target[:, q_indices])
+            squared_error = err ** 2
+
+            if q_weight != 1.0:
+                weights = loss_mask.clone()
+                weights[:, q_indices] = weights[:, q_indices] * q_weight
+            else:
+                weights = loss_mask
+
+            masked_error = squared_error * weights
+            n_valid = weights.sum(dim=1).clamp(min=1.0)
             per_sample_loss = masked_error.sum(dim=1) / n_valid
 
             sum_loss += float(per_sample_loss.sum().item())
             sum_mse += float(masked_error.sum().item())
-            sum_mask += float(loss_mask.sum().item())
+            sum_mask += float(weights.sum().item())
             total_samples += int(B)
 
     avg_loss = sum_loss / max(1, total_samples)
@@ -468,8 +704,13 @@ def _eval_l3(model, samples, config: TrainConfig, batch_size: int) -> Dict[str, 
     import torch
     import torch.nn.functional as F
 
-    dataset = L3Dataset(samples, horizon=config.horizon)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    if isinstance(samples, training_mod.L3TensorDataset):
+        dataset = samples
+    elif isinstance(samples, training_mod.L3TensorizedData):
+        dataset = training_mod.L3TensorDataset(samples)
+    else:
+        dataset = L3Dataset(samples, horizon=config.horizon, max_history_len=config.l3_max_history_len)
+    loader = training_mod.build_dataloader(dataset, batch_size=batch_size, shuffle=False, config=config)
 
     model.to(config.device)
     model.eval()
@@ -532,10 +773,11 @@ def _eval_l4(model, samples, config: TrainConfig, batch_size: int) -> Dict[str, 
     import torch
 
     dataset = L4Dataset(samples)
-    loader = torch.utils.data.DataLoader(
+    loader = training_mod.build_dataloader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
+        config=config,
         collate_fn=collate_l4,
     )
 
@@ -588,10 +830,19 @@ def _train_l2(
         l2_lr=args.l2_lr,
         l2_epochs=args.l2_epochs,
         l2_batch_size=args.l2_batch_size,
+        l2_q_transform=args.l2_q_transform,
+        l2_q_weight=args.l2_q_weight,
         device=args.device,
         save_every=args.save_every,
         log_every=args.log_every,
         l2_resume_path=str(resume_path) if resume_path else None,
+        dataloader_num_workers=args.dataloader_workers,
+        dataloader_pin_memory=args.dataloader_pin_memory,
+        dataloader_persistent_workers=args.dataloader_persistent_workers,
+        dataloader_prefetch_factor=args.dataloader_prefetch_factor,
+        dataloader_drop_last=args.dataloader_drop_last,
+        progress_bar=not args.no_progress_bar,
+        batch_log_every=args.batch_log_every,
     )
     model = HorizonManagerPPO(horizon=config.horizon)
     trainer = HRLXFTrainer(l2_model=model, l3_model=None, l4_model=None, config=config)
@@ -613,7 +864,7 @@ def _train_l3(
     resume_path: Optional[Path],
     awr_resume_path: Optional[Path],
     run_awr: bool,
-    eval_sets: Optional[Dict[str, List[data_pipeline.MicroSample]]] = None,
+    eval_sets: Optional[Dict[str, Any]] = None,
 ) -> Path:
     if not micro_samples:
         raise RuntimeError("No micro samples found for L3 training")
@@ -627,7 +878,37 @@ def _train_l3(
         log_every=args.log_every,
         l3_bc_resume_path=str(resume_path) if resume_path else None,
         l3_awr_resume_path=str(awr_resume_path) if awr_resume_path else None,
+        dataloader_num_workers=args.dataloader_workers,
+        dataloader_pin_memory=args.dataloader_pin_memory,
+        dataloader_persistent_workers=args.dataloader_persistent_workers,
+        dataloader_prefetch_factor=args.dataloader_prefetch_factor,
+        dataloader_drop_last=args.dataloader_drop_last,
+        progress_bar=not args.no_progress_bar,
+        batch_log_every=args.batch_log_every,
     )
+
+    if args.l3_pre_tensorize:
+        tensorize_workers = _resolve_tensorize_workers(args.tensorize_workers, len(micro_samples))
+        print(f"[INFO] tensorize_workers: {tensorize_workers}")
+        micro_samples = _tensorize_l3_samples(
+            micro_samples,
+            config=config,
+            num_workers=tensorize_workers,
+            progress_label="train(l3)",
+        )
+        if eval_sets:
+            new_eval_sets: Dict[str, Any] = {}
+            for name, samples in eval_sets.items():
+                if samples:
+                    workers = _resolve_tensorize_workers(args.tensorize_workers, len(samples))
+                    new_eval_sets[name] = _tensorize_l3_samples(
+                        samples,
+                        config=config,
+                        num_workers=workers,
+                        progress_label=f"{name}(l3)",
+                    )
+            eval_sets = new_eval_sets
+        gc.collect()
     model = L3DecisionTransformer(horizon=config.horizon)
     trainer = HRLXFTrainer(l2_model=None, l3_model=model, l4_model=None, config=config)
     trainer.train_phase0_bc([], micro_samples)
@@ -661,6 +942,13 @@ def _train_l4(
         save_every=args.save_every,
         log_every=args.log_every,
         l4_resume_path=str(resume_path) if resume_path else None,
+        dataloader_num_workers=args.dataloader_workers,
+        dataloader_pin_memory=args.dataloader_pin_memory,
+        dataloader_persistent_workers=args.dataloader_persistent_workers,
+        dataloader_prefetch_factor=args.dataloader_prefetch_factor,
+        dataloader_drop_last=args.dataloader_drop_last,
+        progress_bar=not args.no_progress_bar,
+        batch_log_every=args.batch_log_every,
     )
     model = GlobalCoordinator()
     trainer = HRLXFTrainer(l2_model=None, l3_model=None, l4_model=model, config=config)
@@ -675,13 +963,14 @@ def _train_l4(
 
 
 def main() -> None:
+    _configure_unbuffered_output()
     parser = argparse.ArgumentParser(description="HRL BC/AWR training runner (data -> stats -> L2/L3/L4)")
     parser.add_argument("--tournament-dir", type=str, default=None, help="tournament_history/<dir>")
     parser.add_argument("--output-dir", type=str, default=None, help="checkpoint output dir")
     parser.add_argument("--agent-name", type=str, default="PenguinAgent", help="agent name filter")
     parser.add_argument("--phases", type=str, default="l2,l3,l4", help="comma list: l2,l3,l4")
     parser.add_argument("--allow-csv", action="store_true", help="allow CSV fallback (not recommended)")
-    parser.add_argument("--num-workers", type=int, default=None, help="data pipeline workers")
+    parser.add_argument("--num-workers", type=int, default=24, help="data pipeline workers")
     parser.add_argument("--stats-sample", type=int, default=0, help="limit stats to first N micro samples")
     parser.add_argument("--stats-only", action="store_true", help="only run data + stats")
     parser.add_argument("--no-resume", action="store_true", help="disable auto-resume from checkpoints")
@@ -704,9 +993,23 @@ def main() -> None:
     parser.add_argument("--l2-lr", type=float, default=3e-4)
     parser.add_argument("--l3-lr", type=float, default=1e-4)
     parser.add_argument("--l4-lr", type=float, default=3e-4)
+    parser.add_argument("--l2-q-transform", type=str, default="none", choices=["none", "log1p", "sqrt"])
+    parser.add_argument("--l2-q-weight", type=float, default=1.0)
+    parser.add_argument("--l2-backfill-device", type=str, default="cuda", help="device for L2 backfill (cuda/cpu)")
+    parser.add_argument("--l2-backfill-batch-size", type=int, default=256, help="batch size for L2 backfill inference")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--log-every", type=int, default=1)
+    parser.add_argument("--l3-pre-tensorize", action="store_true", help="pre-tensorize L3 dataset")
+    parser.add_argument("--tensorize-workers", type=int, default=8, help="tensorize workers (0=auto)")
+    parser.add_argument("--dataloader-workers", type=int, default=8, help="DataLoader workers")
+    parser.add_argument("--dataloader-pin-memory", action="store_true", help="pin memory for DataLoader")
+    parser.add_argument("--dataloader-persistent-workers", action="store_true", help="keep DataLoader workers")
+    parser.add_argument("--dataloader-prefetch-factor", type=int, default=2, help="prefetch factor when workers > 0")
+    parser.add_argument("--dataloader-drop-last", action="store_true", help="drop last incomplete batch")
+    parser.add_argument("--batch-log-every", type=int, default=50, help="log loss every N batches (0=off)")
+    parser.add_argument("--no-progress-bar", action="store_true", help="disable batch progress bar")
+    parser.add_argument("--backfill-world-chunk", type=int, default=128, help="worlds per L2 backfill batch")
 
     args = parser.parse_args()
     phases = _parse_phases(args.phases)
@@ -719,6 +1022,12 @@ def main() -> None:
         if not torch.cuda.is_available():
             print("[WARN] CUDA not available, fallback to cpu")
             args.device = "cpu"
+
+    if str(args.l2_backfill_device).lower().startswith("cuda"):
+        import torch
+        if not torch.cuda.is_available():
+            print("[WARN] CUDA not available for L2 backfill, fallback to cpu")
+            args.l2_backfill_device = "cpu"
 
     base_dir = Path("tournament_history").resolve()
     if args.tournament_dir:
@@ -738,6 +1047,18 @@ def main() -> None:
     print(f"[INFO] output_dir: {output_dir}")
     print(f"[INFO] phases: {phases}")
     print(f"[INFO] num_workers: {num_workers}")
+    print(f"[INFO] l2_backfill_device: {args.l2_backfill_device}")
+    print(f"[INFO] l2_backfill_batch_size: {args.l2_backfill_batch_size}")
+    print(f"[INFO] dataloader_workers: {args.dataloader_workers}")
+    print(f"[INFO] dataloader_pin_memory: {args.dataloader_pin_memory}")
+    print(f"[INFO] dataloader_persistent_workers: {args.dataloader_persistent_workers}")
+    print(f"[INFO] dataloader_prefetch_factor: {args.dataloader_prefetch_factor}")
+    print(f"[INFO] dataloader_drop_last: {args.dataloader_drop_last}")
+    print(f"[INFO] batch_log_every: {args.batch_log_every}")
+    print(f"[INFO] progress_bar: {not args.no_progress_bar}")
+    print(f"[INFO] l3_pre_tensorize: {args.l3_pre_tensorize}")
+    print(f"[INFO] tensorize_workers: {args.tensorize_workers}")
+    print(f"[INFO] backfill_world_chunk: {args.backfill_world_chunk}")
 
     world_dirs = _load_world_dirs(tournament_dir)
     if not world_dirs:
@@ -768,6 +1089,8 @@ def main() -> None:
         strict_json_only=strict_json_only,
         goal_backfill="none",
         l2_model_path=None,
+        l2_backfill_device=args.l2_backfill_device,
+        l2_backfill_batch_size=args.l2_backfill_batch_size,
         num_workers=num_workers,
         progress_label="train(statics)",
     )
@@ -785,6 +1108,8 @@ def main() -> None:
             strict_json_only=strict_json_only,
             goal_backfill="none",
             l2_model_path=None,
+            l2_backfill_device=args.l2_backfill_device,
+            l2_backfill_batch_size=args.l2_backfill_batch_size,
             num_workers=num_workers,
             progress_label="val(statics)",
         )
@@ -797,6 +1122,8 @@ def main() -> None:
             strict_json_only=strict_json_only,
             goal_backfill="none",
             l2_model_path=None,
+            l2_backfill_device=args.l2_backfill_device,
+            l2_backfill_batch_size=args.l2_backfill_batch_size,
             num_workers=num_workers,
             progress_label="test(statics)",
         )
@@ -836,6 +1163,12 @@ def main() -> None:
         if args.l3_goal_backfill == "l2" and not l2_model_path:
             raise ValueError("l3-goal-backfill=l2 but no L2 model path found")
 
+        use_batch_backfill = (
+            args.l3_goal_backfill == "l2"
+            and args.backfill_world_chunk is not None
+            and args.backfill_world_chunk > 1
+        )
+
         resume_path = None
         awr_resume_path = None
         if not args.no_resume:
@@ -843,37 +1176,85 @@ def main() -> None:
             awr_resume_path = _find_latest_ckpt(output_dir, r"l3_awr_epoch(\d+)\.ckpt\.pt$")
 
         # L3 训练需要回填后的 micro.goal。
-        _, train_micro = _load_samples_from_world_dirs(
-            train_dirs,
-            agent_name=args.agent_name,
-            strict_json_only=strict_json_only,
-            goal_backfill=args.l3_goal_backfill,
-            l2_model_path=str(l2_model_path) if l2_model_path else None,
-            num_workers=num_workers,
-            progress_label="train(l3)",
-        )
+        if use_batch_backfill:
+            _, train_micro = _load_samples_from_world_dirs_batch_backfill(
+                train_dirs,
+                agent_name=args.agent_name,
+                strict_json_only=strict_json_only,
+                l2_model_path=str(l2_model_path),
+                l2_backfill_device=args.l2_backfill_device,
+                l2_backfill_batch_size=args.l2_backfill_batch_size,
+                num_workers=num_workers,
+                backfill_world_chunk=args.backfill_world_chunk,
+                progress_label="train(l3)",
+            )
+        else:
+            backfill_workers = num_workers
+            if args.l3_goal_backfill == "l2":
+                backfill_workers = _resolve_backfill_workers(num_workers, args.l2_backfill_device)
+            _, train_micro = _load_samples_from_world_dirs(
+                train_dirs,
+                agent_name=args.agent_name,
+                strict_json_only=strict_json_only,
+                goal_backfill=args.l3_goal_backfill,
+                l2_model_path=str(l2_model_path) if l2_model_path else None,
+                l2_backfill_device=args.l2_backfill_device,
+                l2_backfill_batch_size=args.l2_backfill_batch_size,
+                num_workers=backfill_workers,
+                progress_label="train(l3)",
+            )
         eval_sets = {}
         if val_dirs:
-            _, val_micro = _load_samples_from_world_dirs(
-                val_dirs,
-                agent_name=args.agent_name,
-                strict_json_only=strict_json_only,
-                goal_backfill=args.l3_goal_backfill,
-                l2_model_path=str(l2_model_path) if l2_model_path else None,
-                num_workers=num_workers,
-                progress_label="val(l3)",
-            )
+            if use_batch_backfill:
+                _, val_micro = _load_samples_from_world_dirs_batch_backfill(
+                    val_dirs,
+                    agent_name=args.agent_name,
+                    strict_json_only=strict_json_only,
+                    l2_model_path=str(l2_model_path),
+                    l2_backfill_device=args.l2_backfill_device,
+                    l2_backfill_batch_size=args.l2_backfill_batch_size,
+                    num_workers=num_workers,
+                    backfill_world_chunk=args.backfill_world_chunk,
+                    progress_label="val(l3)",
+                )
+            else:
+                _, val_micro = _load_samples_from_world_dirs(
+                    val_dirs,
+                    agent_name=args.agent_name,
+                    strict_json_only=strict_json_only,
+                    goal_backfill=args.l3_goal_backfill,
+                    l2_model_path=str(l2_model_path) if l2_model_path else None,
+                    l2_backfill_device=args.l2_backfill_device,
+                    l2_backfill_batch_size=args.l2_backfill_batch_size,
+                    num_workers=backfill_workers,
+                    progress_label="val(l3)",
+                )
             eval_sets["val"] = val_micro
         if test_dirs:
-            _, test_micro = _load_samples_from_world_dirs(
-                test_dirs,
-                agent_name=args.agent_name,
-                strict_json_only=strict_json_only,
-                goal_backfill=args.l3_goal_backfill,
-                l2_model_path=str(l2_model_path) if l2_model_path else None,
-                num_workers=num_workers,
-                progress_label="test(l3)",
-            )
+            if use_batch_backfill:
+                _, test_micro = _load_samples_from_world_dirs_batch_backfill(
+                    test_dirs,
+                    agent_name=args.agent_name,
+                    strict_json_only=strict_json_only,
+                    l2_model_path=str(l2_model_path),
+                    l2_backfill_device=args.l2_backfill_device,
+                    l2_backfill_batch_size=args.l2_backfill_batch_size,
+                    num_workers=num_workers,
+                    backfill_world_chunk=args.backfill_world_chunk,
+                    progress_label="test(l3)",
+                )
+            else:
+                _, test_micro = _load_samples_from_world_dirs(
+                    test_dirs,
+                    agent_name=args.agent_name,
+                    strict_json_only=strict_json_only,
+                    goal_backfill=args.l3_goal_backfill,
+                    l2_model_path=str(l2_model_path) if l2_model_path else None,
+                    l2_backfill_device=args.l2_backfill_device,
+                    l2_backfill_batch_size=args.l2_backfill_batch_size,
+                    num_workers=backfill_workers,
+                    progress_label="test(l3)",
+                )
             eval_sets["test"] = test_micro
 
         _train_l3(
@@ -896,6 +1277,10 @@ def main() -> None:
         if args.l4_goal_source == "l2" and not l2_model_path:
             raise ValueError("l4-goal-source=l2 but no L2 model path found")
 
+        backfill_workers = num_workers
+        if args.l4_goal_source == "l2":
+            backfill_workers = _resolve_backfill_workers(num_workers, args.l2_backfill_device)
+
         resume_path = None
         if not args.no_resume:
             resume_path = _find_latest_ckpt(output_dir, r"l4_distill_epoch_(\d+)\.pt$")
@@ -907,7 +1292,9 @@ def main() -> None:
             strict_json_only=strict_json_only,
             goal_source=args.l4_goal_source,
             l2_model_path=str(l2_model_path) if l2_model_path else None,
-            num_workers=num_workers,
+            l2_backfill_device=args.l2_backfill_device,
+            l2_backfill_batch_size=args.l2_backfill_batch_size,
+            num_workers=backfill_workers,
             progress_label="train(l4)",
         )
         eval_sets = {}
@@ -918,7 +1305,9 @@ def main() -> None:
                 strict_json_only=strict_json_only,
                 goal_source=args.l4_goal_source,
                 l2_model_path=str(l2_model_path) if l2_model_path else None,
-                num_workers=num_workers,
+                l2_backfill_device=args.l2_backfill_device,
+                l2_backfill_batch_size=args.l2_backfill_batch_size,
+                num_workers=backfill_workers,
                 progress_label="val(l4)",
             )
             eval_sets["val"] = val_l4
@@ -929,7 +1318,9 @@ def main() -> None:
                 strict_json_only=strict_json_only,
                 goal_source=args.l4_goal_source,
                 l2_model_path=str(l2_model_path) if l2_model_path else None,
-                num_workers=num_workers,
+                l2_backfill_device=args.l2_backfill_device,
+                l2_backfill_batch_size=args.l2_backfill_batch_size,
+                num_workers=backfill_workers,
                 progress_label="test(l4)",
             )
             eval_sets["test"] = test_l4

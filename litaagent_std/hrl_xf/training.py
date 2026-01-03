@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -51,11 +52,14 @@ class TrainConfig:
     l2_lr: float = 3e-4
     l2_batch_size: int = 64
     l2_epochs: int = 50
+    l2_q_transform: str = "none"
+    l2_q_weight: float = 1.0
     
     # L3 训练
     l3_lr: float = 1e-4
     l3_batch_size: int = 32
     l3_epochs: int = 100
+    l3_max_history_len: int = 20
 
     # L4 蒸馏训练（监督）
     l4_lr: float = 3e-4
@@ -83,6 +87,17 @@ class TrainConfig:
     # 保存
     save_every: int = 10
     log_every: int = 1
+
+    # DataLoader
+    dataloader_num_workers: int = 0
+    dataloader_pin_memory: bool = False
+    dataloader_persistent_workers: bool = False
+    dataloader_prefetch_factor: int = 2
+    dataloader_drop_last: bool = False
+
+    # 训练日志
+    progress_bar: bool = True
+    batch_log_every: int = 50
 
 
 # ============== 数据集 ==============
@@ -191,6 +206,78 @@ class L3Dataset(Dataset):
         }
 
 
+@dataclass
+class L3TensorizedData:
+    history: "torch.Tensor"
+    context: "torch.Tensor"
+    action_op: "torch.Tensor"
+    target_q: "torch.Tensor"
+    target_p: "torch.Tensor"
+    target_t: "torch.Tensor"
+    time_mask: "torch.Tensor"
+    time_valid: "torch.Tensor"
+    reward: "torch.Tensor"
+    reward_valid: "torch.Tensor"
+
+    @property
+    def size(self) -> int:
+        return int(self.history.shape[0])
+
+    @classmethod
+    def from_numpy(cls, arrays: Dict[str, np.ndarray]) -> "L3TensorizedData":
+        return cls(
+            history=torch.from_numpy(arrays["history"]),
+            context=torch.from_numpy(arrays["context"]),
+            action_op=torch.from_numpy(arrays["action_op"]).long(),
+            target_q=torch.from_numpy(arrays["target_q"]),
+            target_p=torch.from_numpy(arrays["target_p"]),
+            target_t=torch.from_numpy(arrays["target_t"]).long(),
+            time_mask=torch.from_numpy(arrays["time_mask"]),
+            time_valid=torch.from_numpy(arrays["time_valid"]),
+            reward=torch.from_numpy(arrays["reward"]),
+            reward_valid=torch.from_numpy(arrays["reward_valid"]).bool(),
+        )
+
+
+class L3TensorDataset(Dataset):
+    """预张量化的 L3 数据集，减少 __getitem__ 开销。"""
+
+    def __init__(self, data: L3TensorizedData, indices: Optional[np.ndarray] = None):
+        self.data = data
+        self.indices = indices
+
+    def __len__(self) -> int:
+        if self.indices is None:
+            return self.data.size
+        return int(len(self.indices))
+
+    def __getitem__(self, idx):
+        if self.indices is None:
+            i = idx
+        else:
+            i = int(self.indices[idx])
+        return {
+            'history': self.data.history[i],
+            'context': self.data.context[i],
+            'action_op': self.data.action_op[i],
+            'target_q': self.data.target_q[i],
+            'target_p': self.data.target_p[i],
+            'target_t': self.data.target_t[i],
+            'time_mask': self.data.time_mask[i],
+            'time_valid': self.data.time_valid[i],
+            'reward': self.data.reward[i],
+        }
+
+    def with_reward(self) -> Optional["L3TensorDataset"]:
+        mask = self.data.reward_valid
+        if mask.numel() == 0:
+            return None
+        indices = torch.nonzero(mask, as_tuple=False).squeeze(1)
+        if indices.numel() == 0:
+            return None
+        return L3TensorDataset(self.data, indices=indices.cpu().numpy())
+
+
 class L4Dataset(Dataset):
     """L4 蒸馏数据集（变长线程集合）。"""
 
@@ -242,6 +329,250 @@ def collate_l4(batch: List[Dict[str, "torch.Tensor"]]) -> Dict[str, "torch.Tenso
     }
 
 
+def _ensure_1d(x: Any, length: int, *, fill: float = 0.0) -> np.ndarray:
+    if x is None:
+        return np.full((length,), fill, dtype=np.float32)
+    arr = np.asarray(x, dtype=np.float32).reshape(-1)
+    if arr.size >= length:
+        return arr[:length]
+    pad = np.full((length - arr.size,), fill, dtype=np.float32)
+    return np.concatenate([arr, pad])
+
+
+def tensorize_l3_samples_chunk(
+    samples: List[MicroSample],
+    max_history_len: int = 20,
+    horizon: int = 40,
+) -> Dict[str, np.ndarray]:
+    """将 L3 微观样本张量化为固定形状数组（单进程 chunk）。"""
+    n = len(samples)
+    tm_len = int(horizon) + 1
+    history = np.zeros((n, max_history_len, 4), dtype=np.float32)
+    context = np.zeros((n, 29), dtype=np.float32)
+    action_op = np.zeros((n, 1), dtype=np.int64)
+    target_q = np.zeros((n, 1), dtype=np.float32)
+    target_p = np.zeros((n, 1), dtype=np.float32)
+    target_t = np.zeros((n, 1), dtype=np.int64)
+    time_mask = np.zeros((n, tm_len), dtype=np.float32)
+    time_valid = np.zeros((n, 1), dtype=np.float32)
+    reward = np.full((n, 1), np.nan, dtype=np.float32)
+    reward_valid = np.zeros((n,), dtype=np.bool_)
+
+    for i, s in enumerate(samples):
+        hist = s.history if s is not None else None
+        if hist is None:
+            hist_arr = np.zeros((max_history_len, 4), dtype=np.float32)
+        else:
+            try:
+                hist_arr = np.asarray(hist, dtype=np.float32)
+                if hist_arr.ndim != 2:
+                    hist_arr = np.zeros((max_history_len, 4), dtype=np.float32)
+                else:
+                    if hist_arr.shape[1] < 4:
+                        pad_cols = 4 - hist_arr.shape[1]
+                        hist_arr = np.concatenate(
+                            [hist_arr, np.zeros((hist_arr.shape[0], pad_cols), dtype=np.float32)],
+                            axis=1,
+                        )
+                    elif hist_arr.shape[1] > 4:
+                        hist_arr = hist_arr[:, :4]
+            except Exception:
+                hist_arr = np.zeros((max_history_len, 4), dtype=np.float32)
+
+            if hist_arr.shape[0] > max_history_len:
+                hist_arr = hist_arr[-max_history_len:]
+            elif hist_arr.shape[0] < max_history_len:
+                pad = np.zeros((max_history_len - hist_arr.shape[0], 4), dtype=np.float32)
+                hist_arr = np.vstack([pad, hist_arr])
+
+            if hist_arr.ndim == 2 and hist_arr.shape[1] >= 3:
+                hist_arr[:, 2] = np.nan_to_num(
+                    hist_arr[:, 2],
+                    nan=0.0,
+                    posinf=float(horizon),
+                    neginf=0.0,
+                )
+                hist_arr[:, 2] = np.clip(hist_arr[:, 2], 0.0, float(horizon))
+
+        history[i] = hist_arr
+
+        l2_goal = _ensure_1d(s.l2_goal if s is not None else None, 16)
+        gap_buy = _ensure_1d(s.goal_gap_buy if s is not None else None, 4)
+        gap_sell = _ensure_1d(s.goal_gap_sell if s is not None else None, 4)
+
+        step_progress = 0.0
+        if s is not None and s.x_static is not None and len(s.x_static) > 3:
+            try:
+                step_progress = float(s.x_static[3])
+            except Exception:
+                step_progress = 0.0
+        relative_time = float(s.relative_time) if s is not None and s.relative_time is not None else 0.0
+        is_buying = 1.0 if s is not None and int(s.role) == 0 else 0.0
+        b_free = float(s.B_free) / 10000.0 if s is not None and s.B_free is not None else 0.0
+
+        context[i] = np.concatenate(
+            [
+                l2_goal,
+                gap_buy,
+                gap_sell,
+                np.array(
+                    [step_progress, relative_time, 0.0, is_buying, b_free],
+                    dtype=np.float32,
+                ),
+            ],
+            axis=0,
+        )
+
+        tm = _ensure_1d(s.time_mask if s is not None else None, tm_len, fill=0.0)
+        time_mask[i] = tm
+
+        action_op[i, 0] = int(s.action_op) if s is not None else 2
+
+        tq = float(s.target_quantity) if s is not None and s.target_quantity is not None else 0.0
+        tp = float(s.target_price) if s is not None and s.target_price is not None else 0.0
+        tt = int(s.target_time) if s is not None and s.target_time is not None else 0
+
+        valid = 1.0
+        if tt < 0 or tt >= tm_len:
+            valid = 0.0
+            tt = max(0, min(tt, tm_len - 1))
+        elif tm_len > 0 and tm[tt] == -np.inf:
+            valid = 0.0
+
+        target_q[i, 0] = tq
+        target_p[i, 0] = tp
+        target_t[i, 0] = tt
+        time_valid[i, 0] = valid
+
+        if s is not None and s.reward is not None:
+            reward[i, 0] = float(s.reward)
+            reward_valid[i] = True
+
+    return {
+        "history": history,
+        "context": context,
+        "action_op": action_op,
+        "target_q": target_q,
+        "target_p": target_p,
+        "target_t": target_t,
+        "time_mask": time_mask,
+        "time_valid": time_valid,
+        "reward": reward,
+        "reward_valid": reward_valid,
+    }
+
+
+def _dataloader_kwargs(config: TrainConfig) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+    num_workers = int(getattr(config, "dataloader_num_workers", 0) or 0)
+    if num_workers > 0:
+        kwargs["num_workers"] = num_workers
+        if getattr(config, "dataloader_prefetch_factor", None) is not None:
+            kwargs["prefetch_factor"] = int(config.dataloader_prefetch_factor)
+        if getattr(config, "dataloader_persistent_workers", False):
+            kwargs["persistent_workers"] = True
+    if getattr(config, "dataloader_pin_memory", False):
+        kwargs["pin_memory"] = True
+    if getattr(config, "dataloader_drop_last", False):
+        kwargs["drop_last"] = True
+    return kwargs
+
+
+def build_dataloader(
+    dataset: "Dataset",
+    *,
+    batch_size: int,
+    shuffle: bool,
+    config: TrainConfig,
+    collate_fn: Optional[Any] = None,
+) -> "DataLoader":
+    kwargs = _dataloader_kwargs(config)
+    if collate_fn is not None:
+        kwargs["collate_fn"] = collate_fn
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **kwargs)
+
+
+class _BatchProgress:
+    def __init__(self, total: int, *, prefix: str, enabled: bool) -> None:
+        self.total = max(0, int(total))
+        self.prefix = f"{prefix} " if prefix else ""
+        self.enabled = enabled
+        self.width = 24
+        self.current = 0
+        self._done = False
+        self._update_every = max(1, self.total // 100) if self.total > 0 else 1
+        self._last_printed = 0
+        self._start_time = time.monotonic()
+        if self.enabled:
+            self._render(done=self.total == 0)
+
+    def step(self, n: int = 1) -> None:
+        if not self.enabled or self._done:
+            return
+        self.current += int(n)
+        if self.current >= self.total:
+            self.current = self.total
+            self._render(done=True)
+            self._done = True
+            return
+        if self.current == 1 or (self.current - self._last_printed) >= self._update_every:
+            self._render(done=False)
+            self._last_printed = self.current
+
+    def finish(self) -> None:
+        if not self.enabled or self._done:
+            return
+        self.current = self.total
+        self._render(done=True)
+        self._done = True
+
+    def _render(self, *, done: bool) -> None:
+        if self.total <= 0:
+            print(f"{self.prefix}[{'-' * self.width}] 0/0 elapsed --:--:-- ETA --:--:--")
+            return
+        filled = int(self.width * self.current / self.total)
+        bar = "#" * filled + "-" * (self.width - filled)
+        percent = (self.current / self.total) * 100.0
+        elapsed = self._format_time(self._elapsed_seconds())
+        eta = self._format_time(self._eta_seconds())
+        end = "\n" if done else ""
+        print(
+            f"\r{self.prefix}[{bar}] {self.current}/{self.total} {percent:5.1f}% "
+            f"elapsed {elapsed} ETA {eta}",
+            end=end,
+            flush=True,
+        )
+
+    def _elapsed_seconds(self) -> float:
+        return max(0.0, time.monotonic() - self._start_time)
+
+    def _eta_seconds(self) -> Optional[float]:
+        if self.total <= 0:
+            return None
+        if self.current >= self.total:
+            return 0.0
+        if self.current <= 0:
+            return None
+        elapsed = self._elapsed_seconds()
+        if elapsed <= 0:
+            return None
+        rate = self.current / elapsed
+        if rate <= 0:
+            return None
+        remaining = max(0.0, float(self.total - self.current))
+        return remaining / rate
+
+    @staticmethod
+    def _format_time(seconds: Optional[float]) -> str:
+        if seconds is None:
+            return "--:--:--"
+        total = max(0, int(seconds))
+        hours = total // 3600
+        minutes = (total % 3600) // 60
+        secs = total % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 # ============== 行为克隆 (BC) ==============
 
 def train_l2_bc(
@@ -265,7 +596,7 @@ def train_l2_bc(
         raise RuntimeError("PyTorch not available")
     
     dataset = L2Dataset(samples)
-    loader = DataLoader(dataset, batch_size=config.l2_batch_size, shuffle=True)
+    loader = build_dataloader(dataset, batch_size=config.l2_batch_size, shuffle=True, config=config)
     
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -292,12 +623,35 @@ def train_l2_bc(
         print(f"[INFO] Resume epoch {start_epoch} >= target {config.l2_epochs}, skip training")
         return history
     
+    q_indices = [0, 2, 4, 6, 8, 10, 12, 14]
+    p_indices = [1, 3, 5, 7, 9, 11, 13, 15]
+    q_transform = (config.l2_q_transform or "none").lower()
+    q_weight = float(config.l2_q_weight)
+    if q_weight <= 0:
+        raise ValueError("l2_q_weight 必须 > 0")
+
+    def _apply_q_transform(x: "torch.Tensor") -> "torch.Tensor":
+        if q_transform == "none":
+            return x
+        if q_transform == "log1p":
+            return torch.log1p(torch.clamp(x, min=0.0))
+        if q_transform == "sqrt":
+            return torch.sqrt(torch.clamp(x, min=0.0))
+        raise ValueError(f"未知的 l2_q_transform: {q_transform}")
+
     for epoch in range(start_epoch, config.l2_epochs):
         epoch_loss = 0.0
         epoch_mse = 0.0
         n_batches = 0
+
+        total_batches = len(loader)
+        progress = _BatchProgress(
+            total_batches,
+            prefix=f"[L2 BC][Epoch {epoch + 1}/{config.l2_epochs}]",
+            enabled=bool(config.progress_bar),
+        )
         
-        for batch in loader:
+        for step, batch in enumerate(loader, start=1):
             state_static = batch['state_static'].to(config.device)
             state_temporal = batch['state_temporal'].to(config.device)
             x_role = batch['x_role'].to(config.device)  # Multi-Hot: [can_buy, can_sell]
@@ -330,11 +684,22 @@ def train_l2_bc(
             for idx in sell_indices:
                 loss_mask[:, idx] = can_sell.squeeze(-1)
             
-            # 加权 MSE 损失（只计算可谈判分量）
-            squared_error = (goal_pred - goal_target) ** 2  # (B, 16)
-            masked_error = squared_error * loss_mask
-            # 归一化：除以有效分量数量
-            n_valid = loss_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+            # 加权 MSE 损失（只计算可谈判分量，Q 可做变换）
+            err = goal_pred - goal_target
+            if q_transform != "none":
+                err = err.clone()
+                err[:, q_indices] = _apply_q_transform(goal_pred[:, q_indices]) - _apply_q_transform(goal_target[:, q_indices])
+            squared_error = err ** 2
+
+            if q_weight != 1.0:
+                weights = loss_mask.clone()
+                weights[:, q_indices] = weights[:, q_indices] * q_weight
+            else:
+                weights = loss_mask
+
+            masked_error = squared_error * weights
+            # 归一化：除以有效分量数量（含权重）
+            n_valid = weights.sum(dim=1, keepdim=True).clamp(min=1.0)
             loss = (masked_error.sum(dim=1) / n_valid.squeeze(-1)).mean()
             
             # 反向
@@ -345,10 +710,22 @@ def train_l2_bc(
             
             epoch_loss += loss.item()
             # 防止除零（极端情况：x_role=[0,0] 导致 loss_mask 全零）
-            mask_sum = loss_mask.sum()
+            mask_sum = weights.sum()
             if mask_sum > 0:
                 epoch_mse += (masked_error.sum() / mask_sum).item()
             n_batches += 1
+
+            progress.step()
+            if config.batch_log_every > 0:
+                if step % config.batch_log_every == 0 or step == total_batches:
+                    avg_loss = epoch_loss / max(1, n_batches)
+                    avg_mse = epoch_mse / max(1, n_batches)
+                    print(
+                        f"[L2 BC][Epoch {epoch + 1}/{config.l2_epochs}] "
+                        f"step {step}/{total_batches} loss={avg_loss:.4f} mse={avg_mse:.4f}"
+                    )
+
+        progress.finish()
         
         avg_loss = epoch_loss / max(n_batches, 1)
         avg_mse = epoch_mse / max(n_batches, 1)
@@ -356,7 +733,10 @@ def train_l2_bc(
         history['mse'].append(avg_mse)
         
         if (epoch + 1) % config.log_every == 0:
-            print(f"[L2 BC] Epoch {epoch + 1}/{config.l2_epochs} | Loss: {avg_loss:.4f} | MSE: {avg_mse:.4f}")
+            print(
+                f"[L2 BC] Epoch {epoch + 1}/{config.l2_epochs} | "
+                f"Loss: {avg_loss:.4f} | MSE: {avg_mse:.4f}"
+            )
         
         if (epoch + 1) % config.save_every == 0:
             save_model(model, config.output_dir, f"l2_bc_epoch{epoch + 1}.pt")
@@ -372,9 +752,36 @@ def train_l2_bc(
     return history
 
 
+def _resolve_l3_dataset(
+    samples: Any,
+    config: TrainConfig,
+    *,
+    require_reward: bool = False,
+) -> Optional["Dataset"]:
+    if isinstance(samples, L3TensorDataset):
+        dataset: Dataset = samples
+    elif isinstance(samples, L3TensorizedData):
+        dataset = L3TensorDataset(samples)
+    elif isinstance(samples, Dataset):
+        dataset = samples
+    else:
+        if require_reward:
+            samples = [s for s in samples if s.reward is not None]
+            if not samples:
+                return None
+        dataset = L3Dataset(samples, horizon=config.horizon, max_history_len=config.l3_max_history_len)
+
+    if require_reward and isinstance(dataset, L3TensorDataset):
+        dataset = dataset.with_reward()
+        if dataset is None:
+            return None
+
+    return dataset
+
+
 def train_l3_bc(
     model: "nn.Module",
-    samples: List[MicroSample],
+    samples: Any,
     config: TrainConfig,
     resume_path: Optional[str] = None,
 ) -> Dict[str, List[float]]:
@@ -392,8 +799,10 @@ def train_l3_bc(
     if not TORCH_AVAILABLE:
         raise RuntimeError("PyTorch not available")
     
-    dataset = L3Dataset(samples, horizon=config.horizon)
-    loader = DataLoader(dataset, batch_size=config.l3_batch_size, shuffle=True)
+    dataset = _resolve_l3_dataset(samples, config, require_reward=False)
+    if dataset is None or len(dataset) == 0:
+        raise RuntimeError("No micro samples found for L3 training")
+    loader = build_dataloader(dataset, batch_size=config.l3_batch_size, shuffle=True, config=config)
     
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -426,8 +835,17 @@ def train_l3_bc(
         epoch_loss_p = 0.0
         epoch_loss_t = 0.0
         n_batches = 0
-        
-        for batch in loader:
+        op_correct = 0
+        op_total = 0
+
+        total_batches = len(loader)
+        progress = _BatchProgress(
+            total_batches,
+            prefix=f"[L3 BC][Epoch {epoch + 1}/{config.l3_epochs}]",
+            enabled=bool(config.progress_bar),
+        )
+
+        for step, batch in enumerate(loader, start=1):
             history_seq = batch['history'].to(config.device)
             context = batch['context'].to(config.device)
             action_op = batch['action_op'].squeeze(-1).to(config.device)
@@ -467,6 +885,26 @@ def train_l3_bc(
             epoch_loss_p += loss_p.item()
             epoch_loss_t += loss_t.item()
             n_batches += 1
+
+            preds = torch.argmax(op_logits, dim=1)
+            op_correct += int((preds == action_op).sum().item())
+            op_total += int(action_op.numel())
+
+            progress.step()
+            if config.batch_log_every > 0:
+                if step % config.batch_log_every == 0 or step == total_batches:
+                    avg_loss = epoch_loss / max(n_batches, 1)
+                    avg_q = epoch_loss_q / max(n_batches, 1)
+                    avg_p = epoch_loss_p / max(n_batches, 1)
+                    avg_t = epoch_loss_t / max(n_batches, 1)
+                    acc = op_correct / max(1, op_total)
+                    print(
+                        f"[L3 BC][Epoch {epoch + 1}/{config.l3_epochs}] "
+                        f"step {step}/{total_batches} loss={avg_loss:.4f} "
+                        f"(q={avg_q:.4f}, p={avg_p:.4f}, t={avg_t:.4f}) op_acc={acc:.3f}"
+                    )
+
+        progress.finish()
         
         avg_loss = epoch_loss / max(n_batches, 1)
         history['loss'].append(avg_loss)
@@ -475,7 +913,13 @@ def train_l3_bc(
         history['loss_t'].append(epoch_loss_t / max(n_batches, 1))
         
         if (epoch + 1) % config.log_every == 0:
-            print(f"[L3 BC] Epoch {epoch + 1}/{config.l3_epochs} | Loss: {avg_loss:.4f}")
+            acc = op_correct / max(1, op_total)
+            print(
+                f"[L3 BC] Epoch {epoch + 1}/{config.l3_epochs} | "
+                f"Loss: {avg_loss:.4f} (q={history['loss_q'][-1]:.4f}, "
+                f"p={history['loss_p'][-1]:.4f}, t={history['loss_t'][-1]:.4f}) "
+                f"op_acc={acc:.3f}"
+            )
         
         if (epoch + 1) % config.save_every == 0:
             save_model(model, config.output_dir, f"l3_bc_epoch{epoch + 1}.pt")
@@ -531,7 +975,7 @@ def compute_advantages(
 
 def train_l3_awr(
     model: "nn.Module",
-    samples: List[MicroSample],
+    samples: Any,
     config: TrainConfig,
     resume_path: Optional[str] = None,
 ) -> Dict[str, List[float]]:
@@ -549,14 +993,12 @@ def train_l3_awr(
     if not TORCH_AVAILABLE:
         raise RuntimeError("PyTorch not available")
     
-    # 筛选有奖励的样本
-    samples_with_reward = [s for s in samples if s.reward is not None]
-    if not samples_with_reward:
+    dataset = _resolve_l3_dataset(samples, config, require_reward=True)
+    if dataset is None or len(dataset) == 0:
         print("[WARN] No samples with reward, falling back to BC")
         return train_l3_bc(model, samples, config, resume_path=resume_path)
-    
-    dataset = L3Dataset(samples_with_reward, horizon=config.horizon)
-    loader = DataLoader(dataset, batch_size=config.l3_batch_size, shuffle=True)
+
+    loader = build_dataloader(dataset, batch_size=config.l3_batch_size, shuffle=True, config=config)
     
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -585,9 +1027,21 @@ def train_l3_awr(
     
     for epoch in range(start_epoch, config.l3_epochs):
         epoch_loss = 0.0
+        epoch_loss_q = 0.0
+        epoch_loss_p = 0.0
+        epoch_loss_t = 0.0
         n_batches = 0
-        
-        for batch in loader:
+        op_correct = 0
+        op_total = 0
+
+        total_batches = len(loader)
+        progress = _BatchProgress(
+            total_batches,
+            prefix=f"[L3 AWR][Epoch {epoch + 1}/{config.l3_epochs}]",
+            enabled=bool(config.progress_bar),
+        )
+
+        for step, batch in enumerate(loader, start=1):
             history_seq = batch['history'].to(config.device)
             context = batch['context'].to(config.device)
             action_op = batch['action_op'].squeeze(-1).to(config.device)
@@ -632,14 +1086,43 @@ def train_l3_awr(
             optimizer.step()
             
             epoch_loss += loss.item()
+            epoch_loss_q += loss_q.item()
+            epoch_loss_p += loss_p.item()
+            epoch_loss_t += loss_t.item()
             n_batches += 1
+
+            preds = torch.argmax(op_logits, dim=1)
+            op_correct += int((preds == action_op).sum().item())
+            op_total += int(action_op.numel())
+
+            progress.step()
+            if config.batch_log_every > 0:
+                if step % config.batch_log_every == 0 or step == total_batches:
+                    avg_loss = epoch_loss / max(n_batches, 1)
+                    avg_q = epoch_loss_q / max(n_batches, 1)
+                    avg_p = epoch_loss_p / max(n_batches, 1)
+                    avg_t = epoch_loss_t / max(n_batches, 1)
+                    acc = op_correct / max(1, op_total)
+                    print(
+                        f"[L3 AWR][Epoch {epoch + 1}/{config.l3_epochs}] "
+                        f"step {step}/{total_batches} loss={avg_loss:.4f} "
+                        f"(q={avg_q:.4f}, p={avg_p:.4f}, t={avg_t:.4f}) op_acc={acc:.3f}"
+                    )
+
+        progress.finish()
         
         avg_loss = epoch_loss / max(n_batches, 1)
         history['loss'].append(avg_loss)
         history['weighted_loss'].append(avg_loss)
         
         if (epoch + 1) % config.log_every == 0:
-            print(f"[L3 AWR] Epoch {epoch + 1}/{config.l3_epochs} | Loss: {avg_loss:.4f}")
+            acc = op_correct / max(1, op_total)
+            print(
+                f"[L3 AWR] Epoch {epoch + 1}/{config.l3_epochs} | "
+                f"Loss: {avg_loss:.4f} (q={epoch_loss_q / max(n_batches, 1):.4f}, "
+                f"p={epoch_loss_p / max(n_batches, 1):.4f}, "
+                f"t={epoch_loss_t / max(n_batches, 1):.4f}) op_acc={acc:.3f}"
+            )
         
         if (epoch + 1) % config.save_every == 0:
             save_model(model, config.output_dir, f"l3_awr_epoch{epoch + 1}.pt")
@@ -666,10 +1149,11 @@ def train_l4_distill(
         raise RuntimeError("PyTorch not available")
 
     dataset = L4Dataset(samples)
-    loader = DataLoader(
+    loader = build_dataloader(
         dataset,
         batch_size=config.l4_batch_size,
         shuffle=True,
+        config=config,
         collate_fn=collate_l4,
     )
 
@@ -700,7 +1184,14 @@ def train_l4_distill(
         epoch_loss = 0.0
         n_batches = 0
 
-        for batch in loader:
+        total_batches = len(loader)
+        progress = _BatchProgress(
+            total_batches,
+            prefix=f"[L4 Distill][Epoch {epoch + 1}/{config.l4_epochs}]",
+            enabled=bool(config.progress_bar),
+        )
+
+        for step, batch in enumerate(loader, start=1):
             global_state = batch["global_state"].to(config.device)
             thread_states = batch["thread_states"].to(config.device)
             teacher = batch["teacher_alpha"].to(config.device)
@@ -719,12 +1210,23 @@ def train_l4_distill(
             epoch_loss += float(loss.item())
             n_batches += 1
 
+            progress.step()
+            if config.batch_log_every > 0:
+                if step % config.batch_log_every == 0 or step == total_batches:
+                    avg_loss = epoch_loss / max(n_batches, 1)
+                    print(
+                        f"[L4 Distill][Epoch {epoch + 1}/{config.l4_epochs}] "
+                        f"step {step}/{total_batches} loss={avg_loss:.4f}"
+                    )
+
+        progress.finish()
+
         epoch_loss = epoch_loss / max(n_batches, 1)
         history["loss"].append(epoch_loss)
         history["ce"].append(epoch_loss)
 
         if (epoch + 1) % config.log_every == 0:
-            print(f"[L4][Epoch {epoch+1}/{config.l4_epochs}] loss={epoch_loss:.6f}")
+            print(f"[L4 Distill] Epoch {epoch+1}/{config.l4_epochs} | Loss: {epoch_loss:.6f}")
 
         if (epoch + 1) % config.save_every == 0:
             ckpt_name = f"l4_distill_epoch_{epoch+1}.pt"
@@ -1032,11 +1534,15 @@ __all__ = [
     "TrainConfig",
     "L2Dataset",
     "L3Dataset",
+    "L3TensorDataset",
+    "L3TensorizedData",
     "train_l2_bc",
     "train_l3_bc",
     "train_l3_awr",
     "L4Dataset",
     "collate_l4",
+    "tensorize_l3_samples_chunk",
+    "build_dataloader",
     "train_l4_distill",
     "compute_advantages",
     "ppo_loss",

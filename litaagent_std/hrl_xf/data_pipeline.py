@@ -1364,27 +1364,34 @@ def _find_world_dirs(tournament_dir: str) -> List[str]:
     return world_dirs
 
 
-_L2_INFER_CACHE: Dict[Tuple[str, int], Any] = {}
+_L2_INFER_CACHE: Dict[Tuple[str, int, str], Any] = {}
 
 
-def _load_l2_model_for_backfill(model_path: str, horizon: int):
+def _load_l2_model_for_backfill(model_path: str, horizon: int, device: str = "cpu"):
     """加载 L2 模型用于 goal_hat 回填（进程内缓存）。"""
-    key = (os.path.abspath(model_path), int(horizon))
-    if key in _L2_INFER_CACHE:
-        return _L2_INFER_CACHE[key]
-
     try:
         import torch  # 延迟导入，避免无 torch 环境下影响数据管道
     except Exception as exc:
         raise RuntimeError("goal_hat 回填需要 PyTorch") from exc
 
+    device = (device or "cpu").strip() or "cpu"
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        print("[WARN] CUDA not available for L2 backfill, fallback to cpu")
+        device = "cpu"
+    device = str(torch.device(device))
+
+    key = (os.path.abspath(model_path), int(horizon), device)
+    if key in _L2_INFER_CACHE:
+        return _L2_INFER_CACHE[key]
+
     from .l2_manager import HorizonManagerPPO  # 延迟导入，避免循环依赖
 
     model = HorizonManagerPPO(horizon=int(horizon))
-    state = torch.load(model_path, map_location="cpu")
+    state = torch.load(model_path, map_location=device)
     if isinstance(state, dict) and "model_state" in state:
         state = state["model_state"]
     model.load_state_dict(state)
+    model.to(device)
     model.eval()
 
     _L2_INFER_CACHE[key] = model
@@ -1395,6 +1402,8 @@ def _predict_goal_hat_by_day(
     macro_samples: List[MacroSample],
     *,
     model_path: str,
+    device: str = "cpu",
+    batch_size: int = 256,
 ) -> Dict[int, np.ndarray]:
     """用已训练 L2 对每个 day 的宏观状态预测 goal_hat（16 维）。"""
     if not macro_samples:
@@ -1405,30 +1414,129 @@ def _predict_goal_hat_by_day(
     except Exception as exc:
         raise RuntimeError("goal_hat 回填需要 PyTorch") from exc
 
+    device = (device or "cpu").strip() or "cpu"
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        print("[WARN] CUDA not available for L2 backfill, fallback to cpu")
+        device = "cpu"
+    device = str(torch.device(device))
+
+    batch_size = max(1, int(batch_size))
     horizon = int(macro_samples[0].state_temporal.shape[0] - 1)
-    model = _load_l2_model_for_backfill(model_path, horizon=horizon)
+    model = _load_l2_model_for_backfill(model_path, horizon=horizon, device=device)
 
     goal_hat_by_day: Dict[int, np.ndarray] = {}
-    with torch.no_grad():
-        for s in macro_samples:
-            x_static_t = torch.from_numpy(np.asarray(s.state_static, dtype=np.float32)).unsqueeze(0)
-            x_temporal_t = torch.from_numpy(np.asarray(s.state_temporal, dtype=np.float32)).unsqueeze(0)
-            x_role_t = torch.from_numpy(np.asarray(s.x_role, dtype=np.float32)).unsqueeze(0)
+    buy_indices = [0, 1, 4, 5, 8, 9, 12, 13]
+    sell_indices = [2, 3, 6, 7, 10, 11, 14, 15]
 
-            action = model.get_deterministic_action(x_static_t, x_temporal_t, x_role_t)
-            goal_hat = action.squeeze(0).cpu().numpy().astype(np.float32)
+    with torch.inference_mode():
+        for start in range(0, len(macro_samples), batch_size):
+            batch = macro_samples[start : start + batch_size]
+            x_static = np.stack([np.asarray(s.state_static, dtype=np.float32) for s in batch], axis=0)
+            x_temporal = np.stack([np.asarray(s.state_temporal, dtype=np.float32) for s in batch], axis=0)
+            x_role = np.stack([np.asarray(s.x_role, dtype=np.float32) for s in batch], axis=0)
+
+            x_static_t = torch.as_tensor(x_static, device=device)
+            x_temporal_t = torch.as_tensor(x_temporal, device=device)
+            x_role_t = torch.as_tensor(x_role, device=device)
+
+            goal_hat = model.get_deterministic_action(x_static_t, x_temporal_t, x_role_t)
 
             # 与训练掩码一致：不可谈判侧压零，避免将噪声回填给 L3
-            can_buy = float(s.x_role[0]) if hasattr(s.x_role, "__len__") else 1.0
-            can_sell = float(s.x_role[1]) if hasattr(s.x_role, "__len__") else 1.0
-            if can_buy <= 0:
-                goal_hat[[0, 1, 4, 5, 8, 9, 12, 13]] = 0.0
-            if can_sell <= 0:
-                goal_hat[[2, 3, 6, 7, 10, 11, 14, 15]] = 0.0
+            mask = torch.ones_like(goal_hat)
+            can_buy = x_role_t[:, 0:1]
+            can_sell = x_role_t[:, 1:2]
+            mask[:, buy_indices] = mask[:, buy_indices] * can_buy
+            mask[:, sell_indices] = mask[:, sell_indices] * can_sell
+            goal_hat = goal_hat * mask
 
-            goal_hat_by_day[int(s.day)] = goal_hat
+            goal_hat_cpu = goal_hat.detach().to("cpu").numpy().astype(np.float32)
+            for offset, sample in enumerate(batch):
+                goal_hat_by_day[int(sample.day)] = goal_hat_cpu[offset]
 
     return goal_hat_by_day
+
+
+def _predict_goal_hat_for_macro_samples(
+    macro_samples: List[MacroSample],
+    *,
+    model_path: str,
+    device: str = "cpu",
+    batch_size: int = 256,
+) -> np.ndarray:
+    """对 macro_samples 按输入顺序输出 goal_hat（N x 16）。"""
+    if not macro_samples:
+        return np.zeros((0, 16), dtype=np.float32)
+
+    try:
+        import torch  # 延迟导入
+    except Exception as exc:
+        raise RuntimeError("goal_hat 回填需要 PyTorch") from exc
+
+    device = (device or "cpu").strip() or "cpu"
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        print("[WARN] CUDA not available for L2 backfill, fallback to cpu")
+        device = "cpu"
+    device = str(torch.device(device))
+
+    batch_size = max(1, int(batch_size))
+    horizon = int(macro_samples[0].state_temporal.shape[0] - 1)
+    model = _load_l2_model_for_backfill(model_path, horizon=horizon, device=device)
+
+    buy_indices = [0, 1, 4, 5, 8, 9, 12, 13]
+    sell_indices = [2, 3, 6, 7, 10, 11, 14, 15]
+    outputs: List[np.ndarray] = []
+
+    with torch.inference_mode():
+        for start in range(0, len(macro_samples), batch_size):
+            batch = macro_samples[start : start + batch_size]
+            x_static = np.stack([np.asarray(s.state_static, dtype=np.float32) for s in batch], axis=0)
+            x_temporal = np.stack([np.asarray(s.state_temporal, dtype=np.float32) for s in batch], axis=0)
+            x_role = np.stack([np.asarray(s.x_role, dtype=np.float32) for s in batch], axis=0)
+
+            x_static_t = torch.as_tensor(x_static, device=device)
+            x_temporal_t = torch.as_tensor(x_temporal, device=device)
+            x_role_t = torch.as_tensor(x_role, device=device)
+
+            goal_hat = model.get_deterministic_action(x_static_t, x_temporal_t, x_role_t)
+
+            # 与训练掩码一致：不可谈判侧压零，避免将噪声回填给 L3
+            mask = torch.ones_like(goal_hat)
+            can_buy = x_role_t[:, 0:1]
+            can_sell = x_role_t[:, 1:2]
+            mask[:, buy_indices] = mask[:, buy_indices] * can_buy
+            mask[:, sell_indices] = mask[:, sell_indices] * can_sell
+            goal_hat = goal_hat * mask
+
+            goal_hat_cpu = goal_hat.detach().to("cpu").numpy().astype(np.float32)
+            outputs.append(goal_hat_cpu)
+
+    return np.concatenate(outputs, axis=0) if outputs else np.zeros((0, 16), dtype=np.float32)
+
+
+def _apply_goal_hat_to_neg_logs(
+    neg_logs: List[Dict[str, Any]],
+    macro_samples: List[MacroSample],
+    goal_hat: np.ndarray,
+) -> None:
+    """将预测的 goal_hat 回填到谈判日志（按 day 对齐）。"""
+    if not neg_logs or not macro_samples:
+        return
+    if goal_hat is None or len(goal_hat) == 0:
+        return
+
+    by_day: Dict[int, np.ndarray] = {}
+    for sample, pred in zip(macro_samples, goal_hat):
+        by_day[int(sample.day)] = np.asarray(pred, dtype=np.float32)
+
+    for neg in neg_logs:
+        try:
+            day = int(neg.get("sim_step", neg.get("day", 0)) or 0)
+        except Exception:
+            day = 0
+        g = by_day.get(day)
+        if g is None:
+            continue
+        neg["l2_goal"] = np.asarray(g, dtype=np.float32).reshape(-1).tolist()
 
 
 def _backfill_negotiation_goals(
@@ -1437,6 +1545,8 @@ def _backfill_negotiation_goals(
     *,
     goal_backfill: str,
     l2_model_path: Optional[str],
+    l2_backfill_device: str = "cpu",
+    l2_backfill_batch_size: int = 256,
 ) -> None:
     """将 L2 目标回填到谈判日志（用于生成 micro.l2_goal）。"""
     mode = (goal_backfill or "none").lower().strip()
@@ -1450,7 +1560,12 @@ def _backfill_negotiation_goals(
     elif mode in ("l2", "goal_hat", "model"):
         if not l2_model_path:
             raise ValueError("goal_backfill='l2' 需要提供 l2_model_path")
-        by_day = _predict_goal_hat_by_day(macro_samples, model_path=l2_model_path)
+        by_day = _predict_goal_hat_by_day(
+            macro_samples,
+            model_path=l2_model_path,
+            device=l2_backfill_device,
+            batch_size=l2_backfill_batch_size,
+        )
     else:
         raise ValueError(f"Unknown goal_backfill mode: {goal_backfill}")
 
@@ -1463,6 +1578,157 @@ def _backfill_negotiation_goals(
         if g is None:
             continue
         neg["l2_goal"] = np.asarray(g, dtype=np.float32).reshape(-1).tolist()
+
+
+def _parse_world_dir_raw(
+    world_dir: str,
+    agent_name: str,
+    strict_json_only: bool,
+) -> Any:
+    """解析单个 world，返回 macro_samples + neg_logs + daily_states（不做回填/微观抽取）."""
+    def _init_result(path: str) -> Dict[str, Any]:
+        return {
+            "world_dir": path,
+            "macro_samples": [],
+            "neg_logs": [],
+            "daily_states": None,
+            "used_tracker": False,
+            "used_csv": False,
+            "skipped_csv": False,
+            "has_tracker": False,
+            "has_csv": False,
+            "error": None,
+        }
+
+    result = _init_result(world_dir)
+    try:
+        # 模式 1：单个 Tracker JSON 文件
+        if (
+            os.path.isfile(world_dir)
+            and os.path.basename(world_dir).lower().startswith("agent_")
+            and world_dir.lower().endswith(".json")
+        ):
+            result["has_tracker"] = True
+            result["has_csv"] = False
+
+            try:
+                with open(world_dir, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as exc:
+                result["error"] = f"{type(exc).__name__}: {exc}"
+                return result
+
+            agent_aliases = _extract_agent_type_aliases(data)
+            if not _agent_type_matches_any(agent_name, agent_aliases):
+                return result
+
+            daily_states = _extract_daily_states_from_tracker_data(data)
+            entries = data.get("entries", []) or []
+            neg_logs = _parse_tracker_entries(entries, agent_name) if entries else []
+            offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+            if daily_states:
+                daily_logs = _daily_states_to_logs(
+                    daily_states,
+                    agent_name,
+                    offers_snapshot_by_day=offers_snapshot_by_day,
+                )
+                macro_samples = reconstruct_l2_goals(daily_logs)
+            else:
+                macro_samples = []
+
+            result["macro_samples"].extend(macro_samples)
+            result["neg_logs"].extend(neg_logs)
+            result["daily_states"] = daily_states
+            result["used_tracker"] = True
+            return result
+
+        # 判断数据格式优先级：Tracker JSON > CSV
+        has_tracker = len(glob.glob(os.path.join(world_dir, "agent_*.json"))) > 0
+        has_csv = os.path.exists(os.path.join(world_dir, "stats.csv"))
+        result["has_tracker"] = has_tracker
+        result["has_csv"] = has_csv
+
+        if has_tracker:
+            # Tracker JSON 优先
+            if os.path.basename(world_dir).lower() == "tracker_logs":
+                results: List[Dict[str, Any]] = []
+                for path, data in _iter_tracker_json_files(world_dir, agent_name):
+                    sub = _init_result(path)
+                    sub["has_tracker"] = True
+                    sub["has_csv"] = False
+                    agent_aliases = _extract_agent_type_aliases(data)
+                    if not _agent_type_matches_any(agent_name, agent_aliases):
+                        continue
+
+                    daily_states = _extract_daily_states_from_tracker_data(data)
+                    entries = data.get("entries", []) or []
+                    neg_logs = _parse_tracker_entries(entries, agent_name) if entries else []
+                    offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+                    if daily_states:
+                        daily_logs = _daily_states_to_logs(
+                            daily_states,
+                            agent_name,
+                            offers_snapshot_by_day=offers_snapshot_by_day,
+                        )
+                        macro_samples = reconstruct_l2_goals(daily_logs)
+                    else:
+                        macro_samples = []
+
+                    sub["macro_samples"].extend(macro_samples)
+                    sub["neg_logs"].extend(neg_logs)
+                    sub["daily_states"] = daily_states
+                    sub["used_tracker"] = True
+                    results.append(sub)
+                return results
+
+            daily_states = _load_daily_states_from_tracker(world_dir, agent_name)
+            neg_logs = _load_negotiation_logs(world_dir, agent_name)
+            offers_snapshot_by_day = _build_offers_snapshot_by_day(neg_logs) if neg_logs else None
+
+            if daily_states:
+                daily_logs = _daily_states_to_logs(
+                    daily_states,
+                    agent_name,
+                    offers_snapshot_by_day=offers_snapshot_by_day,
+                )
+                result["macro_samples"].extend(reconstruct_l2_goals(daily_logs))
+
+            result["neg_logs"].extend(neg_logs)
+            result["daily_states"] = daily_states
+            result["used_tracker"] = True
+        elif has_csv:
+            if strict_json_only:
+                result["skipped_csv"] = True
+                return result
+
+            stats = load_stats_csv(world_dir, agent_name)
+            contracts = load_contracts(world_dir)
+            daily_logs = _organize_by_day(stats, contracts, agent_name)
+            result["macro_samples"].extend(reconstruct_l2_goals(daily_logs))
+
+            daily_states: Dict[int, Dict[str, Any]] = {}
+            for dlog in daily_logs:
+                step = dlog["current_step"]
+                daily_states[step] = {
+                    "balance": dlog.get("balance", 10000),
+                    "inventory": dlog.get("inventory", {}),
+                    "n_steps": dlog.get("n_steps", 100),
+                    "current_step": step,
+                    "n_lines": dlog.get("n_lines", 1),
+                    "spot_price_in": dlog.get("spot_price_in", 10.0),
+                    "spot_price_out": dlog.get("spot_price_out", 20.0),
+                    "commitments": dlog.get("commitments", {}),
+                }
+
+            neg_logs = _load_negotiation_logs_csv(world_dir, agent_name)
+            result["neg_logs"].extend(neg_logs)
+            result["daily_states"] = daily_states
+            result["used_csv"] = True
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
 
 
 def _encode_l4_global_state(
@@ -1492,6 +1758,8 @@ def _extract_l4_distill_samples_for_world(
     macro_samples: List[MacroSample],
     goal_source: str,
     l2_model_path: Optional[str],
+    l2_backfill_device: str = "cpu",
+    l2_backfill_batch_size: int = 256,
     horizon: int = 40,
 ) -> List[L4DistillSample]:
     """从单个 world 的日志中构建 L4 蒸馏样本（按 day 聚合线程集合）。"""
@@ -1504,7 +1772,12 @@ def _extract_l4_distill_samples_for_world(
     elif mode in ("l2", "goal_hat", "model"):
         if not l2_model_path:
             raise ValueError("goal_source='l2' 需要提供 l2_model_path")
-        goal_by_day = _predict_goal_hat_by_day(macro_samples, model_path=l2_model_path)
+        goal_by_day = _predict_goal_hat_by_day(
+            macro_samples,
+            model_path=l2_model_path,
+            device=l2_backfill_device,
+            batch_size=l2_backfill_batch_size,
+        )
     else:
         raise ValueError(f"Unknown goal_source: {goal_source}")
 
@@ -1667,6 +1940,8 @@ def _process_world_dir_l4(
     strict_json_only: bool,
     goal_source: str = "l2",
     l2_model_path: Optional[str] = None,
+    l2_backfill_device: str = "cpu",
+    l2_backfill_batch_size: int = 256,
 ) -> Dict[str, Any]:
     """处理单个 world 目录，提取 L4 蒸馏数据（用于多进程并行）。"""
     result: Dict[str, Any] = {
@@ -1721,6 +1996,8 @@ def _process_world_dir_l4(
                 macro_samples=macro_samples,
                 goal_source=goal_source,
                 l2_model_path=l2_model_path,
+                l2_backfill_device=l2_backfill_device,
+                l2_backfill_batch_size=l2_backfill_batch_size,
             )
             result["used_tracker"] = True
             return result
@@ -1757,6 +2034,8 @@ def _process_world_dir_l4(
                             macro_samples=macro_samples,
                             goal_source=goal_source,
                             l2_model_path=l2_model_path,
+                            l2_backfill_device=l2_backfill_device,
+                            l2_backfill_batch_size=l2_backfill_batch_size,
                         )
                     )
 
@@ -1784,6 +2063,8 @@ def _process_world_dir_l4(
                     macro_samples=macro_samples,
                     goal_source=goal_source,
                     l2_model_path=l2_model_path,
+                    l2_backfill_device=l2_backfill_device,
+                    l2_backfill_batch_size=l2_backfill_batch_size,
                 )
                 result["used_tracker"] = True
         elif has_csv:
@@ -1802,6 +2083,8 @@ def _process_world_dir_l4(
                 macro_samples=macro_samples,
                 goal_source=goal_source,
                 l2_model_path=l2_model_path,
+                l2_backfill_device=l2_backfill_device,
+                l2_backfill_batch_size=l2_backfill_batch_size,
             )
             result["used_csv"] = True
     except Exception as exc:
@@ -1816,6 +2099,8 @@ def load_l4_distill_data(
     num_workers: Optional[int] = None,
     goal_source: str = "l2",
     l2_model_path: Optional[str] = None,
+    l2_backfill_device: str = "cpu",
+    l2_backfill_batch_size: int = 256,
 ) -> List[L4DistillSample]:
     """从锦标赛目录加载 L4 蒸馏训练数据。"""
     world_dirs = _find_world_dirs(tournament_dir)
@@ -1838,7 +2123,17 @@ def load_l4_distill_data(
 
     if num_workers <= 1:
         for world_dir in world_dirs:
-            _merge(_process_world_dir_l4(world_dir, agent_name, strict_json_only, goal_source=goal_source, l2_model_path=l2_model_path))
+            _merge(
+                _process_world_dir_l4(
+                    world_dir,
+                    agent_name,
+                    strict_json_only,
+                    goal_source=goal_source,
+                    l2_model_path=l2_model_path,
+                    l2_backfill_device=l2_backfill_device,
+                    l2_backfill_batch_size=l2_backfill_batch_size,
+                )
+            )
     else:
         print(f"[INFO] Using {num_workers} workers for L4 distill data pipeline")
         ctx = mp.get_context("spawn")
@@ -1850,6 +2145,8 @@ def load_l4_distill_data(
                 itertools.repeat(strict_json_only),
                 itertools.repeat(goal_source),
                 itertools.repeat(l2_model_path),
+                itertools.repeat(l2_backfill_device),
+                itertools.repeat(l2_backfill_batch_size),
                 chunksize=1,
             )
             for r in results_iter:
@@ -1869,6 +2166,8 @@ def _process_world_dir(
     strict_json_only: bool,
     goal_backfill: str = "none",
     l2_model_path: Optional[str] = None,
+    l2_backfill_device: str = "cpu",
+    l2_backfill_batch_size: int = 256,
 ) -> Dict[str, Any]:
     """处理单个 world 目录（用于多进程并行）."""
     result: Dict[str, Any] = {
@@ -1923,6 +2222,8 @@ def _process_world_dir(
                 macro_samples,
                 goal_backfill=goal_backfill,
                 l2_model_path=l2_model_path,
+                l2_backfill_device=l2_backfill_device,
+                l2_backfill_batch_size=l2_backfill_batch_size,
             )
 
             result["macro_samples"].extend(macro_samples)
@@ -1964,6 +2265,8 @@ def _process_world_dir(
                         macro_samples,
                         goal_backfill=goal_backfill,
                         l2_model_path=l2_model_path,
+                        l2_backfill_device=l2_backfill_device,
+                        l2_backfill_batch_size=l2_backfill_batch_size,
                     )
 
                     result["macro_samples"].extend(macro_samples)
@@ -1989,6 +2292,8 @@ def _process_world_dir(
                     result["macro_samples"],
                     goal_backfill=goal_backfill,
                     l2_model_path=l2_model_path,
+                    l2_backfill_device=l2_backfill_device,
+                    l2_backfill_batch_size=l2_backfill_batch_size,
                 )
 
                 result["micro_samples"].extend(extract_l3_residuals(neg_logs, daily_states=daily_states))
@@ -2024,6 +2329,8 @@ def _process_world_dir(
                 result['macro_samples'],
                 goal_backfill=goal_backfill,
                 l2_model_path=l2_model_path,
+                l2_backfill_device=l2_backfill_device,
+                l2_backfill_batch_size=l2_backfill_batch_size,
             )
 
             result['micro_samples'].extend(extract_l3_residuals(neg_logs, daily_states=daily_states))
@@ -2040,6 +2347,8 @@ def load_tournament_data(
     num_workers: Optional[int] = None,
     goal_backfill: str = "none",
     l2_model_path: Optional[str] = None,
+    l2_backfill_device: str = "cpu",
+    l2_backfill_batch_size: int = 256,
 ) -> Tuple[List[MacroSample], List[MicroSample]]:
     """从锦标赛目录加载训练数据.
     
@@ -2061,6 +2370,8 @@ def load_tournament_data(
             - "v2": 用 reconstruct_l2_goals() 的 v2 标签按 day 回填到谈判日志
             - "l2": 用已训练 L2 模型预测 goal_hat 后按 day 回填到谈判日志（推荐）
         l2_model_path: 当 goal_backfill="l2" 时使用的 L2 权重路径（torch state_dict 或 checkpoint）
+        l2_backfill_device: L2 回填使用的设备（默认 "cpu"）
+        l2_backfill_batch_size: L2 回填推理 batch size（默认 256）
         
     Returns:
         (macro_samples, micro_samples)
@@ -2111,6 +2422,8 @@ def load_tournament_data(
                 strict_json_only,
                 goal_backfill=goal_backfill,
                 l2_model_path=l2_model_path,
+                l2_backfill_device=l2_backfill_device,
+                l2_backfill_batch_size=l2_backfill_batch_size,
             )
             _merge_result(result)
     else:
@@ -2127,6 +2440,8 @@ def load_tournament_data(
                 itertools.repeat(strict_json_only),
                 itertools.repeat(goal_backfill),
                 itertools.repeat(l2_model_path),
+                itertools.repeat(l2_backfill_device),
+                itertools.repeat(l2_backfill_batch_size),
                 chunksize=1,
             )
             for result in results_iter:
