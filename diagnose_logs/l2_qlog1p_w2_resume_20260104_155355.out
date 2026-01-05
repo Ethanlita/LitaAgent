@@ -1,0 +1,20 @@
+[INFO] tournament_dir: /home/ecs-user/LitaAgent/tournament_history
+[INFO] output_dir: /home/ecs-user/LitaAgent/training_runs/l2_qlog1p_w2_20251231_220338
+[INFO] phases: ('l2',)
+[INFO] num_workers: 16
+[INFO] l2_backfill_device: cuda
+[INFO] l2_backfill_batch_size: 4096
+[INFO] dataloader_workers: 0
+[INFO] dataloader_pin_memory: True
+[INFO] dataloader_persistent_workers: False
+[INFO] dataloader_prefetch_factor: 4
+[INFO] dataloader_drop_last: False
+[INFO] batch_log_every: 200
+[INFO] progress_bar: True
+[INFO] l3_pre_tensorize: False
+[INFO] tensorize_workers: 8
+[INFO] backfill_world_chunk: 512
+[INFO] backfill_queue_size: 4
+[INFO] world splits: train=80112 val=9424 test=4712
+[INFO] Parsing train(statics): 80112 world(s)
+[PARSE train(statics)] [------------------------------] 0/80112   0.0% elapsed 00:00:00 ETA --:--:--[PARSE train(statics)] [------------------------------] 1/80112   0.0% elapsed 00:00:03 ETA 80:39:37[PARSE train(statics)] [------------------------------] 401/80112   0.5% elapsed 00:00:08 ETA 00:27:13[PARSE train(statics)] [------------------------------] 801/80112   1.0% elapsed 00:00:11 ETA 00:19:13[PARSE train(statics)] [------------------------------] 1201/80112   1.5% elapsed 00:00:15 ETA 00:16:52[PARSE train(statics)] [------------------------------] 1601/80112   2.0% elapsed 00:00:19 ETA 00:15:43[PARSE train(statics)] [------------------------------] 2001/80112   2.5% elapsed 00:00:22 ETA 00:14:51[PARSE train(statics)] [------------------------------] 2401/80112   3.0% elapsed 00:00:26 ETA 00:14:31[PARSE train(statics)] [#-----------------------------] 2801/80112   3.5% elapsed 00:00:30 ETA 00:13:49[PARSE train(statics)] [#-----------------------------] 3201/80112   4.0% elapsed 00:00:33 ETA 00:13:22[PARSE train(statics)] [#-----------------------------] 3601/80112   4.5% elapsed 00:00:37 ETA 00:13:07[PARSE train(statics)] [#-----------------------------] 4001/80112   5.0% elapsed 00:00:40 ETA 00:12:55[PARSE train(statics)] [#-----------------------------] 4401/80112   5.5% elapsed 00:00:44 ETA 00:12:39[PARSE train(statics)] [#-----------------------------] 4801/80112   6.0% elapsed 00:00:47 ETA 00:12:31[PARSE train(statics)] [#-----------------------------] 5201/80112   6.5% elapsed 00:00:50 ETA 00:12:14[PARSE train(statics)] [##----------------------------] 5601/80112   7.0% elapsed 00:00:54 ETA 00:12:11[PARSE train(statics)] [##----------------------------] 6001/80112   7.5% elapsed 00:00:57 ETA 00:11:52[PARSE train(statics)] [##----------------------------] 6401/80112   8.0% elapsed 00:01:00 ETA 00:11:40[PARSE train(statics)] [##----------------------------] 6801/80112   8.5% elapsed 00:01:03 ETA 00:11:28[PARSE train(statics)] [##----------------------------] 7201/80112   9.0% elapsed 00:01:06 ETA 00:11:15[PARSE train(statics)] [##----------------------------] 7601/80112   9.5% elapsed 00:01:09 ETA 00:11:07[PARSE train(statics)] [##----------------------------] 8001/80112  10.0% elapsed 00:01:13 ETA 00:11:04[PARSE train(statics)] [###---------------------------] 8401/80112  10.5% elapsed 00:01:16 ETA 00:10:54[PARSE train(statics)] [###---------------------------] 8801/80112  11.0% elapsed 00:01:19 ETA 00:10:45

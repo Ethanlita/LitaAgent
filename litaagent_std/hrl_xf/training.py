@@ -622,6 +622,10 @@ def train_l2_bc(
     if start_epoch >= config.l2_epochs:
         print(f"[INFO] Resume epoch {start_epoch} >= target {config.l2_epochs}, skip training")
         return history
+
+    # 强制同步配置的学习率，避免断点恢复时沿用旧 lr
+    for group in optimizer.param_groups:
+        group["lr"] = config.l2_lr
     
     q_indices = [0, 2, 4, 6, 8, 10, 12, 14]
     p_indices = [1, 3, 5, 7, 9, 11, 13, 15]
@@ -891,18 +895,7 @@ def train_l3_bc(
             op_total += int(action_op.numel())
 
             progress.step()
-            if config.batch_log_every > 0:
-                if step % config.batch_log_every == 0 or step == total_batches:
-                    avg_loss = epoch_loss / max(n_batches, 1)
-                    avg_q = epoch_loss_q / max(n_batches, 1)
-                    avg_p = epoch_loss_p / max(n_batches, 1)
-                    avg_t = epoch_loss_t / max(n_batches, 1)
-                    acc = op_correct / max(1, op_total)
-                    print(
-                        f"[L3 BC][Epoch {epoch + 1}/{config.l3_epochs}] "
-                        f"step {step}/{total_batches} loss={avg_loss:.4f} "
-                        f"(q={avg_q:.4f}, p={avg_p:.4f}, t={avg_t:.4f}) op_acc={acc:.3f}"
-                    )
+            # L3 批次日志已移除，避免过多输出；保留 epoch 级别汇总日志。
 
         progress.finish()
         

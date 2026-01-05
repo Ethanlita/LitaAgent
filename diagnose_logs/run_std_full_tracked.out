@@ -1,0 +1,2064 @@
+======================================================================
+🏆 SCML 2025 Standard 官方规模（Lita tracker + Top Agents）
+======================================================================
+输出目录: results/std_full_tracked_20251205_091303
+Tracker 日志: results/std_full_tracked_20251205_091303/tracker_logs
+Top Agents: ['XenoSotaAgent', 'UltraSuperMiracleSoraFinalAgentZ', 'PonponAgent', 'ProactiveAgent', 'KATSUDONAgent', 'OptimisticAgent', 'LitaAgentCIR', 'LitaAgentCIRS']
+参赛者 (13): ['LitaAgentY', 'LitaAgentYR', 'LitaAgentCIR', 'LitaAgentN', 'LitaAgentP', 'XenoSotaAgent', 'UltraSuperMiracleSoraFinalAgentZ', 'PonponAgent', 'ProactiveAgent', 'KATSUDONAgent', 'OptimisticAgent', 'LitaAgentCIR', 'LitaAgentCIRS']
+Stage 1 started between (13 competitors): [<class 
+'litaagent_std.litaagent_y.LitaAgentY'>, <class 
+'litaagent_std.litaagent_yr.LitaAgentYR'>, <class 
+'litaagent_std.litaagent_cir.LitaAgentCIR'>, <class 
+'litaagent_std.litaagent_n.LitaAgentN'>, <class 
+'litaagent_std.litaagent_p.LitaAgentP'>, <class 
+'scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent'>, 
+<class 
+'scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ'>
+, <class 'scml_agents.scml2025.standard.team_255.myagent.PonponAgent'>, <class 
+'scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent'>, <class
+'scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent'>, <class 
+'scml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent'>, 
+<class 
+'scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR
+'>, <class 
+'scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCI
+RS'>] 
+Results of Tournament 20251205H091303085906Kqg-stage-0001 will be saved to 
+/home/ecs-user/negmas/tournaments/20251205H091303085906Kqg-stage-0001
+Will run 20  different base world configurations (parallel)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|lita
+agent_std.litaagent_cir.LitaAgentCIR together 
+(LitaAgentY|LitaAgentYR|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|lita
+agent_std.litaagent_n.LitaAgentN together (LitaAgentY|LitaAgentYR|LitaAgentN)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|lita
+agent_std.litaagent_p.LitaAgentP together (LitaAgentY|LitaAgentYR|LitaAgentP)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentY|LitaAgentYR|X)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ 
+together (LitaAgentY|LitaAgentYR|U)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentY|LitaAgentYR|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentY|LitaAgentYR|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentY|LitaAgentYR|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentY|LitaAgentYR|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (LitaAgentY|LitaAgentYR|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_yr.LitaAgentYR|scml
+_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentY|LitaAgentYR|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|li
+taagent_std.litaagent_n.LitaAgentN together (LitaAgentY|LitaAgentC|LitaAgentN)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|li
+taagent_std.litaagent_p.LitaAgentP together (LitaAgentY|LitaAgentC|LitaAgentP)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentY|LitaAgentC|X)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ 
+together (LitaAgentY|LitaAgentC|U)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentY|LitaAgentC|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentY|LitaAgentC|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentY|LitaAgentC|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentY|LitaAgentC|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (L|l|t)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentY|LitaAgentCIR|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|litaag
+ent_std.litaagent_p.LitaAgentP together (LitaAgentY|LitaAgentN|LitaAgentP)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentY|LitaAgentN|X)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ together
+(LitaAgentY|LitaAgentN|U)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentY|LitaAgentN|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentY|LitaAgentN|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentY|LitaAgentN|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentY|LitaAgentN|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (LitaAgentY|LitaAgentN|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_n.LitaAgentN|scml_a
+gents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentY|LitaAgentN|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentY|LitaAgentP|X)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ together
+(LitaAgentY|LitaAgentP|U)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentY|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentY|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentY|LitaAgentP|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentY|LitaAgentP|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (LitaAgentY|LitaAgentP|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentY|LitaAgentP|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_254.ultra.UltraSu
+perMiracleSoraFinalAgentZ together (L|X|U)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.myagent.Ponpo
+nAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.proactive_age
+nt.ProactiveAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.katsudon_agen
+t.KATSUDONAgent together (L|X|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.optimistic_ag
+ent.OptimisticAgent together (L|X|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_std
+.litaagent_cir.LitaAgentCIR together (LitaAgentY|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_std
+.litaagent_cirs.LitaAgentCIRS together (LitaAgentY|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.myagen
+t.PonponAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.proact
+ive_agent.ProactiveAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.katsud
+on_agent.KATSUDONAgent together (L|U|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.optimi
+stic_agent.OptimisticAgent together (L|U|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.litaag
+ent_std.litaagent_cir.LitaAgentCIR together (LitaAgentY|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.litaag
+ent_std.litaagent_cirs.LitaAgentCIRS together (LitaAgentY|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_255.proactive_agent.Proactive
+Agent together (L|Po|Pr)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAg
+ent together (L|P|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_268.optimistic_agent.Optimist
+icAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_c
+ir.LitaAgentCIR together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_c
+irs.LitaAgentCIRS together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.katsudon_agent
+.KATSUDONAgent together (L|P|K)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.optimistic_age
+nt.OptimisticAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cir.LitaAgentCIR together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cirs.LitaAgentCIRS together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_268.optimistic_agent
+.OptimisticAgent together (L|K|O)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.li
+taagent_cir.LitaAgentCIR together (LitaAgentY|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.li
+taagent_cirs.LitaAgentCIRS together (LitaAgentY|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_268.opti
+mistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cir.LitaAgentCIR together (LitaAgentY|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_268.opti
+mistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cirs.LitaAgentCIRS together (LitaAgentY|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_y.LitaAgentY|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cirs.LitaAgentCIRS together 
+(LitaAgentY|LitaAgentCIR|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+litaagent_std.litaagent_n.LitaAgentN together (LitaAgentY|LitaAgentC|LitaAgentN)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+litaagent_std.litaagent_p.LitaAgentP together (LitaAgentY|LitaAgentC|LitaAgentP)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentY|LitaAgentC|X)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ 
+together (LitaAgentY|LitaAgentC|U)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentY|LitaAgentC|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentY|LitaAgentC|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentY|LitaAgentC|K)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together
+(LitaAgentY|LitaAgentC|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (L|l|t)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_cir.LitaAgentCIR|
+scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIR
+S together (LitaAgentY|LitaAgentCIR|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|lita
+agent_std.litaagent_p.LitaAgentP together (LitaAgentY|LitaAgentN|LitaAgentP)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentY|LitaAgentN|X)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ 
+together (LitaAgentY|LitaAgentN|U)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentY|LitaAgentN|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentY|LitaAgentN|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentY|LitaAgentN|K)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentY|LitaAgentN|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (LitaAgentY|LitaAgentN|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_n.LitaAgentN|scml
+_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentY|LitaAgentN|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentY|LitaAgentP|X)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ 
+together (LitaAgentY|LitaAgentP|U)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentY|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentY|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentY|LitaAgentP|K)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentY|LitaAgentP|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (LitaAgentY|LitaAgentP|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|litaagent_std.litaagent_p.LitaAgentP|scml
+_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentY|LitaAgentP|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_253.ma
+ster_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_254.ultra.Ultra
+SuperMiracleSoraFinalAgentZ together (L|X|U)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_253.ma
+ster_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.myagent.Pon
+ponAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_253.ma
+ster_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.proactive_a
+gent.ProactiveAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_253.ma
+ster_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.katsudon_ag
+ent.KATSUDONAgent together (L|X|K)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_253.ma
+ster_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.optimistic_
+agent.OptimisticAgent together (L|X|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_253.ma
+ster_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_s
+td.litaagent_cir.LitaAgentCIR together (LitaAgentY|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_253.ma
+ster_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_s
+td.litaagent_cirs.LitaAgentCIRS together (LitaAgentY|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_254.ul
+tra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_254.ul
+tra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_254.ul
+tra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent together (L|U|K)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_254.ul
+tra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.opti
+mistic_agent.OptimisticAgent together (L|U|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_254.ul
+tra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cir.LitaAgentCIR together (LitaAgentY|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_254.ul
+tra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cirs.LitaAgentCIRS together (LitaAgentY|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.my
+agent.PonponAgent|scml_agents.scml2025.standard.team_255.proactive_agent.Proacti
+veAgent together (L|Po|Pr)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.my
+agent.PonponAgent|scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDON
+Agent together (L|P|K)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.my
+agent.PonponAgent|scml_agents.scml2025.standard.team_268.optimistic_agent.Optimi
+sticAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.my
+agent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent
+_cir.LitaAgentCIR together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.my
+agent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent
+_cirs.LitaAgentCIRS together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.pr
+oactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.katsudon_age
+nt.KATSUDONAgent together (L|P|K)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.pr
+oactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.optimistic_a
+gent.OptimisticAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.pr
+oactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cir.LitaAgentCIR together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_255.pr
+oactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cirs.LitaAgentCIRS together (LitaAgentY|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_268.ka
+tsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_268.optimistic_age
+nt.OptimisticAgent together (L|K|O)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_268.ka
+tsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cir.LitaAgentCIR together (LitaAgentY|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_268.ka
+tsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cirs.LitaAgentCIRS together (LitaAgentY|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_268.op
+timistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_
+std.litaagent_cir.LitaAgentCIR together (LitaAgentY|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_268.op
+timistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_
+std.litaagent_cirs.LitaAgentCIRS together (LitaAgentY|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_yr.LitaAgentYR|scml_agents.scml2025.standard.team_276.li
+taagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_276.li
+taagent_std.litaagent_cirs.LitaAgentCIRS together 
+(LitaAgentY|LitaAgentCIR|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|li
+taagent_std.litaagent_p.LitaAgentP together (LitaAgentC|LitaAgentN|LitaAgentP)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentC|LitaAgentN|X)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ 
+together (LitaAgentC|LitaAgentN|U)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentC|LitaAgentN|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentC|LitaAgentN|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentC|LitaAgentN|K)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentC|LitaAgentN|O)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (l|L|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_n.LitaAgentN|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentCIR|LitaAgentN|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentC|LitaAgentP|X)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ 
+together (LitaAgentC|LitaAgentP|U)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentC|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentC|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentC|LitaAgentP|K)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentC|LitaAgentP|O)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (l|L|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|litaagent_std.litaagent_p.LitaAgentP|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentCIR|LitaAgentP|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_253.
+master_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_254.ultra.Ult
+raSuperMiracleSoraFinalAgentZ together (L|X|U)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_253.
+master_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.myagent.P
+onponAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_253.
+master_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.proactive
+_agent.ProactiveAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_253.
+master_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.katsudon_
+agent.KATSUDONAgent together (L|X|K)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_253.
+master_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.optimisti
+c_agent.OptimisticAgent together (L|X|O)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_253.
+master_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent
+_std.litaagent_cir.LitaAgentCIR together (l|X|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_253.
+master_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent
+_std.litaagent_cirs.LitaAgentCIRS together (LitaAgentCIR|X|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_254.
+ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.my
+agent.PonponAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_254.
+ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.pr
+oactive_agent.ProactiveAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_254.
+ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.ka
+tsudon_agent.KATSUDONAgent together (L|U|K)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_254.
+ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.op
+timistic_agent.OptimisticAgent together (L|U|O)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_254.
+ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.li
+taagent_std.litaagent_cir.LitaAgentCIR together (l|U|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_254.
+ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.li
+taagent_std.litaagent_cirs.LitaAgentCIRS together (LitaAgentCIR|U|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+myagent.PonponAgent|scml_agents.scml2025.standard.team_255.proactive_agent.Proac
+tiveAgent together (L|Po|Pr)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+myagent.PonponAgent|scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUD
+ONAgent together (L|P|K)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+myagent.PonponAgent|scml_agents.scml2025.standard.team_268.optimistic_agent.Opti
+misticAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+myagent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaage
+nt_cir.LitaAgentCIR together (l|P|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+myagent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaage
+nt_cirs.LitaAgentCIRS together (LitaAgentCIR|P|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.katsudon_a
+gent.KATSUDONAgent together (L|P|K)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.optimistic
+_agent.OptimisticAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_
+std.litaagent_cir.LitaAgentCIR together (l|P|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_255.
+proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_
+std.litaagent_cirs.LitaAgentCIRS together (LitaAgentCIR|P|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_268.
+katsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_268.optimistic_a
+gent.OptimisticAgent together (L|K|O)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_268.
+katsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cir.LitaAgentCIR together (l|K|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_268.
+katsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cirs.LitaAgentCIRS together (LitaAgentCIR|K|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_268.
+optimistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagen
+t_std.litaagent_cir.LitaAgentCIR together (l|O|t)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_268.
+optimistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagen
+t_std.litaagent_cirs.LitaAgentCIRS together (LitaAgentCIR|O|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_276.
+litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_276.
+litaagent_std.litaagent_cirs.LitaAgentCIRS together (l|t|L)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent together 
+(LitaAgentN|LitaAgentP|X)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ together
+(LitaAgentN|LitaAgentP|U)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_255.myagent.PonponAgent together 
+(LitaAgentN|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_255.proactive_agent.ProactiveAgent together 
+(LitaAgentN|LitaAgentP|P)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together 
+(LitaAgentN|LitaAgentP|K)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together 
+(LitaAgentN|LitaAgentP|O)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR 
+together (LitaAgentN|LitaAgentP|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|litaagent_std.litaagent_p.LitaAgentP|scml_a
+gents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (LitaAgentN|LitaAgentP|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_254.ultra.UltraSu
+perMiracleSoraFinalAgentZ together (L|X|U)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.myagent.Ponpo
+nAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.proactive_age
+nt.ProactiveAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.katsudon_agen
+t.KATSUDONAgent together (L|X|K)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.optimistic_ag
+ent.OptimisticAgent together (L|X|O)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_std
+.litaagent_cir.LitaAgentCIR together (LitaAgentN|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_std
+.litaagent_cirs.LitaAgentCIRS together (LitaAgentN|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.myagen
+t.PonponAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.proact
+ive_agent.ProactiveAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.katsud
+on_agent.KATSUDONAgent together (L|U|K)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.optimi
+stic_agent.OptimisticAgent together (L|U|O)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.litaag
+ent_std.litaagent_cir.LitaAgentCIR together (LitaAgentN|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.litaag
+ent_std.litaagent_cirs.LitaAgentCIRS together (LitaAgentN|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_255.proactive_agent.Proactive
+Agent together (L|Po|Pr)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAg
+ent together (L|P|K)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_268.optimistic_agent.Optimist
+icAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_c
+ir.LitaAgentCIR together (LitaAgentN|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_c
+irs.LitaAgentCIRS together (LitaAgentN|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.katsudon_agent
+.KATSUDONAgent together (L|P|K)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.optimistic_age
+nt.OptimisticAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cir.LitaAgentCIR together (LitaAgentN|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cirs.LitaAgentCIRS together (LitaAgentN|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_268.optimistic_agent
+.OptimisticAgent together (L|K|O)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.li
+taagent_cir.LitaAgentCIR together (LitaAgentN|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.li
+taagent_cirs.LitaAgentCIRS together (LitaAgentN|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_268.opti
+mistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cir.LitaAgentCIR together (LitaAgentN|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_268.opti
+mistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cirs.LitaAgentCIRS together (LitaAgentN|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_n.LitaAgentN|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cirs.LitaAgentCIRS together 
+(LitaAgentN|LitaAgentCIR|LitaAgentCIRS)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_254.ultra.UltraSu
+perMiracleSoraFinalAgentZ together (L|X|U)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.myagent.Ponpo
+nAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_255.proactive_age
+nt.ProactiveAgent together (L|X|P)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.katsudon_agen
+t.KATSUDONAgent together (L|X|K)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_268.optimistic_ag
+ent.OptimisticAgent together (L|X|O)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_std
+.litaagent_cir.LitaAgentCIR together (LitaAgentP|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_253.mast
+er_sota_agent.XenoSotaAgent|scml_agents.scml2025.standard.team_276.litaagent_std
+.litaagent_cirs.LitaAgentCIRS together (LitaAgentP|X|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.myagen
+t.PonponAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_255.proact
+ive_agent.ProactiveAgent together (L|U|P)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.katsud
+on_agent.KATSUDONAgent together (L|U|K)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_268.optimi
+stic_agent.OptimisticAgent together (L|U|O)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.litaag
+ent_std.litaagent_cir.LitaAgentCIR together (LitaAgentP|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_254.ultr
+a.UltraSuperMiracleSoraFinalAgentZ|scml_agents.scml2025.standard.team_276.litaag
+ent_std.litaagent_cirs.LitaAgentCIRS together (LitaAgentP|U|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_255.proactive_agent.Proactive
+Agent together (L|Po|Pr)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAg
+ent together (L|P|K)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_268.optimistic_agent.Optimist
+icAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_c
+ir.LitaAgentCIR together (LitaAgentP|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.myag
+ent.PonponAgent|scml_agents.scml2025.standard.team_276.litaagent_std.litaagent_c
+irs.LitaAgentCIRS together (LitaAgentP|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.katsudon_agent
+.KATSUDONAgent together (L|P|K)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_268.optimistic_age
+nt.OptimisticAgent together (L|P|O)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cir.LitaAgentCIR together (LitaAgentP|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_255.proa
+ctive_agent.ProactiveAgent|scml_agents.scml2025.standard.team_276.litaagent_std.
+litaagent_cirs.LitaAgentCIRS together (LitaAgentP|P|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_268.optimistic_agent
+.OptimisticAgent together (L|K|O)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.li
+taagent_cir.LitaAgentCIR together (LitaAgentP|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_268.kats
+udon_agent.KATSUDONAgent|scml_agents.scml2025.standard.team_276.litaagent_std.li
+taagent_cirs.LitaAgentCIRS together (LitaAgentP|K|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_268.opti
+mistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cir.LitaAgentCIR together (LitaAgentP|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_268.opti
+mistic_agent.OptimisticAgent|scml_agents.scml2025.standard.team_276.litaagent_st
+d.litaagent_cirs.LitaAgentCIRS together (LitaAgentP|O|LitaAgentC)
+Running 
+litaagent_std.litaagent_p.LitaAgentP|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.standard.team_276.lita
+agent_std.litaagent_cirs.LitaAgentCIRS together 
+(LitaAgentP|LitaAgentCIR|LitaAgentCIRS)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents
+.scml2025.standard.team_255.myagent.PonponAgent together (X|U|P)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents
+.scml2025.standard.team_255.proactive_agent.ProactiveAgent together (X|U|P)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents
+.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together (X|U|K)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents
+.scml2025.standard.team_268.optimistic_agent.OptimisticAgent together (X|U|O)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents
+.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together 
+(X|U|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|scml_agents
+.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together 
+(X|U|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.standard.
+team_255.proactive_agent.ProactiveAgent together (X|Po|Pr)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.standard.
+team_268.katsudon_agent.KATSUDONAgent together (X|P|K)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.standard.
+team_268.optimistic_agent.OptimisticAgent together (X|P|O)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.standard.
+team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (X|P|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.standard.
+team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (X|P|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml202
+5.standard.team_268.katsudon_agent.KATSUDONAgent together (X|P|K)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml202
+5.standard.team_268.optimistic_agent.OptimisticAgent together (X|P|O)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml202
+5.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (X|P|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml202
+5.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (X|P|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.
+standard.team_268.optimistic_agent.OptimisticAgent together (X|K|O)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.
+standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (X|K|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.
+standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (X|K|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml2
+025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (X|O|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml2
+025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together 
+(X|O|L)
+Running 
+scml_agents.scml2025.standard.team_253.master_sota_agent.XenoSotaAgent|scml_agen
+ts.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR|scml_agen
+ts.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (X|LitaAgentCIR|LitaAgentCIRS)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.st
+andard.team_255.proactive_agent.ProactiveAgent together (U|Po|Pr)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.st
+andard.team_268.katsudon_agent.KATSUDONAgent together (U|P|K)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.st
+andard.team_268.optimistic_agent.OptimisticAgent together (U|P|O)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.st
+andard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (U|P|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.st
+andard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (U|P|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.
+scml2025.standard.team_268.katsudon_agent.KATSUDONAgent together (U|P|K)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.
+scml2025.standard.team_268.optimistic_agent.OptimisticAgent together (U|P|O)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.
+scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together 
+(U|P|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agents.
+scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together 
+(U|P|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.sc
+ml2025.standard.team_268.optimistic_agent.OptimisticAgent together (U|K|O)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.sc
+ml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together 
+(U|K|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.sc
+ml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together 
+(U|K|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agent
+s.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together 
+(U|O|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agent
+s.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together
+(U|O|L)
+Running 
+scml_agents.scml2025.standard.team_254.ultra.UltraSuperMiracleSoraFinalAgentZ|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR|sc
+ml_agents.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (U|LitaAgentCIR|LitaAgentCIRS)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.t
+eam_268.katsudon_agent.KATSUDONAgent together (Po|Pr|K)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.t
+eam_268.optimistic_agent.OptimisticAgent together (Po|Pr|O)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.t
+eam_276.litaagent_std.litaagent_cir.LitaAgentCIR together (Po|Pr|L)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_255.proactive_agent.ProactiveAgent|scml_agents.scml2025.standard.t
+eam_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (Po|Pr|L)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.tea
+m_268.optimistic_agent.OptimisticAgent together (P|K|O)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.tea
+m_276.litaagent_std.litaagent_cir.LitaAgentCIR together (P|K|L)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.standard.tea
+m_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (P|K|L)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml2025.standard
+.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (P|O|L)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml2025.standard
+.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (P|O|L)
+Running 
+scml_agents.scml2025.standard.team_255.myagent.PonponAgent|scml_agents.scml2025.
+standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.scml2025.
+standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together 
+(P|LitaAgentCIR|LitaAgentCIRS)
+Running 
+scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agent
+s.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.s
+tandard.team_268.optimistic_agent.OptimisticAgent together (P|K|O)
+Running 
+scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agent
+s.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.s
+tandard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (P|K|L)
+Running 
+scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agent
+s.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.scml2025.s
+tandard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (P|K|L)
+Running 
+scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agent
+s.scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml20
+25.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (P|O|L)
+Running 
+scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agent
+s.scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml20
+25.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (P|O|L)
+Running 
+scml_agents.scml2025.standard.team_255.proactive_agent.ProactiveAgent|scml_agent
+s.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR|scml_agent
+s.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together
+(P|LitaAgentCIR|LitaAgentCIRS)
+Running 
+scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.
+scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml2025
+.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR together (K|O|L)
+Running 
+scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.
+scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_agents.scml2025
+.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together (K|O|L)
+Running 
+scml_agents.scml2025.standard.team_268.katsudon_agent.KATSUDONAgent|scml_agents.
+scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR|scml_agents.
+scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS together 
+(K|LitaAgentCIR|LitaAgentCIRS)
+Running 
+scml_agents.scml2025.standard.team_268.optimistic_agent.OptimisticAgent|scml_age
+nts.scml2025.standard.team_276.litaagent_std.litaagent_cir.LitaAgentCIR|scml_age
+nts.scml2025.standard.team_276.litaagent_std.litaagent_cirs.LitaAgentCIRS 
+together (O|LitaAgentCIR|LitaAgentCIRS)
+Will run 17160  different agent assignments (parallel)
+Will run 34320 of 34320  (1.0) simulations (parallel)
+Submitted all processes 100.00%
+World timeout is 15m45s 0ms and total-timeout is None
+2025-12-05 09:46:17 001 of 34320 [0.00291%] completed in  0s [ETA 40m33s]
+2025-12-05 09:46:18 002 of 34320 [0.00583%] completed in  0s [ETA 21m36s]
+2025-12-05 09:46:18 003 of 34320 [0.00874%] completed in  0s [ETA 14m50s]
+2025-12-05 09:46:18 004 of 34320 [0.0117%] completed in  0s [ETA 11m25s]
+2025-12-05 09:46:18 005 of 34320 [0.0146%] completed in  0s [ETA  9m19s]
+2025-12-05 09:46:18 006 of 34320 [0.0175%] completed in  0s [ETA  7m58s]
+2025-12-05 09:46:18 007 of 34320 [0.0204%] completed in  0s [ETA  6m59s]
+2025-12-05 09:46:24 008 of 34320 [0.0233%] completed in  6s [ETA  8h10m 1s]
+2025-12-05 09:46:36 009 of 34320 [0.0262%] completed in 18s [ETA 19h19m37s]
+2025-12-05 09:46:52 010 of 34320 [0.0291%] completed in 34s [ETA  1d 8h37m35s]
+2025-12-05 09:47:01 011 of 34320 [0.0321%] completed in 43s [ETA  1d13h50m14s]
+2025-12-05 09:47:03 012 of 34320 [0.035%] completed in 45s [ETA  1d12h11m17s]
+2025-12-05 09:47:06 013 of 34320 [0.0379%] completed in 48s [ETA  1d11h36m59s]
+2025-12-05 09:47:18 014 of 34320 [0.0408%] completed in  1m 0s [ETA  1d17h31m 
+6s]
+2025-12-05 09:47:27 015 of 34320 [0.0437%] completed in  1m 9s [ETA  1d20h 7s]
+2025-12-05 09:47:32 016 of 34320 [0.0466%] completed in  1m14s [ETA  
+1d20h35m50s]
+2025-12-05 09:47:36 017 of 34320 [0.0495%] completed in  1m19s [ETA  
+1d20h18m59s]
+2025-12-05 09:47:41 018 of 34320 [0.0524%] completed in  1m23s [ETA  
+1d20h13m11s]
+2025-12-05 09:47:50 019 of 34320 [0.0554%] completed in  1m32s [ETA  
+1d22h37m25s]
+2025-12-05 09:47:52 020 of 34320 [0.0583%] completed in  1m34s [ETA  
+1d21h12m40s]
+2025-12-05 09:47:58 021 of 34320 [0.0612%] completed in  1m40s [ETA  
+1d21h36m29s]
+2025-12-05 09:48:03 022 of 34320 [0.0641%] completed in  1m45s [ETA  1d21h46m 
+0s]
+2025-12-05 09:48:15 023 of 34320 [0.067%] completed in  1m57s [ETA  2d49m40s]
+2025-12-05 09:48:40 024 of 34320 [0.0699%] completed in  2m22s [ETA  2d 
+8h35m48s]
+2025-12-05 09:48:46 025 of 34320 [0.0728%] completed in  2m28s [ETA  2d 
+8h29m24s]
+2025-12-05 09:48:48 026 of 34320 [0.0758%] completed in  2m30s [ETA  2d 7h14m 
+9s]
+2025-12-05 09:49:22 027 of 34320 [0.0787%] completed in  3m 4s [ETA  2d17h 
+4m36s]
+2025-12-05 09:49:38 028 of 34320 [0.0816%] completed in  3m20s [ETA  
+2d20h10m19s]
+2025-12-05 09:49:38 029 of 34320 [0.0845%] completed in  3m20s [ETA  
+2d17h56m43s]
+2025-12-05 09:50:05 030 of 34320 [0.0874%] completed in  3m47s [ETA  3d17m 3s]
+2025-12-05 09:50:24 031 of 34320 [0.0903%] completed in  4m 6s [ETA  3d 
+3h44m26s]
+2025-12-05 09:50:27 032 of 34320 [0.0932%] completed in  4m 9s [ETA  3d 2h22m 
+4s]
+2025-12-05 09:50:30 033 of 34320 [0.0962%] completed in  4m12s [ETA  3d59m47s]
+2025-12-05 09:50:38 034 of 34320 [0.0991%] completed in  4m20s [ETA  3d 1h 
+4m15s]
+2025-12-05 09:50:39 035 of 34320 [0.102%] completed in  4m21s [ETA  2d23h14m29s]
+2025-12-05 09:50:40 036 of 34320 [0.105%] completed in  4m22s [ETA  2d21h30m12s]
+2025-12-05 09:51:00 037 of 34320 [0.108%] completed in  4m42s [ETA  3d47m 2s]
+2025-12-05 09:51:06 038 of 34320 [0.111%] completed in  4m48s [ETA  3d17m 0s]
+2025-12-05 09:51:11 039 of 34320 [0.114%] completed in  4m53s [ETA  2d23h43m59s]
+2025-12-05 09:51:40 040 of 34320 [0.117%] completed in  5m22s [ETA  3d 4h46m49s]
+2025-12-05 09:52:11 041 of 34320 [0.119%] completed in  5m53s [ETA  3d10h 6m34s]
+2025-12-05 09:52:14 042 of 34320 [0.122%] completed in  5m56s [ETA  3d 8h56m33s]
+2025-12-05 09:52:39 043 of 34320 [0.125%] completed in  6m21s [ETA  3d12h39m55s]
+2025-12-05 09:52:49 044 of 34320 [0.128%] completed in  6m32s [ETA  3d12h56m58s]
+2025-12-05 09:52:57 045 of 34320 [0.131%] completed in  6m39s [ETA  3d12h35m12s]
+2025-12-05 09:53:11 046 of 34320 [0.134%] completed in  6m53s [ETA  3d13h40m54s]
+2025-12-05 09:53:57 047 of 34320 [0.137%] completed in  7m39s [ETA  3d21h11m13s]
+2025-12-05 09:54:06 048 of 34320 [0.14%] completed in  7m48s [ETA  3d21h 6m53s]
+2025-12-05 09:54:09 049 of 34320 [0.143%] completed in  7m51s [ETA  3d19h45m32s]
+2025-12-05 09:54:15 050 of 34320 [0.146%] completed in  7m57s [ETA  3d19h16s]
+2025-12-05 09:54:25 051 of 34320 [0.149%] completed in  8m 7s [ETA  3d19h 4m10s]
+2025-12-05 09:54:48 052 of 34320 [0.152%] completed in  8m30s [ETA  3d21h40m21s]
+2025-12-05 09:55:02 053 of 34320 [0.154%] completed in  8m44s [ETA  3d22h24m 0s]
+2025-12-05 09:55:05 054 of 34320 [0.157%] completed in  8m47s [ETA  3d21h 6m39s]
+2025-12-05 09:55:06 055 of 34320 [0.16%] completed in  8m48s [ETA  3d19h34m52s]
+2025-12-05 09:55:06 056 of 34320 [0.163%] completed in  8m48s [ETA  3d18h 2m48s]
+2025-12-05 09:55:11 057 of 34320 [0.166%] completed in  8m53s [ETA  3d17h15m54s]
+2025-12-05 09:55:27 058 of 34320 [0.169%] completed in  9m 9s [ETA  3d18h20m10s]
+2025-12-05 09:55:32 059 of 34320 [0.172%] completed in  9m14s [ETA  3d17h34m35s]
+2025-12-05 09:55:33 060 of 34320 [0.175%] completed in  9m15s [ETA  3d16h16m37s]
+2025-12-05 09:55:35 061 of 34320 [0.178%] completed in  9m17s [ETA  3d15h 4m15s]
+2025-12-05 09:55:37 062 of 34320 [0.181%] completed in  9m19s [ETA  3d13h58m47s]
+2025-12-05 09:55:38 063 of 34320 [0.184%] completed in  9m20s [ETA  3d12h49m23s]
+2025-12-05 09:55:46 064 of 34320 [0.186%] completed in  9m28s [ETA  3d12h42m 7s]
+2025-12-05 09:56:06 065 of 34320 [0.189%] completed in  9m48s [ETA  3d14h20m18s]
+2025-12-05 09:56:15 066 of 34320 [0.192%] completed in  9m57s [ETA  3d14h18m49s]
+2025-12-05 09:56:16 067 of 34320 [0.195%] completed in  9m58s [ETA  3d13h 9m39s]
+2025-12-05 09:56:19 068 of 34320 [0.198%] completed in 10m 1s [ETA  3d12h16m34s]
+2025-12-05 09:56:36 069 of 34320 [0.201%] completed in 10m18s [ETA  3d13h25m45s]
+2025-12-05 09:56:41 070 of 34320 [0.204%] completed in 10m23s [ETA  3d12h53m19s]
+2025-12-05 09:56:45 071 of 34320 [0.207%] completed in 10m27s [ETA  3d12h13m17s]
+2025-12-05 09:56:49 072 of 34320 [0.21%] completed in 10m31s [ETA  3d11h40m21s]
+2025-12-05 09:57:02 073 of 34320 [0.213%] completed in 10m44s [ETA  3d12h10m26s]
+2025-12-05 09:57:07 074 of 34320 [0.216%] completed in 10m50s [ETA  3d11h44m23s]
+2025-12-05 09:57:22 075 of 34320 [0.219%] completed in 11m 4s [ETA  3d12h28m49s]
+2025-12-05 09:57:25 076 of 34320 [0.221%] completed in 11m 7s [ETA  3d11h45m 1s]
+2025-12-05 09:58:03 077 of 34320 [0.224%] completed in 11m45s [ETA  3d15h17m53s]
+2025-12-05 09:58:13 078 of 34320 [0.227%] completed in 11m55s [ETA  3d15h30m11s]
+2025-12-05 09:58:26 079 of 34320 [0.23%] completed in 12m 8s [ETA  3d15h53m 0s]
+2025-12-05 09:58:26 080 of 34320 [0.233%] completed in 12m 8s [ETA  3d14h50m41s]
+2025-12-05 09:58:34 081 of 34320 [0.236%] completed in 12m16s [ETA  3d14h38m28s]
+2025-12-05 09:58:40 082 of 34320 [0.239%] completed in 12m22s [ETA  3d14h16m59s]
+2025-12-05 09:58:50 083 of 34320 [0.242%] completed in 12m32s [ETA  3d14h28m14s]
+2025-12-05 09:58:54 084 of 34320 [0.245%] completed in 12m36s [ETA  3d13h51m 3s]
+2025-12-05 09:59:12 085 of 34320 [0.248%] completed in 12m54s [ETA  3d14h54m45s]
+2025-12-05 09:59:27 086 of 34320 [0.251%] completed in 13m 9s [ETA  3d15h34m24s]
+2025-12-05 09:59:33 087 of 34320 [0.253%] completed in 13m15s [ETA  3d15h12m29s]
+2025-12-05 09:59:38 088 of 34320 [0.256%] completed in 13m20s [ETA  3d14h42m19s]
+2025-12-05 09:59:42 089 of 34320 [0.259%] completed in 13m24s [ETA  3d14h12m37s]
+2025-12-05 09:59:43 090 of 34320 [0.262%] completed in 13m25s [ETA  3d13h16m50s]
+2025-12-05 09:59:46 091 of 34320 [0.265%] completed in 13m28s [ETA  3d12h43m51s]
+2025-12-05 10:00:07 092 of 34320 [0.268%] completed in 13m49s [ETA  3d13h58m51s]
+2025-12-05 10:00:37 093 of 34320 [0.271%] completed in 14m19s [ETA  3d16h 7m56s]
+2025-12-05 10:00:42 094 of 34320 [0.274%] completed in 14m24s [ETA  3d15h42m24s]
+2025-12-05 10:00:47 095 of 34320 [0.277%] completed in 14m29s [ETA  3d15h12m59s]
+2025-12-05 10:01:08 096 of 34320 [0.28%] completed in 14m50s [ETA  3d16h26m47s]
+2025-12-05 10:01:10 097 of 34320 [0.283%] completed in 14m52s [ETA  3d15h45m33s]
+2025-12-05 10:01:44 098 of 34320 [0.286%] completed in 15m26s [ETA  3d18h 8m37s]
+2025-12-05 10:01:53 099 of 34320 [0.288%] completed in 15m35s [ETA  3d18h 6m18s]
+2025-12-05 10:01:57 100 of 34320 [0.291%] completed in 15m39s [ETA  3d17h32m57s]
+2025-12-05 10:02:11 101 of 34320 [0.294%] completed in 15m53s [ETA  3d18h51s]
+2025-12-05 10:02:57 102 of 34320 [0.297%] completed in 16m39s [ETA  3d21h24m31s]
+2025-12-05 10:03:12 103 of 34320 [0.3%] completed in 16m54s [ETA  3d21h53m48s]
+2025-12-05 10:03:20 104 of 34320 [0.303%] completed in 17m 2s [ETA  3d21h45m38s]
+2025-12-05 10:03:29 105 of 34320 [0.306%] completed in 17m11s [ETA  3d21h39m34s]
+2025-12-05 10:03:33 106 of 34320 [0.309%] completed in 17m15s [ETA  3d21h 5m38s]
+2025-12-05 10:03:50 107 of 34320 [0.312%] completed in 17m32s [ETA  3d21h47m26s]
+2025-12-05 10:03:58 108 of 34320 [0.315%] completed in 17m40s [ETA  3d21h37m 6s]
+2025-12-05 10:04:09 109 of 34320 [0.318%] completed in 17m51s [ETA  3d21h40m58s]
+2025-12-05 10:04:19 110 of 34320 [0.321%] completed in 18m 1s [ETA  3d21h44m29s]
+2025-12-05 10:04:25 111 of 34320 [0.323%] completed in 18m 7s [ETA  3d21h26m23s]
+2025-12-05 10:04:57 112 of 34320 [0.326%] completed in 18m39s [ETA  3d23h17m32s]
+2025-12-05 10:05:31 113 of 34320 [0.329%] completed in 19m13s [ETA  4d 1h20m 1s]
+2025-12-05 10:05:32 114 of 34320 [0.332%] completed in 19m14s [ETA  4d32m56s]
+2025-12-05 10:05:33 115 of 34320 [0.335%] completed in 19m15s [ETA  3d23h49m24s]
+2025-12-05 10:06:02 116 of 34320 [0.338%] completed in 19m44s [ETA  4d 1h21m16s]
+2025-12-05 10:06:14 117 of 34320 [0.341%] completed in 19m56s [ETA  4d 1h28m23s]
+2025-12-05 10:06:22 118 of 34320 [0.344%] completed in 20m 4s [ETA  4d 1h17m20s]
+2025-12-05 10:06:35 119 of 34320 [0.347%] completed in 20m17s [ETA  4d 1h33m57s]
+2025-12-05 10:06:36 120 of 34320 [0.35%] completed in 20m18s [ETA  4d49m 0s]
+2025-12-05 10:06:45 121 of 34320 [0.353%] completed in 20m27s [ETA  4d42m56s]
+2025-12-05 10:07:02 122 of 34320 [0.355%] completed in 20m44s [ETA  4d 1h14m46s]
+2025-12-05 10:07:11 123 of 34320 [0.358%] completed in 20m53s [ETA  4d 1h 8m31s]
+2025-12-05 10:07:19 124 of 34320 [0.361%] completed in 21m 1s [ETA  4d58m25s]
+2025-12-05 10:07:28 125 of 34320 [0.364%] completed in 21m10s [ETA  4d52m17s]
+2025-12-05 10:07:51 126 of 34320 [0.367%] completed in 21m33s [ETA  4d 1h52m42s]
+2025-12-05 10:07:55 127 of 34320 [0.37%] completed in 21m37s [ETA  4d 1h22m13s]
+2025-12-05 10:08:01 128 of 34320 [0.373%] completed in 21m43s [ETA  4d 1h 5m18s]
+2025-12-05 10:08:25 129 of 34320 [0.376%] completed in 22m 7s [ETA  4d 2h 6m25s]
+2025-12-05 10:08:50 130 of 34320 [0.379%] completed in 22m32s [ETA  4d 3h10m45s]
+2025-12-05 10:09:04 131 of 34320 [0.382%] completed in 22m46s [ETA  4d 3h28m37s]
+2025-12-05 10:09:19 132 of 34320 [0.385%] completed in 23m 1s [ETA  4d 3h44m44s]
+2025-12-05 10:09:26 133 of 34320 [0.388%] completed in 23m 8s [ETA  4d 3h31m 7s]
+2025-12-05 10:09:27 134 of 34320 [0.39%] completed in 23m 9s [ETA  4d 2h50m24s]
+2025-12-05 10:09:36 135 of 34320 [0.393%] completed in 23m18s [ETA  4d 2h45m30s]
+2025-12-05 10:09:36 136 of 34320 [0.396%] completed in 23m18s [ETA  4d 2h 2m29s]
+2025-12-05 10:09:44 137 of 34320 [0.399%] completed in 23m26s [ETA  4d 1h52m26s]
+2025-12-05 10:09:46 138 of 34320 [0.402%] completed in 23m28s [ETA  4d 1h19m54s]
+2025-12-05 10:10:02 139 of 34320 [0.405%] completed in 23m44s [ETA  4d 1h40m19s]
+2025-12-05 10:10:09 140 of 34320 [0.408%] completed in 23m51s [ETA  4d 1h29m 3s]
+2025-12-05 10:10:20 141 of 34320 [0.411%] completed in 24m 2s [ETA  4d 1h32m41s]
+2025-12-05 10:10:38 142 of 34320 [0.414%] completed in 24m21s [ETA  4d 2h 5m12s]
+2025-12-05 10:10:42 143 of 34320 [0.417%] completed in 24m24s [ETA  4d 1h37m18s]
+2025-12-05 10:10:48 144 of 34320 [0.42%] completed in 24m30s [ETA  4d 1h22m54s]
+2025-12-05 10:10:53 145 of 34320 [0.422%] completed in 24m35s [ETA  4d 1h 1m55s]
+2025-12-05 10:11:02 146 of 34320 [0.425%] completed in 24m45s [ETA  4d58m11s]
+2025-12-05 10:11:07 147 of 34320 [0.428%] completed in 24m49s [ETA  4d35m36s]
+2025-12-05 10:11:08 148 of 34320 [0.431%] completed in 24m50s [ETA  3d23h59m55s]
+2025-12-05 10:11:08 149 of 34320 [0.434%] completed in 24m50s [ETA  3d23h23m 6s]
+2025-12-05 10:11:17 150 of 34320 [0.437%] completed in 24m59s [ETA  3d23h17m53s]
+2025-12-05 10:11:19 151 of 34320 [0.44%] completed in 25m 1s [ETA  3d22h47m45s]
+2025-12-05 10:11:26 152 of 34320 [0.443%] completed in 25m 8s [ETA  3d22h38m35s]
+2025-12-05 10:11:33 153 of 34320 [0.446%] completed in 25m15s [ETA  3d22h25m17s]
+2025-12-05 10:11:52 154 of 34320 [0.449%] completed in 25m34s [ETA  3d22h58m 2s]
+2025-12-05 10:12:09 155 of 34320 [0.452%] completed in 25m51s [ETA  3d23h26m 2s]
+2025-12-05 10:12:14 156 of 34320 [0.455%] completed in 25m56s [ETA  3d23h 8m 9s]
+2025-12-05 10:12:20 157 of 34320 [0.457%] completed in 26m 3s [ETA  3d22h54m36s]
+2025-12-05 10:12:20 158 of 34320 [0.46%] completed in 26m 3s [ETA  3d22h18m34s]
+2025-12-05 10:12:32 159 of 34320 [0.463%] completed in 26m14s [ETA  3d22h23m50s]
+2025-12-05 10:12:37 160 of 34320 [0.466%] completed in 26m19s [ETA  3d22h 6m 5s]
+2025-12-05 10:12:44 161 of 34320 [0.469%] completed in 26m26s [ETA  3d21h57m38s]
+2025-12-05 10:12:52 162 of 34320 [0.472%] completed in 26m34s [ETA  3d21h48m39s]
+2025-12-05 10:12:52 163 of 34320 [0.475%] completed in 26m34s [ETA  3d21h16m16s]
+2025-12-05 10:13:08 164 of 34320 [0.478%] completed in 26m50s [ETA  3d21h37m24s]
+2025-12-05 10:13:10 165 of 34320 [0.481%] completed in 26m52s [ETA  3d21h11m16s]
+2025-12-05 10:13:42 166 of 34320 [0.484%] completed in 27m24s [ETA  3d22h27m59s]
+2025-12-05 10:13:43 167 of 34320 [0.487%] completed in 27m25s [ETA  3d21h56m23s]
+2025-12-05 10:13:44 168 of 34320 [0.49%] completed in 27m26s [ETA  3d21h26m30s]
+2025-12-05 10:13:48 169 of 34320 [0.492%] completed in 27m30s [ETA  3d21h 6m42s]
+2025-12-05 10:13:52 170 of 34320 [0.495%] completed in 27m34s [ETA  3d20h47m53s]
+2025-12-05 10:14:18 171 of 34320 [0.498%] completed in 28m 0s [ETA  3d21h42m 2s]
+2025-12-05 10:14:26 172 of 34320 [0.501%] completed in 28m 8s [ETA  3d21h35m 0s]
+2025-12-05 10:14:27 173 of 34320 [0.504%] completed in 28m 9s [ETA  3d21h 5m55s]
+2025-12-05 10:14:27 174 of 34320 [0.507%] completed in 28m10s [ETA  3d20h35m47s]
+2025-12-05 10:14:33 175 of 34320 [0.51%] completed in 28m15s [ETA  3d20h20m34s]
+2025-12-05 10:14:34 176 of 34320 [0.513%] completed in 28m17s [ETA  3d19h55m27s]
+2025-12-05 10:15:00 177 of 34320 [0.516%] completed in 28m42s [ETA  3d20h46m22s]
+2025-12-05 10:15:08 178 of 34320 [0.519%] completed in 28m50s [ETA  3d20h41m 3s]
+2025-12-05 10:15:18 179 of 34320 [0.522%] completed in 29m 0s [ETA  3d20h40m47s]
+2025-12-05 10:15:21 180 of 34320 [0.524%] completed in 29m 3s [ETA  3d20h20m26s]
+2025-12-05 10:15:30 181 of 34320 [0.527%] completed in 29m12s [ETA  3d20h18m25s]
+2025-12-05 10:15:52 182 of 34320 [0.53%] completed in 29m34s [ETA  3d20h55m44s]
+2025-12-05 10:16:24 183 of 34320 [0.533%] completed in 30m 6s [ETA  3d22h 5m34s]
+2025-12-05 10:16:40 184 of 34320 [0.536%] completed in 30m22s [ETA  3d22h25m27s]
+2025-12-05 10:16:46 185 of 34320 [0.539%] completed in 30m28s [ETA  3d22h12m15s]
+2025-12-05 10:16:46 186 of 34320 [0.542%] completed in 30m28s [ETA  3d21h43m21s]
+2025-12-05 10:17:06 187 of 34320 [0.545%] completed in 30m48s [ETA  3d22h15m23s]
+2025-12-05 10:17:11 188 of 34320 [0.548%] completed in 30m53s [ETA  3d22h35s]
+2025-12-05 10:17:17 189 of 34320 [0.551%] completed in 30m59s [ETA  3d21h47m39s]
+2025-12-05 10:17:33 190 of 34320 [0.554%] completed in 31m15s [ETA  3d22h 5m35s]
+2025-12-05 10:17:43 191 of 34320 [0.557%] completed in 31m26s [ETA  3d22h 8m17s]
+2025-12-05 10:17:57 192 of 34320 [0.559%] completed in 31m39s [ETA  3d22h18m17s]
+2025-12-05 10:18:03 193 of 34320 [0.562%] completed in 31m45s [ETA  3d22h 6m24s]
+2025-12-05 10:18:09 194 of 34320 [0.565%] completed in 31m51s [ETA  3d21h57m16s]
+2025-12-05 10:18:20 195 of 34320 [0.568%] completed in 32m 2s [ETA  3d21h59m52s]
+2025-12-05 10:19:01 196 of 34320 [0.571%] completed in 32m43s [ETA  3d23h30m37s]
+2025-12-05 10:19:06 197 of 34320 [0.574%] completed in 32m48s [ETA  3d23h15m34s]
+2025-12-05 10:19:17 198 of 34320 [0.577%] completed in 32m59s [ETA  3d23h18m50s]
+2025-12-05 10:20:14 199 of 34320 [0.58%] completed in 33m56s [ETA  4d 1h34m 3s]
+2025-12-05 10:20:44 200 of 34320 [0.583%] completed in 34m26s [ETA  4d 2h29m 9s]
+2025-12-05 10:21:05 201 of 34320 [0.586%] completed in 34m47s [ETA  4d 2h59m40s]
+2025-12-05 10:21:23 202 of 34320 [0.589%] completed in 35m 5s [ETA  4d 3h22m31s]
+2025-12-05 10:21:46 203 of 34320 [0.591%] completed in 35m28s [ETA  4d 3h58m49s]
+2025-12-05 10:21:49 204 of 34320 [0.594%] completed in 35m31s [ETA  4d 3h37m52s]
+2025-12-05 10:21:53 205 of 34320 [0.597%] completed in 35m35s [ETA  4d 3h17m29s]
+2025-12-05 10:22:04 206 of 34320 [0.6%] completed in 35m46s [ETA  4d 3h20m39s]
+2025-12-05 10:22:06 207 of 34320 [0.603%] completed in 35m48s [ETA  4d 2h55m53s]
+2025-12-05 10:22:25 208 of 34320 [0.606%] completed in 36m 7s [ETA  4d 3h19m45s]
+2025-12-05 10:22:26 209 of 34320 [0.609%] completed in 36m 8s [ETA  4d 2h55m36s]
+2025-12-05 10:22:31 210 of 34320 [0.612%] completed in 36m13s [ETA  4d 2h39m10s]
+2025-12-05 10:24:36 211 of 34320 [0.615%] completed in 38m18s [ETA  4d 7h50m21s]
+2025-12-05 10:24:56 212 of 34320 [0.618%] completed in 38m38s [ETA  4d 8h15m 5s]
+2025-12-05 10:25:13 213 of 34320 [0.621%] completed in 38m55s [ETA  4d 8h32m53s]
+2025-12-05 10:25:23 214 of 34320 [0.624%] completed in 39m 5s [ETA  4d 8h30m32s]
+2025-12-05 10:25:51 215 of 34320 [0.626%] completed in 39m33s [ETA  4d 9h13m43s]
+2025-12-05 10:26:44 216 of 34320 [0.629%] completed in 40m26s [ETA  4d11h 6m36s]
+2025-12-05 10:26:51 217 of 34320 [0.632%] completed in 40m33s [ETA  4d10h54m54s]
+2025-12-05 10:26:53 218 of 34320 [0.635%] completed in 40m35s [ETA  4d10h31m18s]
+2025-12-05 10:26:55 219 of 34320 [0.638%] completed in 40m37s [ETA  4d10h 7m25s]
+2025-12-05 10:27:24 220 of 34320 [0.641%] completed in 41m 6s [ETA  4d10h52m33s]
+2025-12-05 10:27:26 221 of 34320 [0.644%] completed in 41m 8s [ETA  4d10h29m58s]
+2025-12-05 10:27:31 222 of 34320 [0.647%] completed in 41m13s [ETA  4d10h12m41s]
+2025-12-05 10:27:35 223 of 34320 [0.65%] completed in 41m17s [ETA  4d 9h55m 0s]
+2025-12-05 10:27:37 224 of 34320 [0.653%] completed in 41m19s [ETA  4d 9h32m12s]
+2025-12-05 10:27:43 225 of 34320 [0.656%] completed in 41m25s [ETA  4d 9h18m10s]
+2025-12-05 10:27:45 226 of 34320 [0.659%] completed in 41m27s [ETA  4d 8h56m26s]
+2025-12-05 10:27:50 227 of 34320 [0.661%] completed in 41m33s [ETA  4d 8h41m56s]
+2025-12-05 10:27:54 228 of 34320 [0.664%] completed in 41m36s [ETA  4d 8h22m19s]
+2025-12-05 10:27:59 229 of 34320 [0.667%] completed in 41m41s [ETA  4d 8h 9m25s]
+2025-12-05 10:28:06 230 of 34320 [0.67%] completed in 41m48s [ETA  4d 7h59m20s]
+2025-12-05 10:28:15 231 of 34320 [0.673%] completed in 41m57s [ETA  4d 7h53m41s]
+2025-12-05 10:28:21 232 of 34320 [0.676%] completed in 42m 3s [ETA  4d 7h41m54s]
+2025-12-05 10:28:21 233 of 34320 [0.679%] completed in 42m 3s [ETA  4d 7h15m38s]
+2025-12-05 10:28:34 234 of 34320 [0.682%] completed in 42m16s [ETA  4d 7h21m31s]
+2025-12-05 10:28:41 235 of 34320 [0.685%] completed in 42m23s [ETA  4d 7h11m58s]
+2025-12-05 10:28:50 236 of 34320 [0.688%] completed in 42m32s [ETA  4d 7h 6m32s]
+2025-12-05 10:28:55 237 of 34320 [0.691%] completed in 42m37s [ETA  4d 6h51m40s]
+2025-12-05 10:29:11 238 of 34320 [0.693%] completed in 42m53s [ETA  4d 7h 6m 4s]
+2025-12-05 10:29:51 239 of 34320 [0.696%] completed in 43m33s [ETA  4d 8h15m23s]
+2025-12-05 10:29:57 240 of 34320 [0.699%] completed in 43m39s [ETA  4d 8h 3m 0s]
+2025-12-05 10:30:23 241 of 34320 [0.702%] completed in 44m 5s [ETA  4d 8h38m50s]
+2025-12-05 10:30:26 242 of 34320 [0.705%] completed in 44m 8s [ETA  4d 8h19m15s]
+2025-12-05 10:30:35 243 of 34320 [0.708%] completed in 44m17s [ETA  4d 8h15m39s]
+2025-12-05 10:31:37 244 of 34320 [0.711%] completed in 45m19s [ETA  4d10h14m56s]
+2025-12-05 10:31:41 245 of 34320 [0.714%] completed in 45m23s [ETA  4d 9h57m53s]
+2025-12-05 10:31:51 246 of 34320 [0.717%] completed in 45m33s [ETA  4d 9h56m 0s]
+2025-12-05 10:32:13 247 of 34320 [0.72%] completed in 45m55s [ETA  4d10h21m10s]
+2025-12-05 10:32:14 248 of 34320 [0.723%] completed in 45m56s [ETA  4d 9h58m22s]
+2025-12-05 10:32:14 249 of 34320 [0.726%] completed in 45m56s [ETA  4d 9h33m17s]
+2025-12-05 10:32:22 250 of 34320 [0.728%] completed in 46m 4s [ETA  4d 9h25m13s]
+2025-12-05 10:32:29 251 of 34320 [0.731%] completed in 46m11s [ETA  4d 9h15m17s]
+2025-12-05 10:32:39 252 of 34320 [0.734%] completed in 46m21s [ETA  4d 9h13m37s]
+2025-12-05 10:32:48 253 of 34320 [0.737%] completed in 46m30s [ETA  4d 9h 8m48s]
+2025-12-05 10:32:56 254 of 34320 [0.74%] completed in 46m38s [ETA  4d 9h 1m58s]
+2025-12-05 10:33:24 255 of 34320 [0.743%] completed in 47m 6s [ETA  4d 9h41m16s]
+2025-12-05 10:34:00 256 of 34320 [0.746%] completed in 47m42s [ETA  4d10h36m30s]
+2025-12-05 10:34:21 257 of 34320 [0.749%] completed in 48m 3s [ETA  4d10h57m33s]
+2025-12-05 10:34:36 258 of 34320 [0.752%] completed in 48m18s [ETA  4d11h 6m15s]
+2025-12-05 10:34:46 259 of 34320 [0.755%] completed in 48m28s [ETA  4d11h 3m12s]
+2025-12-05 10:34:56 260 of 34320 [0.758%] completed in 48m38s [ETA  4d11h 1m12s]
+2025-12-05 10:34:57 261 of 34320 [0.76%] completed in 48m39s [ETA  4d10h39m10s]
+2025-12-05 10:35:03 262 of 34320 [0.763%] completed in 48m45s [ETA  4d10h27m12s]
+2025-12-05 10:35:22 263 of 34320 [0.766%] completed in 49m 4s [ETA  4d10h44m15s]
+2025-12-05 10:35:32 264 of 34320 [0.769%] completed in 49m15s [ETA  4d10h42m31s]
+2025-12-05 10:35:35 265 of 34320 [0.772%] completed in 49m17s [ETA  4d10h23m56s]
+2025-12-05 10:35:40 266 of 34320 [0.775%] completed in 49m22s [ETA  4d10h10m 2s]
+2025-12-05 10:35:48 267 of 34320 [0.778%] completed in 49m30s [ETA  4d10h 3m41s]
+2025-12-05 10:36:01 268 of 34320 [0.781%] completed in 49m43s [ETA  4d10h 7m 7s]
+2025-12-05 10:36:10 269 of 34320 [0.784%] completed in 49m52s [ETA  4d10h 4m 7s]
+2025-12-05 10:36:13 270 of 34320 [0.787%] completed in 49m55s [ETA  4d 9h45m17s]
+2025-12-05 10:36:19 271 of 34320 [0.79%] completed in 50m 1s [ETA  4d 9h35m51s]
+2025-12-05 10:36:23 272 of 34320 [0.793%] completed in 50m 5s [ETA  4d 9h20m15s]
+2025-12-05 10:36:39 273 of 34320 [0.795%] completed in 50m21s [ETA  4d 9h30m 4s]
+2025-12-05 10:36:52 274 of 34320 [0.798%] completed in 50m34s [ETA  4d 9h33m56s]
+2025-12-05 10:36:54 275 of 34320 [0.801%] completed in 50m37s [ETA  4d 9h17m 5s]
+2025-12-05 10:36:58 276 of 34320 [0.804%] completed in 50m40s [ETA  4d 9h 2m 3s]
+2025-12-05 10:37:06 277 of 34320 [0.807%] completed in 50m48s [ETA  4d 8h55m56s]
+2025-12-05 10:37:12 278 of 34320 [0.81%] completed in 50m55s [ETA  4d 8h45m51s]
+2025-12-05 10:37:21 279 of 34320 [0.813%] completed in 51m 3s [ETA  4d 8h40m 6s]
+2025-12-05 10:37:26 280 of 34320 [0.816%] completed in 51m 8s [ETA  4d 8h29m26s]
+2025-12-05 10:37:33 281 of 34320 [0.819%] completed in 51m15s [ETA  4d 8h19m58s]
+2025-12-05 10:37:42 282 of 34320 [0.822%] completed in 51m24s [ETA  4d 8h16m35s]
+2025-12-05 10:38:05 283 of 34320 [0.825%] completed in 51m47s [ETA  4d 8h40m33s]
+2025-12-05 10:38:24 284 of 34320 [0.828%] completed in 52m 6s [ETA  4d 8h56m50s]
+2025-12-05 10:38:24 285 of 34320 [0.83%] completed in 52m 6s [ETA  4d 8h35m32s]
+2025-12-05 10:39:05 286 of 34320 [0.833%] completed in 52m47s [ETA  4d 9h34m28s]
+2025-12-05 10:39:08 287 of 34320 [0.836%] completed in 52m50s [ETA  4d 9h19m17s]
+2025-12-05 10:39:29 288 of 34320 [0.839%] completed in 53m11s [ETA  4d 9h38m 6s]
+2025-12-05 10:39:33 289 of 34320 [0.842%] completed in 53m15s [ETA  4d 9h25m 0s]
+2025-12-05 10:39:33 290 of 34320 [0.845%] completed in 53m15s [ETA  4d 9h 3m21s]
+2025-12-05 10:39:39 291 of 34320 [0.848%] completed in 53m21s [ETA  4d 8h52m18s]
+2025-12-05 10:40:01 292 of 34320 [0.851%] completed in 53m43s [ETA  4d 9h15m 4s]
+2025-12-05 10:40:10 293 of 34320 [0.854%] completed in 53m52s [ETA  4d 9h11m 0s]
+2025-12-05 10:40:22 294 of 34320 [0.857%] completed in 54m 4s [ETA  4d 9h12m10s]
+2025-12-05 10:40:44 295 of 34320 [0.86%] completed in 54m26s [ETA  4d 9h33m32s]
+2025-12-05 10:40:52 296 of 34320 [0.862%] completed in 54m34s [ETA  4d 9h27m40s]
+2025-12-05 10:42:20 297 of 34320 [0.865%] completed in 56m 2s [ETA  4d11h56m11s]
+2025-12-05 10:42:25 298 of 34320 [0.868%] completed in 56m 7s [ETA  4d11h44m40s]
+2025-12-05 10:42:30 299 of 34320 [0.871%] completed in 56m12s [ETA  4d11h32m16s]
+2025-12-05 10:42:30 300 of 34320 [0.874%] completed in 56m12s [ETA  4d11h10m46s]
+2025-12-05 10:42:41 301 of 34320 [0.877%] completed in 56m23s [ETA  4d11h 9m21s]
+2025-12-05 10:42:41 302 of 34320 [0.88%] completed in 56m23s [ETA  4d10h48m 4s]
+2025-12-05 10:42:53 303 of 34320 [0.883%] completed in 56m35s [ETA  4d10h49m41s]
+2025-12-05 10:42:53 304 of 34320 [0.886%] completed in 56m35s [ETA  4d10h28m37s]
+2025-12-05 10:42:53 305 of 34320 [0.889%] completed in 56m35s [ETA  4d10h 7m41s]
+2025-12-05 10:42:53 306 of 34320 [0.892%] completed in 56m35s [ETA  4d 9h46m52s]
+2025-12-05 10:42:59 307 of 34320 [0.895%] completed in 56m41s [ETA  4d 9h37m38s]
+2025-12-05 10:43:08 308 of 34320 [0.897%] completed in 56m50s [ETA  4d 9h34m 6s]
+2025-12-05 10:43:16 309 of 34320 [0.9%] completed in 56m58s [ETA  4d 9h27m58s]
+2025-12-05 10:43:38 310 of 34320 [0.903%] completed in 57m20s [ETA  4d 9h47m31s]
+2025-12-05 10:43:39 311 of 34320 [0.906%] completed in 57m21s [ETA  4d 9h30m 7s]
+2025-12-05 10:43:39 312 of 34320 [0.909%] completed in 57m22s [ETA  4d 9h10m24s]
+2025-12-05 10:43:40 313 of 34320 [0.912%] completed in 57m22s [ETA  4d 8h51m 0s]
+2025-12-05 10:43:53 314 of 34320 [0.915%] completed in 57m35s [ETA  4d 8h54m 8s]
+2025-12-05 10:44:05 315 of 34320 [0.918%] completed in 57m47s [ETA  4d 8h57m 7s]
+2025-12-05 10:44:08 316 of 34320 [0.921%] completed in 57m50s [ETA  4d 8h42m55s]
+2025-12-05 10:44:30 317 of 34320 [0.924%] completed in 58m12s [ETA  4d 9h 1m53s]
+2025-12-05 10:44:36 318 of 34320 [0.927%] completed in 58m18s [ETA  4d 8h53m21s]
+2025-12-05 10:44:48 319 of 34320 [0.929%] completed in 58m30s [ETA  4d 8h54m48s]
+2025-12-05 10:44:54 320 of 34320 [0.932%] completed in 58m36s [ETA  4d 8h45m41s]
+2025-12-05 10:45:15 321 of 34320 [0.935%] completed in 58m57s [ETA  4d 9h 4m20s]
+2025-12-05 10:45:17 322 of 34320 [0.938%] completed in 58m59s [ETA  4d 8h47m11s]
+2025-12-05 10:45:22 323 of 34320 [0.941%] completed in 59m 4s [ETA  4d 8h37m12s]
+2025-12-05 10:45:25 324 of 34320 [0.944%] completed in 59m 7s [ETA  4d 8h22m13s]
+2025-12-05 10:45:26 325 of 34320 [0.947%] completed in 59m 8s [ETA  4d 8h 6m 2s]
+2025-12-05 10:45:48 326 of 34320 [0.95%] completed in 59m30s [ETA  4d 8h24m30s]
+2025-12-05 10:45:52 327 of 34320 [0.953%] completed in 59m34s [ETA  4d 8h11m59s]
+2025-12-05 10:45:58 328 of 34320 [0.956%] completed in 59m40s [ETA  4d 8h 4m54s]
+2025-12-05 10:46:00 329 of 34320 [0.959%] completed in 59m42s [ETA  4d 7h49m 2s]
+2025-12-05 10:46:09 330 of 34320 [0.962%] completed in 59m51s [ETA  4d 7h44m39s]
+2025-12-05 10:46:10 331 of 34320 [0.964%] completed in 59m52s [ETA  4d 7h28m15s]
+2025-12-05 10:46:14 332 of 34320 [0.967%] completed in 59m57s [ETA  4d 7h17m21s]
+2025-12-05 10:46:40 333 of 34320 [0.97%] completed in  1h22s [ETA  4d 7h42m24s]
+2025-12-05 10:47:06 334 of 34320 [0.973%] completed in  1h48s [ETA  4d 8h 8m29s]
+2025-12-05 10:47:28 335 of 34320 [0.976%] completed in  1h 1m10s [ETA  4d 
+8h27m19s]
+2025-12-05 10:47:43 336 of 34320 [0.979%] completed in  1h 1m25s [ETA  4d 
+8h33m50s]
+2025-12-05 10:47:49 337 of 34320 [0.982%] completed in  1h 1m31s [ETA  4d 
+8h26m24s]
+2025-12-05 10:48:10 338 of 34320 [0.985%] completed in  1h 1m52s [ETA  4d 
+8h42m51s]
+2025-12-05 10:48:29 339 of 34320 [0.988%] completed in  1h 2m11s [ETA  4d 
+8h55m51s]
+2025-12-05 10:48:41 340 of 34320 [0.991%] completed in  1h 2m23s [ETA  4d 
+8h57m35s]
+2025-12-05 10:48:45 341 of 34320 [0.994%] completed in  1h 2m27s [ETA  4d 
+8h46m54s]
+2025-12-05 10:48:51 342 of 34320 [0.997%] completed in  1h 2m33s [ETA  4d 
+8h37m16s]
+2025-12-05 10:49:08 343 of 34320 [0.999%] completed in  1h 2m50s [ETA  4d 8h48m 
+3s]
+2025-12-05 10:49:24 344 of 34320 [1.0%] completed in  1h 3m 7s [ETA  4d 8h57m 
+5s]
+2025-12-05 10:49:29 345 of 34320 [1.01%] completed in  1h 3m11s [ETA  4d 8h46m 
+7s]
+2025-12-05 10:49:35 346 of 34320 [1.01%] completed in  1h 3m18s [ETA  4d 
+8h38m53s]
+2025-12-05 10:49:43 347 of 34320 [1.01%] completed in  1h 3m25s [ETA  4d 
+8h32m37s]
+2025-12-05 10:49:59 348 of 34320 [1.01%] completed in  1h 3m41s [ETA  4d 
+8h40m43s]
+2025-12-05 10:50:07 349 of 34320 [1.02%] completed in  1h 3m49s [ETA  4d 
+8h37m10s]
+2025-12-05 10:50:29 350 of 34320 [1.02%] completed in  1h 4m11s [ETA  4d 
+8h54m59s]
+2025-12-05 10:51:02 351 of 34320 [1.02%] completed in  1h 4m44s [ETA  4d 
+9h29m47s]
+2025-12-05 10:51:03 352 of 34320 [1.03%] completed in  1h 4m45s [ETA  4d 
+9h14m23s]
+2025-12-05 10:51:52 353 of 34320 [1.03%] completed in  1h 5m34s [ETA  
+4d10h16m13s]
+2025-12-05 10:51:58 354 of 34320 [1.03%] completed in  1h 5m40s [ETA  4d10h 
+7m27s]
+2025-12-05 10:52:16 355 of 34320 [1.03%] completed in  1h 5m58s [ETA  
+4d10h18m53s]
+2025-12-05 10:52:41 356 of 34320 [1.04%] completed in  1h 6m23s [ETA  
+4d10h40m31s]
+2025-12-05 10:52:44 357 of 34320 [1.04%] completed in  1h 6m26s [ETA  4d10h27m 
+7s]
+2025-12-05 10:52:46 358 of 34320 [1.04%] completed in  1h 6m28s [ETA  
+4d10h12m42s]
+2025-12-05 10:53:27 359 of 34320 [1.05%] completed in  1h 7m 9s [ETA  
+4d10h59m36s]
+2025-12-05 10:53:34 360 of 34320 [1.05%] completed in  1h 7m16s [ETA  
+4d10h53m57s]
+2025-12-05 10:53:46 361 of 34320 [1.05%] completed in  1h 7m28s [ETA  
+4d10h54m32s]
+2025-12-05 10:53:58 362 of 34320 [1.05%] completed in  1h 7m40s [ETA  
+4d10h56m26s]
+2025-12-05 10:54:04 363 of 34320 [1.06%] completed in  1h 7m46s [ETA  
+4d10h48m13s]
+2025-12-05 10:54:05 364 of 34320 [1.06%] completed in  1h 7m47s [ETA  
+4d10h31m41s]
+2025-12-05 10:54:13 365 of 34320 [1.06%] completed in  1h 7m55s [ETA  
+4d10h26m58s]
+2025-12-05 10:54:13 366 of 34320 [1.07%] completed in  1h 7m55s [ETA  4d10h 
+9m34s]
+2025-12-05 10:54:27 367 of 34320 [1.07%] completed in  1h 8m 9s [ETA  
+4d10h14m28s]
+2025-12-05 10:54:30 368 of 34320 [1.07%] completed in  1h 8m13s [ETA  4d10h 
+1m58s]
+2025-12-05 10:54:31 369 of 34320 [1.08%] completed in  1h 8m13s [ETA  4d 
+9h45m59s]
+2025-12-05 10:54:35 370 of 34320 [1.08%] completed in  1h 8m17s [ETA  4d 
+9h34m22s]
+2025-12-05 10:55:13 371 of 34320 [1.08%] completed in  1h 8m55s [ETA  
+4d10h16m21s]
+2025-12-05 10:55:24 372 of 34320 [1.08%] completed in  1h 9m 6s [ETA  
+4d10h15m25s]
+2025-12-05 10:55:43 373 of 34320 [1.09%] completed in  1h 9m25s [ETA  
+4d10h28m33s]
+2025-12-05 10:55:51 374 of 34320 [1.09%] completed in  1h 9m33s [ETA  
+4d10h23m35s]
+2025-12-05 10:56:17 375 of 34320 [1.09%] completed in  1h 9m59s [ETA  4d10h45m 
+4s]
+2025-12-05 10:56:21 376 of 34320 [1.1%] completed in  1h10m 3s [ETA  
+4d10h34m27s]
+2025-12-05 10:56:22 377 of 34320 [1.1%] completed in  1h10m 4s [ETA  
+4d10h19m23s]
+2025-12-05 10:56:51 378 of 34320 [1.1%] completed in  1h10m33s [ETA  
+4d10h45m39s]
+2025-12-05 10:56:53 379 of 34320 [1.1%] completed in  1h10m35s [ETA  
+4d10h32m36s]
+2025-12-05 10:57:18 380 of 34320 [1.11%] completed in  1h11m 0s [ETA  
+4d10h53m44s]
+2025-12-05 10:57:22 381 of 34320 [1.11%] completed in  1h11m 4s [ETA  
+4d10h42m43s]
+2025-12-05 10:57:30 382 of 34320 [1.11%] completed in  1h11m12s [ETA  
+4d10h37m30s]
+2025-12-05 10:57:33 383 of 34320 [1.12%] completed in  1h11m15s [ETA  
+4d10h25m17s]
+2025-12-05 10:57:42 384 of 34320 [1.12%] completed in  1h11m24s [ETA  
+4d10h21m58s]
+2025-12-05 10:58:02 385 of 34320 [1.12%] completed in  1h11m44s [ETA  
+4d10h34m59s]
+2025-12-05 10:58:02 386 of 34320 [1.12%] completed in  1h11m44s [ETA  
+4d10h18m38s]
+2025-12-05 10:58:03 387 of 34320 [1.13%] completed in  1h11m45s [ETA  4d10h 4m 
+6s]
+2025-12-05 10:58:21 388 of 34320 [1.13%] completed in  1h12m 3s [ETA  
+4d10h13m41s]
+2025-12-05 10:58:26 389 of 34320 [1.13%] completed in  1h12m 8s [ETA  4d10h 
+5m26s]
+2025-12-05 10:58:44 390 of 34320 [1.14%] completed in  1h12m26s [ETA  
+4d10h14m32s]
+2025-12-05 10:59:16 391 of 34320 [1.14%] completed in  1h12m58s [ETA  
+4d10h45m30s]
+2025-12-05 10:59:17 392 of 34320 [1.14%] completed in  1h12m59s [ETA  4d10h31m 
+3s]
+2025-12-05 10:59:30 393 of 34320 [1.15%] completed in  1h13m12s [ETA  
+4d10h32m34s]
+2025-12-05 10:59:36 394 of 34320 [1.15%] completed in  1h13m18s [ETA  
+4d10h26m12s]
+2025-12-05 10:59:36 395 of 34320 [1.15%] completed in  1h13m18s [ETA  4d10h10m 
+2s]
+2025-12-05 10:59:55 396 of 34320 [1.15%] completed in  1h13m37s [ETA  
+4d10h20m58s]
+2025-12-05 11:00:07 397 of 34320 [1.16%] completed in  1h13m49s [ETA  
+4d10h22m37s]
+2025-12-05 11:00:19 398 of 34320 [1.16%] completed in  1h14m 1s [ETA  4d10h23m 
+8s]
+2025-12-05 11:00:26 399 of 34320 [1.16%] completed in  1h14m 8s [ETA  
+4d10h17m50s]
+2025-12-05 11:00:27 400 of 34320 [1.17%] completed in  1h14m 9s [ETA  4d10h 
+3m19s]
+2025-12-05 11:00:28 401 of 34320 [1.17%] completed in  1h14m11s [ETA  4d 9h49m 
+9s]
+2025-12-05 11:00:56 402 of 34320 [1.17%] completed in  1h14m38s [ETA  
+4d10h12m49s]
+2025-12-05 11:01:03 403 of 34320 [1.17%] completed in  1h14m45s [ETA  4d10h 6m 
+3s]
+2025-12-05 11:01:05 404 of 34320 [1.18%] completed in  1h14m47s [ETA  4d 
+9h53m52s]
+2025-12-05 11:01:12 405 of 34320 [1.18%] completed in  1h14m54s [ETA  4d 
+9h47m24s]
+2025-12-05 11:01:13 406 of 34320 [1.18%] completed in  1h14m55s [ETA  4d 
+9h33m21s]
+2025-12-05 11:01:31 407 of 34320 [1.19%] completed in  1h15m13s [ETA  4d 
+9h43m18s]
+2025-12-05 11:01:33 408 of 34320 [1.19%] completed in  1h15m15s [ETA  4d 
+9h30m25s]
+2025-12-05 11:01:38 409 of 34320 [1.19%] completed in  1h15m20s [ETA  4d 
+9h22m42s]
+2025-12-05 11:01:44 410 of 34320 [1.19%] completed in  1h15m26s [ETA  4d 
+9h14m37s]
+2025-12-05 11:02:12 411 of 34320 [1.2%] completed in  1h15m54s [ETA  4d 
+9h39m10s]
+2025-12-05 11:02:13 412 of 34320 [1.2%] completed in  1h15m55s [ETA  4d 
+9h24m46s]
+2025-12-05 11:02:37 413 of 34320 [1.2%] completed in  1h16m19s [ETA  4d 9h42m 
+4s]
+2025-12-05 11:02:44 414 of 34320 [1.21%] completed in  1h16m26s [ETA  4d 
+9h37m21s]
+2025-12-05 11:02:44 415 of 34320 [1.21%] completed in  1h16m26s [ETA  4d 9h22m 
+6s]
+2025-12-05 11:02:45 416 of 34320 [1.21%] completed in  1h16m27s [ETA  4d 9h 
+8m21s]
+2025-12-05 11:02:54 417 of 34320 [1.22%] completed in  1h16m36s [ETA  4d 9h 
+4m54s]
+2025-12-05 11:03:05 418 of 34320 [1.22%] completed in  1h16m47s [ETA  4d 9h 
+5m39s]
+2025-12-05 11:03:18 419 of 34320 [1.22%] completed in  1h17m 0s [ETA  4d 9h 
+7m25s]
+2025-12-05 11:03:20 420 of 34320 [1.22%] completed in  1h17m 2s [ETA  4d 8h56m 
+1s]
+2025-12-05 11:03:43 421 of 34320 [1.23%] completed in  1h17m25s [ETA  4d 
+9h11m57s]
+2025-12-05 11:03:48 422 of 34320 [1.23%] completed in  1h17m30s [ETA  4d 9h 
+3m14s]
+2025-12-05 11:03:53 423 of 34320 [1.23%] completed in  1h17m35s [ETA  4d 8h55m 
+5s]
+2025-12-05 11:03:54 424 of 34320 [1.24%] completed in  1h17m36s [ETA  4d 
+8h41m21s]
+2025-12-05 11:04:14 425 of 34320 [1.24%] completed in  1h17m56s [ETA  4d 8h54m 
+7s]
+2025-12-05 11:04:16 426 of 34320 [1.24%] completed in  1h17m58s [ETA  4d 
+8h41m24s]
+2025-12-05 11:04:28 427 of 34320 [1.24%] completed in  1h18m10s [ETA  4d 
+8h43m18s]
+2025-12-05 11:04:50 428 of 34320 [1.25%] completed in  1h18m32s [ETA  4d 
+8h57m45s]
+2025-12-05 11:05:20 429 of 34320 [1.25%] completed in  1h19m 2s [ETA  4d 9h23m 
+7s]
+2025-12-05 11:05:40 430 of 34320 [1.25%] completed in  1h19m22s [ETA  4d 
+9h34m42s]
+2025-12-05 11:06:07 431 of 34320 [1.26%] completed in  1h19m49s [ETA  4d 
+9h56m18s]
+2025-12-05 11:06:10 432 of 34320 [1.26%] completed in  1h19m52s [ETA  4d 
+9h45m10s]
+2025-12-05 11:06:15 433 of 34320 [1.26%] completed in  1h19m57s [ETA  4d 
+9h38m12s]
+2025-12-05 11:06:26 434 of 34320 [1.26%] completed in  1h20m 8s [ETA  4d 9h37m 
+5s]
+2025-12-05 11:06:36 435 of 34320 [1.27%] completed in  1h20m18s [ETA  4d 
+9h36m29s]
+2025-12-05 11:06:56 436 of 34320 [1.27%] completed in  1h20m38s [ETA  4d 9h48m 
+8s]
+2025-12-05 11:06:57 437 of 34320 [1.27%] completed in  1h20m39s [ETA  4d 
+9h34m17s]
+2025-12-05 11:07:02 438 of 34320 [1.28%] completed in  1h20m44s [ETA  4d 
+9h26m37s]
+2025-12-05 11:07:07 439 of 34320 [1.28%] completed in  1h20m49s [ETA  4d 
+9h18m53s]
+2025-12-05 11:07:07 440 of 34320 [1.28%] completed in  1h20m49s [ETA  4d 9h 
+4m31s]
+2025-12-05 11:07:29 441 of 34320 [1.28%] completed in  1h21m11s [ETA  4d 
+9h18m36s]
+2025-12-05 11:07:42 442 of 34320 [1.29%] completed in  1h21m24s [ETA  4d 
+9h20m49s]
+2025-12-05 11:07:59 443 of 34320 [1.29%] completed in  1h21m41s [ETA  4d 
+9h28m48s]
+2025-12-05 11:08:29 444 of 34320 [1.29%] completed in  1h22m11s [ETA  4d 
+9h52m51s]
+2025-12-05 11:08:34 445 of 34320 [1.3%] completed in  1h22m16s [ETA  4d 
+9h45m37s]
+2025-12-05 11:08:46 446 of 34320 [1.3%] completed in  1h22m28s [ETA  4d 9h47m 
+2s]
+2025-12-05 11:08:51 447 of 34320 [1.3%] completed in  1h22m33s [ETA  4d 
+9h39m17s]
+2025-12-05 11:08:52 448 of 34320 [1.31%] completed in  1h22m34s [ETA  4d 
+9h26m24s]
+2025-12-05 11:09:18 449 of 34320 [1.31%] completed in  1h23m 0s [ETA  4d 9h45m 
+0s]
+2025-12-05 11:09:38 450 of 34320 [1.31%] completed in  1h23m20s [ETA  4d 
+9h56m19s]
+2025-12-05 11:09:51 451 of 34320 [1.31%] completed in  1h23m33s [ETA  4d 
+9h58m42s]
+2025-12-05 11:10:12 452 of 34320 [1.32%] completed in  1h23m54s [ETA  
+4d10h11m37s]
+2025-12-05 11:10:21 453 of 34320 [1.32%] completed in  1h24m 3s [ETA  4d10h 
+8m40s]
+2025-12-05 11:10:27 454 of 34320 [1.32%] completed in  1h24m 9s [ETA  4d10h 
+1m50s]
+2025-12-05 11:10:33 455 of 34320 [1.33%] completed in  1h24m15s [ETA  4d 
+9h55m15s]
+2025-12-05 11:10:37 456 of 34320 [1.33%] completed in  1h24m19s [ETA  4d 
+9h46m55s]
+2025-12-05 11:10:51 457 of 34320 [1.33%] completed in  1h24m33s [ETA  4d 
+9h50m28s]
+2025-12-05 11:10:57 458 of 34320 [1.33%] completed in  1h24m39s [ETA  4d 
+9h43m42s]
+2025-12-05 11:11:21 459 of 34320 [1.34%] completed in  1h25m 3s [ETA  4d 
+9h59m33s]
+2025-12-05 11:11:25 460 of 34320 [1.34%] completed in  1h25m 7s [ETA  4d 
+9h51m20s]
+2025-12-05 11:11:54 461 of 34320 [1.34%] completed in  1h25m36s [ETA  
+4d10h13m14s]
+2025-12-05 11:12:07 462 of 34320 [1.35%] completed in  1h25m49s [ETA  
+4d10h15m46s]
+2025-12-05 11:12:32 463 of 34320 [1.35%] completed in  1h26m14s [ETA  
+4d10h32m14s]
+2025-12-05 11:12:34 464 of 34320 [1.35%] completed in  1h26m16s [ETA  
+4d10h21m12s]
+2025-12-05 11:12:58 465 of 34320 [1.35%] completed in  1h26m40s [ETA  
+4d10h37m19s]
+2025-12-05 11:13:21 466 of 34320 [1.36%] completed in  1h27m 3s [ETA  
+4d10h51m31s]
+2025-12-05 11:13:39 467 of 34320 [1.36%] completed in  1h27m21s [ETA  4d11h31s]
+2025-12-05 11:13:45 468 of 34320 [1.36%] completed in  1h27m27s [ETA  4d10h54m 
+0s]
+2025-12-05 11:13:47 469 of 34320 [1.37%] completed in  1h27m29s [ETA  4d10h42m 
+9s]
+2025-12-05 11:13:52 470 of 34320 [1.37%] completed in  1h27m34s [ETA  4d10h35m 
+2s]
+2025-12-05 11:14:12 471 of 34320 [1.37%] completed in  1h27m54s [ETA  
+4d10h45m19s]
+2025-12-05 11:14:35 472 of 34320 [1.38%] completed in  1h28m17s [ETA  4d11h21s]
+2025-12-05 11:15:06 473 of 34320 [1.38%] completed in  1h28m48s [ETA  
+4d11h23m49s]
+2025-12-05 11:15:28 474 of 34320 [1.38%] completed in  1h29m10s [ETA  
+4d11h37m14s]
+2025-12-05 11:15:29 475 of 34320 [1.38%] completed in  1h29m11s [ETA  4d11h24m 
+9s]
+2025-12-05 11:15:30 476 of 34320 [1.39%] completed in  1h29m12s [ETA  
+4d11h11m54s]
+2025-12-05 11:15:38 477 of 34320 [1.39%] completed in  1h29m20s [ETA  4d11h 
+8m28s]
+2025-12-05 11:16:07 478 of 34320 [1.39%] completed in  1h29m49s [ETA  
+4d11h28m59s]
+2025-12-05 11:16:07 479 of 34320 [1.4%] completed in  1h29m49s [ETA  
+4d11h16m14s]
+2025-12-05 11:16:15 480 of 34320 [1.4%] completed in  1h29m57s [ETA  
+4d11h11m48s]
+2025-12-05 11:16:27 481 of 34320 [1.4%] completed in  1h30m 9s [ETA  
+4d11h13m19s]
+2025-12-05 11:16:47 482 of 34320 [1.4%] completed in  1h30m29s [ETA  
+4d11h23m44s]
+2025-12-05 11:16:47 483 of 34320 [1.41%] completed in  1h30m30s [ETA  
+4d11h10m34s]
+2025-12-05 11:16:53 484 of 34320 [1.41%] completed in  1h30m35s [ETA  4d11h 
+4m16s]
+2025-12-05 11:17:10 485 of 34320 [1.41%] completed in  1h30m52s [ETA  4d11h11m 
+4s]
+2025-12-05 11:17:17 486 of 34320 [1.42%] completed in  1h30m59s [ETA  4d11h 
+5m28s]
+2025-12-05 11:17:18 487 of 34320 [1.42%] completed in  1h31m 0s [ETA  
+4d10h53m15s]
+2025-12-05 11:17:47 488 of 34320 [1.42%] completed in  1h31m29s [ETA  
+4d11h13m56s]
+2025-12-05 11:18:17 489 of 34320 [1.42%] completed in  1h31m59s [ETA  
+4d11h36m10s]
+2025-12-05 11:18:17 490 of 34320 [1.43%] completed in  1h31m59s [ETA  
+4d11h23m12s]
+2025-12-05 11:18:39 491 of 34320 [1.43%] completed in  1h32m21s [ETA  
+4d11h35m50s]
+2025-12-05 11:18:44 492 of 34320 [1.43%] completed in  1h32m26s [ETA  
+4d11h28m18s]
+2025-12-05 11:18:58 493 of 34320 [1.44%] completed in  1h32m40s [ETA  4d11h31m 
+8s]
+2025-12-05 11:18:58 494 of 34320 [1.44%] completed in  1h32m40s [ETA  
+4d11h18m54s]
+2025-12-05 11:19:05 495 of 34320 [1.44%] completed in  1h32m47s [ETA  
+4d11h13m36s]
+2025-12-05 11:19:17 496 of 34320 [1.45%] completed in  1h32m59s [ETA  4d11h14m 
+4s]
+2025-12-05 11:19:47 497 of 34320 [1.45%] completed in  1h33m30s [ETA  
+4d11h36m36s]
+2025-12-05 11:20:06 498 of 34320 [1.45%] completed in  1h33m48s [ETA  
+4d11h44m40s]
+2025-12-05 11:20:16 499 of 34320 [1.45%] completed in  1h33m58s [ETA  
+4d11h43m19s]
+2025-12-05 11:20:33 500 of 34320 [1.46%] completed in  1h34m15s [ETA  
+4d11h49m46s]
+2025-12-05 11:20:39 501 of 34320 [1.46%] completed in  1h34m21s [ETA  
+4d11h43m39s]
+2025-12-05 11:20:55 502 of 34320 [1.46%] completed in  1h34m37s [ETA  
+4d11h48m48s]
+2025-12-05 11:21:14 503 of 34320 [1.47%] completed in  1h34m57s [ETA  
+4d11h58m30s]
+2025-12-05 11:21:19 504 of 34320 [1.47%] completed in  1h35m 1s [ETA  
+4d11h50m28s]
+2025-12-05 11:21:38 505 of 34320 [1.47%] completed in  1h35m20s [ETA  
+4d11h59m39s]
+2025-12-05 11:21:41 506 of 34320 [1.47%] completed in  1h35m23s [ETA  
+4d11h50m14s]
+2025-12-05 11:22:02 507 of 34320 [1.48%] completed in  1h35m44s [ETA  4d12h 
+1m19s]
+2025-12-05 11:22:04 508 of 34320 [1.48%] completed in  1h35m46s [ETA  
+4d11h50m10s]
+2025-12-05 11:22:09 509 of 34320 [1.48%] completed in  1h35m51s [ETA  
+4d11h43m16s]
+2025-12-05 11:22:19 510 of 34320 [1.49%] completed in  1h36m 1s [ETA  
+4d11h41m40s]
+2025-12-05 11:22:26 511 of 34320 [1.49%] completed in  1h36m 8s [ETA  4d11h37m 
+8s]
+2025-12-05 11:22:53 512 of 34320 [1.49%] completed in  1h36m35s [ETA  
+4d11h54m20s]
+2025-12-05 11:22:53 513 of 34320 [1.49%] completed in  1h36m35s [ETA  
+4d11h42m27s]
+2025-12-05 11:23:38 514 of 34320 [1.5%] completed in  1h37m21s [ETA  4d12h20m 
+9s]
+2025-12-05 11:23:47 515 of 34320 [1.5%] completed in  1h37m29s [ETA  
+4d12h17m27s]
+2025-12-05 11:23:54 516 of 34320 [1.5%] completed in  1h37m36s [ETA  
+4d12h11m42s]
+2025-12-05 11:24:06 517 of 34320 [1.51%] completed in  1h37m48s [ETA  
+4d12h12m23s]
+2025-12-05 11:24:10 518 of 34320 [1.51%] completed in  1h37m52s [ETA  4d12h 5m 
+4s]
+2025-12-05 11:24:30 519 of 34320 [1.51%] completed in  1h38m13s [ETA  
+4d12h14m51s]
+2025-12-05 11:25:03 520 of 34320 [1.52%] completed in  1h38m45s [ETA  4d12h38m 
+5s]
+2025-12-05 11:25:10 521 of 34320 [1.52%] completed in  1h38m52s [ETA  
+4d12h33m30s]
+2025-12-05 11:25:36 522 of 34320 [1.52%] completed in  1h39m18s [ETA  
+4d12h49m38s]
+2025-12-05 11:25:43 523 of 34320 [1.52%] completed in  1h39m25s [ETA  4d12h44m 
+2s]
+2025-12-05 11:25:54 524 of 34320 [1.53%] completed in  1h39m36s [ETA  
+4d12h43m31s]
+2025-12-05 11:26:00 525 of 34320 [1.53%] completed in  1h39m42s [ETA  
+4d12h37m58s]
+2025-12-05 11:26:05 526 of 34320 [1.53%] completed in  1h39m47s [ETA  
+4d12h30m59s]
+2025-12-05 11:26:26 527 of 34320 [1.54%] completed in  1h40m 8s [ETA  
+4d12h41m50s]
+2025-12-05 11:26:30 528 of 34320 [1.54%] completed in  1h40m12s [ETA  
+4d12h33m16s]
+2025-12-05 11:26:42 529 of 34320 [1.54%] completed in  1h40m24s [ETA  4d12h34m 
+0s]
+2025-12-05 11:26:47 530 of 34320 [1.54%] completed in  1h40m29s [ETA  
+4d12h27m40s]
+2025-12-05 11:26:53 531 of 34320 [1.55%] completed in  1h40m35s [ETA  
+4d12h21m44s]
+2025-12-05 11:26:54 532 of 34320 [1.55%] completed in  1h40m37s [ETA  
+4d12h10m56s]
+2025-12-05 11:26:56 533 of 34320 [1.55%] completed in  1h40m38s [ETA  4d12h16s]
+2025-12-05 11:27:10 534 of 34320 [1.56%] completed in  1h40m52s [ETA  4d12h 
+3m10s]
+2025-12-05 11:27:19 535 of 34320 [1.56%] completed in  1h41m 1s [ETA  4d12h36s]
+2025-12-05 11:27:22 536 of 34320 [1.56%] completed in  1h41m 5s [ETA  
+4d11h52m25s]
+2025-12-05 11:27:23 537 of 34320 [1.56%] completed in  1h41m 5s [ETA  
+4d11h40m43s]
+2025-12-05 11:27:33 538 of 34320 [1.57%] completed in  1h41m15s [ETA  
+4d11h39m30s]
+2025-12-05 11:27:35 539 of 34320 [1.57%] completed in  1h41m17s [ETA  
+4d11h29m28s]
+2025-12-05 11:28:01 540 of 34320 [1.57%] completed in  1h41m43s [ETA  
+4d11h45m34s]
+2025-12-05 11:28:03 541 of 34320 [1.58%] completed in  1h41m45s [ETA  4d11h35m 
+0s]
+2025-12-05 11:28:19 542 of 34320 [1.58%] completed in  1h42m 1s [ETA  4d11h40m 
+0s]
+2025-12-05 11:28:26 543 of 34320 [1.58%] completed in  1h42m 8s [ETA  4d11h36m 
+1s]
+2025-12-05 11:28:36 544 of 34320 [1.59%] completed in  1h42m18s [ETA  
+4d11h34m29s]
+2025-12-05 11:28:46 545 of 34320 [1.59%] completed in  1h42m28s [ETA  
+4d11h33m36s]
+2025-12-05 11:28:47 546 of 34320 [1.59%] completed in  1h42m29s [ETA  
+4d11h21m58s]
+2025-12-05 11:29:14 547 of 34320 [1.59%] completed in  1h42m56s [ETA  
+4d11h38m36s]
+2025-12-05 11:29:24 548 of 34320 [1.6%] completed in  1h43m 6s [ETA  
+4d11h37m46s]
+2025-12-05 11:29:30 549 of 34320 [1.6%] completed in  1h43m13s [ETA  
+4d11h32m28s]
+2025-12-05 11:29:31 550 of 34320 [1.6%] completed in  1h43m13s [ETA  4d11h21m 
+2s]
+2025-12-05 11:29:34 551 of 34320 [1.61%] completed in  1h43m16s [ETA  
+4d11h12m36s]
+2025-12-05 11:29:50 552 of 34320 [1.61%] completed in  1h43m32s [ETA  
+4d11h17m41s]
+2025-12-05 11:30:04 553 of 34320 [1.61%] completed in  1h43m46s [ETA  
+4d11h20m43s]
+2025-12-05 11:30:11 554 of 34320 [1.61%] completed in  1h43m53s [ETA  
+4d11h16m24s]
+2025-12-05 11:30:14 555 of 34320 [1.62%] completed in  1h43m56s [ETA  4d11h 
+7m43s]
+2025-12-05 11:30:17 556 of 34320 [1.62%] completed in  1h43m59s [ETA  
+4d10h59m20s]
+2025-12-05 11:30:40 557 of 34320 [1.62%] completed in  1h44m22s [ETA  
+4d11h10m55s]
+2025-12-05 11:30:46 558 of 34320 [1.63%] completed in  1h44m28s [ETA  4d11h 6m 
+9s]
+2025-12-05 11:31:01 559 of 34320 [1.63%] completed in  1h44m43s [ETA  4d11h 
+9m27s]
+2025-12-05 11:31:19 560 of 34320 [1.63%] completed in  1h45m 1s [ETA  
+4d11h16m49s]
+2025-12-05 11:31:29 561 of 34320 [1.63%] completed in  1h45m11s [ETA  
+4d11h14m56s]
+2025-12-05 11:31:32 562 of 34320 [1.64%] completed in  1h45m14s [ETA  4d11h 
+7m21s]
+2025-12-05 11:31:35 563 of 34320 [1.64%] completed in  1h45m17s [ETA  
+4d10h58m10s]
+2025-12-05 11:31:50 564 of 34320 [1.64%] completed in  1h45m32s [ETA  4d11h 
+1m55s]
+2025-12-05 11:31:52 565 of 34320 [1.65%] completed in  1h45m34s [ETA  
+4d10h52m33s]
+2025-12-05 11:31:56 566 of 34320 [1.65%] completed in  1h45m38s [ETA  
+4d10h45m52s]
+2025-12-05 11:32:20 567 of 34320 [1.65%] completed in  1h46m 2s [ETA  
+4d10h58m20s]
+2025-12-05 11:33:00 568 of 34320 [1.66%] completed in  1h46m42s [ETA  
+4d11h27m45s]
+2025-12-05 11:33:02 569 of 34320 [1.66%] completed in  1h46m44s [ETA  
+4d11h18m40s]
+2025-12-05 11:33:19 570 of 34320 [1.66%] completed in  1h47m 1s [ETA  
+4d11h24m25s]
+2025-12-05 11:33:24 571 of 34320 [1.66%] completed in  1h47m 6s [ETA  
+4d11h17m39s]
+2025-12-05 11:33:33 572 of 34320 [1.67%] completed in  1h47m15s [ETA  
+4d11h15m50s]
+2025-12-05 11:33:40 573 of 34320 [1.67%] completed in  1h47m22s [ETA  
+4d11h10m50s]
+2025-12-05 11:33:52 574 of 34320 [1.67%] completed in  1h47m34s [ETA  4d11h12m 
+0s]
+2025-12-05 11:34:34 575 of 34320 [1.68%] completed in  1h48m16s [ETA  
+4d11h42m34s]
+2025-12-05 11:34:42 576 of 34320 [1.68%] completed in  1h48m24s [ETA  
+4d11h39m38s]
+2025-12-05 11:34:48 577 of 34320 [1.68%] completed in  1h48m30s [ETA  
+4d11h33m56s]
+2025-12-05 11:34:50 578 of 34320 [1.68%] completed in  1h48m32s [ETA  4d11h25m 
+4s]
+2025-12-05 11:35:02 579 of 34320 [1.69%] completed in  1h48m44s [ETA  
+4d11h25m57s]
+2025-12-05 11:35:13 580 of 34320 [1.69%] completed in  1h48m55s [ETA  4d11h25m 
+6s]
+2025-12-05 11:35:25 581 of 34320 [1.69%] completed in  1h49m 7s [ETA  
+4d11h26m31s]
+2025-12-05 11:35:32 582 of 34320 [1.7%] completed in  1h49m14s [ETA  
+4d11h21m55s]
+2025-12-05 11:35:32 583 of 34320 [1.7%] completed in  1h49m14s [ETA  
+4d11h10m58s]
+2025-12-05 11:35:41 584 of 34320 [1.7%] completed in  1h49m23s [ETA  4d11h 
+8m43s]
+2025-12-05 11:36:41 585 of 34320 [1.7%] completed in  1h50m23s [ETA  
+4d11h56m31s]
+2025-12-05 11:36:43 586 of 34320 [1.71%] completed in  1h50m25s [ETA  
+4d11h46m48s]
+2025-12-05 11:36:53 587 of 34320 [1.71%] completed in  1h50m35s [ETA  
+4d11h45m34s]
+2025-12-05 11:37:02 588 of 34320 [1.71%] completed in  1h50m44s [ETA  4d11h44m 
+1s]
+2025-12-05 11:37:04 589 of 34320 [1.72%] completed in  1h50m46s [ETA  4d11h35m 
+1s]
+2025-12-05 11:37:22 590 of 34320 [1.72%] completed in  1h51m 4s [ETA  
+4d11h40m56s]
+2025-12-05 11:37:24 591 of 34320 [1.72%] completed in  1h51m 6s [ETA  
+4d11h31m53s]
+2025-12-05 11:37:28 592 of 34320 [1.72%] completed in  1h51m10s [ETA  
+4d11h25m31s]
+2025-12-05 11:37:37 593 of 34320 [1.73%] completed in  1h51m19s [ETA  
+4d11h23m14s]
+2025-12-05 11:37:38 594 of 34320 [1.73%] completed in  1h51m20s [ETA  4d11h13m 
+5s]
+2025-12-05 11:37:49 595 of 34320 [1.73%] completed in  1h51m31s [ETA  
+4d11h12m44s]
+2025-12-05 11:37:49 596 of 34320 [1.74%] completed in  1h51m31s [ETA  4d11h 
+1m56s]
+2025-12-05 11:38:00 597 of 34320 [1.74%] completed in  1h51m42s [ETA  4d11h 
+1m44s]
+2025-12-05 11:38:05 598 of 34320 [1.74%] completed in  1h51m47s [ETA  
+4d10h55m32s]
+2025-12-05 11:38:28 599 of 34320 [1.75%] completed in  1h52m10s [ETA  4d11h 7m 
+9s]
+2025-12-05 11:38:32 600 of 34320 [1.75%] completed in  1h52m14s [ETA  4d11h 9s]

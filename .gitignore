@@ -79,12 +79,12 @@ env.test.*
 *.tmp
 
 # Training outputs / weights
-training_runs/
-checkpoints/
-*.pt
-*.pth
-*.ckpt
-*.ckpt.pt
+# training_runs/
+# checkpoints/
+# *.pt
+# *.pth
+# *.ckpt
+# *.ckpt.pt
 
 # Binary / docs (ignore on request)
 *.png

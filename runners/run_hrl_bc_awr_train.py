@@ -373,6 +373,47 @@ def _load_samples_from_world_dirs_batch_backfill(
     chunk_size = max(1, int(backfill_world_chunk))
     errors: List[Tuple[str, str]] = []
 
+    def _backfill_results(results: List[Dict[str, Any]]) -> None:
+        macro_chunk: List[data_pipeline.MacroSample] = []
+        offsets: List[Tuple[Dict[str, Any], int, int]] = []
+        for res in results:
+            if res.get("error"):
+                errors.append((res.get("world_dir", ""), res["error"]))
+                continue
+            ms = res.get("macro_samples", [])
+            start = len(macro_chunk)
+            macro_chunk.extend(ms)
+            offsets.append((res, start, len(ms)))
+
+        if macro_chunk:
+            goal_hat = data_pipeline._predict_goal_hat_for_macro_samples(
+                macro_chunk,
+                model_path=l2_model_path,
+                device=l2_backfill_device,
+                batch_size=l2_backfill_batch_size,
+            )
+            if int(getattr(goal_hat, "shape", [0])[0]) != len(macro_chunk):
+                raise RuntimeError("goal_hat size mismatch with macro_samples; aborting to avoid wrong backfill")
+        else:
+            goal_hat = np.zeros((0, 16), dtype=np.float32)
+
+        for res, start, count in offsets:
+            if count > 0:
+                goal_slice = goal_hat[start : start + count]
+                if len(goal_slice) != count:
+                    raise RuntimeError("goal_hat slice size mismatch; aborting to avoid wrong backfill")
+                data_pipeline._apply_goal_hat_to_neg_logs(
+                    res.get("neg_logs", []),
+                    res.get("macro_samples", []),
+                    goal_slice,
+                )
+            micro = data_pipeline.extract_l3_residuals(
+                res.get("neg_logs", []),
+                daily_states=res.get("daily_states"),
+            )
+            macro_samples.extend(res.get("macro_samples", []))
+            micro_samples.extend(micro)
+
     for chunk in _chunk_list(world_dirs, chunk_size):
         results: List[Dict[str, Any]] = []
 
@@ -401,42 +442,7 @@ def _load_samples_from_world_dirs_batch_backfill(
                     _ingest(raw)
                     parse_progress.step()
 
-        macro_chunk: List[data_pipeline.MacroSample] = []
-        offsets: List[Tuple[Dict[str, Any], int, int]] = []
-        for res in results:
-            if res.get("error"):
-                errors.append((res.get("world_dir", ""), res["error"]))
-                continue
-            ms = res.get("macro_samples", [])
-            start = len(macro_chunk)
-            macro_chunk.extend(ms)
-            offsets.append((res, start, len(ms)))
-
-        if macro_chunk:
-            goal_hat = data_pipeline._predict_goal_hat_for_macro_samples(
-                macro_chunk,
-                model_path=l2_model_path,
-                device=l2_backfill_device,
-                batch_size=l2_backfill_batch_size,
-            )
-        else:
-            goal_hat = np.zeros((0, 16), dtype=np.float32)
-
-        for res, start, count in offsets:
-            if count > 0:
-                goal_slice = goal_hat[start : start + count]
-                data_pipeline._apply_goal_hat_to_neg_logs(
-                    res.get("neg_logs", []),
-                    res.get("macro_samples", []),
-                    goal_slice,
-                )
-            micro = data_pipeline.extract_l3_residuals(
-                res.get("neg_logs", []),
-                daily_states=res.get("daily_states"),
-            )
-            macro_samples.extend(res.get("macro_samples", []))
-            micro_samples.extend(micro)
-
+        _backfill_results(results)
         backfill_progress.advance(len(chunk))
 
     if errors:
@@ -972,7 +978,7 @@ def main() -> None:
     parser.add_argument("--stats-only", action="store_true", help="only run data + stats")
     parser.add_argument("--no-resume", action="store_true", help="disable auto-resume from checkpoints")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="validation split ratio (world-level)")
-    parser.add_argument("--test-ratio", type=float, default=0.0, help="test split ratio (world-level)")
+    parser.add_argument("--test-ratio", type=float, default=0.05, help="test split ratio (world-level)")
     parser.add_argument("--split-seed", type=int, default=42, help="split random seed")
     parser.add_argument("--regen-split", action="store_true", help="re-generate world split cache")
 
@@ -984,8 +990,8 @@ def main() -> None:
     parser.add_argument("--l2-epochs", type=int, default=10)
     parser.add_argument("--l3-epochs", type=int, default=10)
     parser.add_argument("--l4-epochs", type=int, default=10)
-    parser.add_argument("--l2-batch-size", type=int, default=64)
-    parser.add_argument("--l3-batch-size", type=int, default=32)
+    parser.add_argument("--l2-batch-size", type=int, default=512)
+    parser.add_argument("--l3-batch-size", type=int, default=256)
     parser.add_argument("--l4-batch-size", type=int, default=32)
     parser.add_argument("--l2-lr", type=float, default=3e-4)
     parser.add_argument("--l3-lr", type=float, default=1e-4)
@@ -993,19 +999,21 @@ def main() -> None:
     parser.add_argument("--l2-q-transform", type=str, default="none", choices=["none", "log1p", "sqrt"])
     parser.add_argument("--l2-q-weight", type=float, default=1.0)
     parser.add_argument("--l2-backfill-device", type=str, default="cuda", help="device for L2 backfill (cuda/cpu)")
-    parser.add_argument("--l2-backfill-batch-size", type=int, default=256, help="batch size for L2 backfill inference")
+    parser.add_argument("--l2-backfill-batch-size", type=int, default=1024, help="batch size for L2 backfill inference")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--log-every", type=int, default=1)
-    parser.add_argument("--l3-pre-tensorize", action="store_true", help="pre-tensorize L3 dataset")
+    parser.add_argument("--l3-pre-tensorize", action="store_true", default=True, help="pre-tensorize L3 dataset")
+    parser.add_argument("--no-l3-pre-tensorize", action="store_false", dest="l3_pre_tensorize", help="disable L3 pre-tensorize")
     parser.add_argument("--tensorize-workers", type=int, default=8, help="tensorize workers (0=auto)")
-    parser.add_argument("--dataloader-workers", type=int, default=8, help="DataLoader workers")
+    parser.add_argument("--dataloader-workers", type=int, default=16, help="DataLoader workers")
     parser.add_argument("--dataloader-pin-memory", action="store_true", default=True, help="pin memory for DataLoader")
     parser.add_argument("--no-dataloader-pin-memory", action="store_false", dest="dataloader_pin_memory", help="disable pin memory for DataLoader")
-    parser.add_argument("--dataloader-persistent-workers", action="store_true", help="keep DataLoader workers")
-    parser.add_argument("--dataloader-prefetch-factor", type=int, default=2, help="prefetch factor when workers > 0")
+    parser.add_argument("--dataloader-persistent-workers", action="store_true", default=True, help="keep DataLoader workers")
+    parser.add_argument("--no-dataloader-persistent-workers", action="store_false", dest="dataloader_persistent_workers", help="disable DataLoader persistent workers")
+    parser.add_argument("--dataloader-prefetch-factor", type=int, default=4, help="prefetch factor when workers > 0")
     parser.add_argument("--dataloader-drop-last", action="store_true", help="drop last incomplete batch")
-    parser.add_argument("--batch-log-every", type=int, default=50, help="log loss every N batches (0=off)")
+    parser.add_argument("--batch-log-every", type=int, default=200, help="log loss every N batches (0=off)")
     parser.add_argument("--no-progress-bar", action="store_true", help="disable batch progress bar")
     parser.add_argument("--backfill-world-chunk", type=int, default=256, help="worlds per L2 backfill batch")
 

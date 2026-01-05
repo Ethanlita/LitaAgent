@@ -1,0 +1,15 @@
+✓ 加载 Top Agents (5): ['XenoSotaAgent', 'UltraSuperMiracleSoraFinalAgentZ', 'PonponAgent', 'ProactiveAgent', 'KATSUDONAgent']
+======================================================================
+🔬 深度诊断 - 与 run_std_quick 相同规模
+======================================================================
+参赛者数量: 13
+参赛者: ['LitaAgentY', 'LitaAgentYR', 'LitaAgentCIR', 'LitaAgentN', 'LitaAgentP', 'XenoSotaAgent', 'UltraSuperMiracleSoraFinalAgentZ', 'PonponAgent', 'ProactiveAgent', 'KATSUDONAgent', 'RandomStdAgent', 'GreedyStdAgent', 'SyncRandomStdAgent']
+配置: n_configs=3, n_steps=50, max_worlds_per_config=None
+并行模式: loky（传给 negmas: parallel）
+主进程 PID: 5374
+监控日志: /home/ecs-user/LitaAgent/diagnose_logs/monitor_20251203_220138.log
+主日志: /home/ecs-user/LitaAgent/diagnose_logs/main_20251203_220138.log
+Negmas 输出目录: /home/ecs-user/LitaAgent/results/clean_run_20251203_220138
+Future 追踪: /home/ecs-user/LitaAgent/diagnose_logs/future_trace_20251203_220138.log
+
+🚀 开始比赛 (无超时限制)...

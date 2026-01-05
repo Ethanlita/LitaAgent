@@ -1,0 +1,38 @@
+✓ 加载 Top Agents (5): ['XenoSotaAgent', 'UltraSuperMiracleSoraFinalAgentZ', 'PonponAgent', 'ProactiveAgent', 'KATSUDONAgent']
+======================================================================
+🔬 深度诊断 - 与 run_std_quick 相同规模
+======================================================================
+参赛者数量: 13
+参赛者: ['LitaAgentY', 'LitaAgentYR', 'LitaAgentCIR', 'LitaAgentN', 'LitaAgentP', 'XenoSotaAgent', 'UltraSuperMiracleSoraFinalAgentZ', 'PonponAgent', 'ProactiveAgent', 'KATSUDONAgent', 'RandomStdAgent', 'GreedyStdAgent', 'SyncRandomStdAgent']
+配置: n_configs=3, n_steps=50, max_worlds_per_config=None
+并行模式: loky（传给 negmas: parallel）
+主进程 PID: 4981
+监控日志: /home/ecs-user/LitaAgent/diagnose_logs/monitor_20251203_222536.log
+主日志: /home/ecs-user/LitaAgent/diagnose_logs/main_20251203_222536.log
+Negmas 输出目录: /home/ecs-user/LitaAgent/results/clean_run_20251203_222536
+Future 追踪: /home/ecs-user/LitaAgent/diagnose_logs/future_trace_20251203_222536.log
+
+🚀 开始比赛 (无超时限制)...
+Simulating ... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 1:49:59
+
+======================================================================
+✅ 比赛完成! 耗时: 6753.9s
+======================================================================
+🏆 冠军: ['UltraSuperMiracleSoraFinalAgentZ']
+
+📊 排名:
+  1. UltraSuperMiracleSoraFinalAgentZ: 1.0710
+  2. XenoSotaAgent: 1.0311
+  3. PonponAgent: 0.9505
+  4. LitaAgentY: 0.8660
+  5. KATSUDONAgent: 0.7619
+  6. LitaAgentYR: 0.7594
+  7. SyncRandomStdAgent: 0.7415
+  8. GreedyStdAgent: 0.7330
+  9. LitaAgentP: 0.6779
+  10. LitaAgentCIR: 0.5911
+  11. ProactiveAgent: 0.5126
+  12. LitaAgentN: 0.4997
+  13. RandomStdAgent: 0.0239
+
+📁 监控日志已保存到: /home/ecs-user/LitaAgent/diagnose_logs/monitor_20251203_222536.log

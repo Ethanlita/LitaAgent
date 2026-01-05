@@ -1,0 +1,861 @@
+[2025-12-03 22:01:46.656] ================================================================================
+[2025-12-03 22:01:46.656] 监控启动
+[2025-12-03 22:01:46.656] 主进程 PID: 5374
+[2025-12-03 22:01:46.656] ================================================================================
+[2025-12-03 22:01:51.727] ------------------------------------------------------------
+[2025-12-03 22:01:51.743] 检查 #1 | 运行时间: 5s | 系统负载: 1.11 0.54 0.25 2/829 5485
+[2025-12-03 22:01:51.753] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:01:51.763] 子进程数变化: 0 -> 1
+[2025-12-03 22:01:56.786] ------------------------------------------------------------
+[2025-12-03 22:01:56.786] 检查 #2 | 运行时间: 10s | 系统负载: 1.25 0.58 0.27 3/827 5492
+[2025-12-03 22:01:56.786] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:01.799] ------------------------------------------------------------
+[2025-12-03 22:02:01.800] 检查 #3 | 运行时间: 15s | 系统负载: 1.31 0.61 0.28 4/827 5493
+[2025-12-03 22:02:01.801] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:06.812] ------------------------------------------------------------
+[2025-12-03 22:02:06.813] 检查 #4 | 运行时间: 20s | 系统负载: 1.37 0.63 0.29 4/824 5496
+[2025-12-03 22:02:06.813] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:11.826] ------------------------------------------------------------
+[2025-12-03 22:02:11.827] 检查 #5 | 运行时间: 25s | 系统负载: 1.50 0.67 0.31 4/823 5498
+[2025-12-03 22:02:11.828] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:16.842] ------------------------------------------------------------
+[2025-12-03 22:02:16.842] 检查 #6 | 运行时间: 30s | 系统负载: 1.62 0.71 0.32 4/826 5505
+[2025-12-03 22:02:16.843] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:21.856] ------------------------------------------------------------
+[2025-12-03 22:02:21.857] 检查 #7 | 运行时间: 35s | 系统负载: 1.65 0.73 0.33 4/824 5506
+[2025-12-03 22:02:21.858] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:26.904] ------------------------------------------------------------
+[2025-12-03 22:02:26.911] 检查 #8 | 运行时间: 40s | 系统负载: 1.68 0.75 0.34 3/824 5511
+[2025-12-03 22:02:26.931] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:31.982] ------------------------------------------------------------
+[2025-12-03 22:02:31.992] 检查 #9 | 运行时间: 45s | 系统负载: 1.70 0.77 0.35 3/822 5512
+[2025-12-03 22:02:31.994] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:37.291] ------------------------------------------------------------
+[2025-12-03 22:02:37.304] 检查 #10 | 运行时间: 51s | 系统负载: 1.73 0.79 0.36 3/823 5516
+[2025-12-03 22:02:37.316] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:42.366] ------------------------------------------------------------
+[2025-12-03 22:02:42.376] 检查 #11 | 运行时间: 56s | 系统负载: 1.67 0.80 0.36 2/821 5521
+[2025-12-03 22:02:42.386] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:47.403] ------------------------------------------------------------
+[2025-12-03 22:02:47.405] 检查 #12 | 运行时间: 61s | 系统负载: 1.70 0.82 0.37 2/823 5526
+[2025-12-03 22:02:47.406] 子进程数: 1 | 状态分布: {'R': 1}
+[2025-12-03 22:02:47.407] === 详细子进程列表 ===
+[2025-12-03 22:02:47.409]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5526    5374 R  0.0  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:02:52.473] ------------------------------------------------------------
+[2025-12-03 22:02:52.473] 检查 #13 | 运行时间: 66s | 系统负载: 4.28 1.37 0.55 37/2966 7674
+[2025-12-03 22:02:52.473] 子进程数: 35 | 状态分布: {'S': 2, 'R': 33}
+[2025-12-03 22:02:52.473] 子进程数变化: 1 -> 35
+[2025-12-03 22:02:57.512] ------------------------------------------------------------
+[2025-12-03 22:02:57.512] 检查 #14 | 运行时间: 71s | 系统负载: 6.90 1.96 0.75 34/2975 7705
+[2025-12-03 22:02:57.512] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:03:02.552] ------------------------------------------------------------
+[2025-12-03 22:03:02.552] 检查 #15 | 运行时间: 76s | 系统负载: 9.07 2.49 0.93 37/3000 7741
+[2025-12-03 22:03:02.552] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:03:07.592] ------------------------------------------------------------
+[2025-12-03 22:03:07.592] 检查 #16 | 运行时间: 81s | 系统负载: 11.15 3.03 1.11 37/2998 7748
+[2025-12-03 22:03:07.592] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:03:12.626] ------------------------------------------------------------
+[2025-12-03 22:03:12.626] 检查 #17 | 运行时间: 86s | 系统负载: 13.06 3.56 1.29 35/2998 7753
+[2025-12-03 22:03:12.626] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:03:17.669] ------------------------------------------------------------
+[2025-12-03 22:03:17.669] 检查 #18 | 运行时间: 91s | 系统负载: 14.74 4.07 1.47 36/2999 7756
+[2025-12-03 22:03:17.669] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:03:22.689] ------------------------------------------------------------
+[2025-12-03 22:03:22.689] 检查 #19 | 运行时间: 96s | 系统负载: 16.28 4.57 1.64 27/3002 7777
+[2025-12-03 22:03:22.689] 子进程数: 35 | 状态分布: {'S': 4, 'R': 23, 'D': 8}
+[2025-12-03 22:03:27.702] ------------------------------------------------------------
+[2025-12-03 22:03:27.702] 检查 #20 | 运行时间: 101s | 系统负载: 17.62 5.04 1.81 18/3000 7780
+[2025-12-03 22:03:27.702] 子进程数: 35 | 状态分布: {'S': 5, 'D': 16, 'R': 14}
+[2025-12-03 22:03:32.742] ------------------------------------------------------------
+[2025-12-03 22:03:32.743] 检查 #21 | 运行时间: 106s | 系统负载: 18.85 5.50 1.98 35/3002 7788
+[2025-12-03 22:03:32.743] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:03:37.761] ------------------------------------------------------------
+[2025-12-03 22:03:37.761] 检查 #22 | 运行时间: 111s | 系统负载: 20.06 5.98 2.15 24/2999 7789
+[2025-12-03 22:03:37.761] 子进程数: 35 | 状态分布: {'S': 5, 'D': 10, 'R': 20}
+[2025-12-03 22:03:42.775] ------------------------------------------------------------
+[2025-12-03 22:03:42.775] 检查 #23 | 运行时间: 116s | 系统负载: 21.18 6.44 2.32 24/3000 7794
+[2025-12-03 22:03:42.775] 子进程数: 35 | 状态分布: {'S': 4, 'D': 10, 'R': 21}
+[2025-12-03 22:03:47.813] ------------------------------------------------------------
+[2025-12-03 22:03:47.813] 检查 #24 | 运行时间: 121s | 系统负载: 22.29 6.92 2.50 34/2998 7796
+[2025-12-03 22:03:47.813] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:03:47.813] === 详细子进程列表 ===
+[2025-12-03 22:03:47.814]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S 11.2  0.0       00:59 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  4.0  0.0       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5592    5374 R 80.8  0.1       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-1 --pipe 13
+   5593    5374 R 81.9  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-2 --pipe 14
+   5594    5374 R 82.9  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-3 --pipe 15
+   5595    5374 R 88.6  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-4 --pipe 16
+   5596    5374 S 98.0  0.1       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-5 --pipe 17
+   5597    5374 R 89.3  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-6 --pipe 18
+   5598    5374 R 88.5  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-7 --pipe 19
+   5599    5374 R 82.9  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5600    5374 S 81.7  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-9 --pipe 21
+   5601    5374 R 88.8  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-10 --pipe 23
+   5602    5374 R 81.0  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-11 --pipe 24
+   5603    5374 R 84.9  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-12 --pipe 25
+   5604    5374 R 82.3  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-13 --pipe 26
+   5605    5374 R 83.3  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-14 --pipe 30
+   5606    5374 R 89.8  0.5       00:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-15 --pipe 31
+   5607    5374 R 81.0  0.2       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-16 --pipe 32
+   5608    5374 R 87.6  0.1       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-17 --pipe 33
+   5609    5374 R 82.9  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-18 --pipe 34
+   5610    5374 R 83.8  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-19 --pipe 35
+   5611    5374 R 89.2  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-20 --pipe 36
+   5612    5374 R 86.7  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5613    5374 R 81.1  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-22 --pipe 38
+   5614    5374 S 83.1  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-23 --pipe 39
+   5615    5374 R 82.0  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-24 --pipe 40
+   5616    5374 S 99.0  0.4       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5617    5374 R 81.0  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-26 --pipe 42
+   5618    5374 R 88.2  0.1       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-27 --pipe 43
+   5619    5374 R 83.2  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-28 --pipe 44
+   5620    5374 R 88.0  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-29 --pipe 45
+   5621    5374 R 82.2  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-30 --pipe 46
+   5622    5374 R 82.0  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-31 --pipe 47
+   5623    5374 R 84.3  0.5       00:57 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   7796    5374 R  0.0  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:03:52.852] ------------------------------------------------------------
+[2025-12-03 22:03:52.852] 检查 #25 | 运行时间: 126s | 系统负载: 23.31 7.38 2.67 36/2998 7804
+[2025-12-03 22:03:52.852] 子进程数: 35 | 状态分布: {'S': 9, 'R': 26}
+[2025-12-03 22:03:57.893] ------------------------------------------------------------
+[2025-12-03 22:03:57.893] 检查 #26 | 运行时间: 131s | 系统负载: 24.24 7.84 2.85 34/2999 7809
+[2025-12-03 22:03:57.893] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:04:02.919] ------------------------------------------------------------
+[2025-12-03 22:04:02.919] 检查 #27 | 运行时间: 136s | 系统负载: 25.02 8.28 3.01 36/2999 7812
+[2025-12-03 22:04:02.919] 子进程数: 35 | 状态分布: {'S': 8, 'D': 3, 'R': 24}
+[2025-12-03 22:04:07.957] ------------------------------------------------------------
+[2025-12-03 22:04:07.957] 检查 #28 | 运行时间: 141s | 系统负载: 25.58 8.67 3.17 35/2994 7813
+[2025-12-03 22:04:07.957] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:04:12.995] ------------------------------------------------------------
+[2025-12-03 22:04:12.995] 检查 #29 | 运行时间: 146s | 系统负载: 26.18 9.07 3.33 35/2993 7816
+[2025-12-03 22:04:12.995] 子进程数: 35 | 状态分布: {'S': 7, 'R': 28}
+[2025-12-03 22:04:18.033] ------------------------------------------------------------
+[2025-12-03 22:04:18.033] 检查 #30 | 运行时间: 151s | 系统负载: 27.04 9.54 3.51 34/2993 7818
+[2025-12-03 22:04:18.033] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:04:23.069] ------------------------------------------------------------
+[2025-12-03 22:04:23.069] 检查 #31 | 运行时间: 156s | 系统负载: 27.60 9.94 3.67 34/2992 7884
+[2025-12-03 22:04:23.069] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:04:28.109] ------------------------------------------------------------
+[2025-12-03 22:04:28.109] 检查 #32 | 运行时间: 161s | 系统负载: 28.19 10.36 3.84 34/2992 7885
+[2025-12-03 22:04:28.109] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:04:33.145] ------------------------------------------------------------
+[2025-12-03 22:04:33.145] 检查 #33 | 运行时间: 166s | 系统负载: 28.66 10.75 4.01 35/2996 7893
+[2025-12-03 22:04:33.145] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:04:38.182] ------------------------------------------------------------
+[2025-12-03 22:04:38.182] 检查 #34 | 运行时间: 171s | 系统负载: 29.01 11.12 4.16 35/2995 7896
+[2025-12-03 22:04:38.182] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:04:43.221] ------------------------------------------------------------
+[2025-12-03 22:04:43.221] 检查 #35 | 运行时间: 177s | 系统负载: 29.57 11.54 4.33 35/2993 7963
+[2025-12-03 22:04:43.221] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:04:48.262] ------------------------------------------------------------
+[2025-12-03 22:04:48.262] 检查 #36 | 运行时间: 182s | 系统负载: 32.24 12.39 4.65 35/2995 8031
+[2025-12-03 22:04:48.262] 子进程数: 35 | 状态分布: {'S': 7, 'R': 28}
+[2025-12-03 22:04:48.262] === 详细子进程列表 ===
+[2025-12-03 22:04:48.262]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  5.5  0.0       02:00 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  1.9  0.0       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5592    5374 R 88.5  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-1 --pipe 13
+   5593    5374 R 89.2  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-2 --pipe 14
+   5594    5374 R 89.8  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-3 --pipe 15
+   5595    5374 R 92.8  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-4 --pipe 16
+   5596    5374 S 97.8  0.1       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-5 --pipe 17
+   5597    5374 R 92.8  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-6 --pipe 18
+   5598    5374 S 93.1  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-7 --pipe 19
+   5599    5374 S 90.0  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5600    5374 R 89.7  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-9 --pipe 21
+   5601    5374 R 91.8  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-10 --pipe 23
+   5602    5374 R 88.8  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-11 --pipe 24
+   5603    5374 R 91.0  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-12 --pipe 25
+   5604    5374 R 90.2  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-13 --pipe 26
+   5605    5374 R 90.1  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-14 --pipe 30
+   5606    5374 R 92.1  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-15 --pipe 31
+   5608    5374 R 92.5  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-17 --pipe 33
+   5609    5374 R 90.3  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-18 --pipe 34
+   5610    5374 R 90.3  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-19 --pipe 35
+   5611    5374 R 92.8  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-20 --pipe 36
+   5612    5374 R 92.5  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5613    5374 R 89.1  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-22 --pipe 38
+   5614    5374 S 90.2  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-23 --pipe 39
+   5616    5374 S 98.4  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5617    5374 R 89.0  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-26 --pipe 42
+   5619    5374 R 90.0  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-28 --pipe 44
+   5620    5374 R 92.2  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-29 --pipe 45
+   5621    5374 R 89.9  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-30 --pipe 46
+   5622    5374 R 88.6  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-31 --pipe 47
+   5623    5374 R 90.3  0.5       01:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   7819    5374 R  104  0.5       00:25 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-33 --pipe 48
+   7898    5374 R  126  0.4       00:09 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-34 --pipe 48
+   7965    5374 R  229  0.0       00:02 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-35 --pipe 48
+   8031    5374 R  100  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:04:53.291] ------------------------------------------------------------
+[2025-12-03 22:04:53.291] 检查 #37 | 运行时间: 187s | 系统负载: 32.55 12.78 4.82 35/2994 8036
+[2025-12-03 22:04:53.292] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:04:58.331] ------------------------------------------------------------
+[2025-12-03 22:04:58.331] 检查 #38 | 运行时间: 192s | 系统负载: 32.66 13.13 4.97 35/2993 8100
+[2025-12-03 22:04:58.331] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:05:03.368] ------------------------------------------------------------
+[2025-12-03 22:05:03.368] 检查 #39 | 运行时间: 197s | 系统负载: 32.77 13.48 5.13 34/2993 8107
+[2025-12-03 22:05:03.368] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:05:08.405] ------------------------------------------------------------
+[2025-12-03 22:05:08.405] 检查 #40 | 运行时间: 202s | 系统负载: 32.95 13.84 5.29 36/2998 8113
+[2025-12-03 22:05:08.405] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:05:13.444] ------------------------------------------------------------
+[2025-12-03 22:05:13.444] 检查 #41 | 运行时间: 207s | 系统负载: 33.03 14.17 5.44 34/2993 8117
+[2025-12-03 22:05:13.444] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:05:18.478] ------------------------------------------------------------
+[2025-12-03 22:05:18.478] 检查 #42 | 运行时间: 212s | 系统负载: 33.11 14.50 5.60 35/2993 8118
+[2025-12-03 22:05:18.478] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:05:23.516] ------------------------------------------------------------
+[2025-12-03 22:05:23.516] 检查 #43 | 运行时间: 217s | 系统负载: 33.34 14.86 5.76 35/2992 8121
+[2025-12-03 22:05:23.516] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:05:28.535] ------------------------------------------------------------
+[2025-12-03 22:05:28.535] 检查 #44 | 运行时间: 222s | 系统负载: 33.31 15.16 5.91 34/2992 8122
+[2025-12-03 22:05:28.536] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:05:33.567] ------------------------------------------------------------
+[2025-12-03 22:05:33.567] 检查 #45 | 运行时间: 227s | 系统负载: 33.45 15.49 6.07 32/2992 8125
+[2025-12-03 22:05:33.567] 子进程数: 35 | 状态分布: {'S': 6, 'R': 26, 'D': 3}
+[2025-12-03 22:05:38.602] ------------------------------------------------------------
+[2025-12-03 22:05:38.602] 检查 #46 | 运行时间: 232s | 系统负载: 33.41 15.78 6.21 34/2992 8126
+[2025-12-03 22:05:38.602] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:05:43.633] ------------------------------------------------------------
+[2025-12-03 22:05:43.633] 检查 #47 | 运行时间: 237s | 系统负载: 33.30 16.05 6.35 34/2932 8133
+[2025-12-03 22:05:43.633] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:05:48.671] ------------------------------------------------------------
+[2025-12-03 22:05:48.671] 检查 #48 | 运行时间: 242s | 系统负载: 33.44 16.37 6.50 33/2992 8197
+[2025-12-03 22:05:48.671] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:05:48.671] === 详细子进程列表 ===
+[2025-12-03 22:05:48.672]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  3.7  0.0       03:00 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  1.3  0.0       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5593    5374 R 92.0  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-2 --pipe 14
+   5594    5374 R 91.8  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-3 --pipe 15
+   5595    5374 R 94.2  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-4 --pipe 16
+   5596    5374 S 97.9  0.1       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-5 --pipe 17
+   5597    5374 R 94.2  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-6 --pipe 18
+   5598    5374 R 94.5  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-7 --pipe 19
+   5599    5374 S 91.8  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5600    5374 R 92.1  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-9 --pipe 21
+   5601    5374 R 92.9  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-10 --pipe 23
+   5602    5374 R 91.4  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-11 --pipe 24
+   5603    5374 R 93.0  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-12 --pipe 25
+   5604    5374 S 92.4  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-13 --pipe 26
+   5605    5374 R 92.1  0.6       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-14 --pipe 30
+   5606    5374 R 93.6  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-15 --pipe 31
+   5609    5374 R 92.3  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-18 --pipe 34
+   5610    5374 R 92.5  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-19 --pipe 35
+   5611    5374 R 94.3  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-20 --pipe 36
+   5612    5374 R 93.9  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5613    5374 R 91.5  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-22 --pipe 38
+   5614    5374 R 92.1  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-23 --pipe 39
+   5616    5374 R 98.5  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5617    5374 R 91.3  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-26 --pipe 42
+   5619    5374 R 92.1  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-28 --pipe 44
+   5620    5374 R 93.6  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-29 --pipe 45
+   5621    5374 R 92.4  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-30 --pipe 46
+   5622    5374 R 91.1  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-31 --pipe 47
+   5623    5374 R 92.5  0.5       02:58 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   7819    5374 R 98.8  0.5       01:26 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-33 --pipe 48
+   7898    5374 R 99.2  0.5       01:09 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-34 --pipe 48
+   7965    5374 R 98.8  0.4       01:02 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-35 --pipe 48
+   8037    5374 R  100  0.5       00:51 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8134    5374 R  151  0.3       00:04 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-37 --pipe 48
+   8197    5374 R  100  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:05:53.701] ------------------------------------------------------------
+[2025-12-03 22:05:53.701] 检查 #49 | 运行时间: 247s | 系统负载: 33.48 16.66 6.65 36/2993 8202
+[2025-12-03 22:05:53.701] 子进程数: 35 | 状态分布: {'S': 7, 'R': 28}
+[2025-12-03 22:05:58.741] ------------------------------------------------------------
+[2025-12-03 22:05:58.741] 检查 #50 | 运行时间: 252s | 系统负载: 33.60 16.96 6.80 35/2992 8203
+[2025-12-03 22:05:58.742] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:06:03.780] ------------------------------------------------------------
+[2025-12-03 22:06:03.780] 检查 #51 | 运行时间: 257s | 系统负载: 33.72 17.26 6.96 37/2992 8206
+[2025-12-03 22:06:03.780] 子进程数: 35 | 状态分布: {'S': 7, 'R': 28}
+[2025-12-03 22:06:08.822] ------------------------------------------------------------
+[2025-12-03 22:06:08.822] 检查 #52 | 运行时间: 262s | 系统负载: 33.66 17.53 7.10 34/2996 8211
+[2025-12-03 22:06:08.822] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:06:13.856] ------------------------------------------------------------
+[2025-12-03 22:06:13.856] 检查 #53 | 运行时间: 267s | 系统负载: 33.61 17.78 7.23 35/2993 8215
+[2025-12-03 22:06:13.857] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:06:18.894] ------------------------------------------------------------
+[2025-12-03 22:06:18.894] 检查 #54 | 运行时间: 272s | 系统负载: 33.72 18.07 7.38 36/2992 8217
+[2025-12-03 22:06:18.894] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:06:23.933] ------------------------------------------------------------
+[2025-12-03 22:06:23.933] 检查 #55 | 运行时间: 277s | 系统负载: 33.90 18.37 7.54 36/2992 8220
+[2025-12-03 22:06:23.933] 子进程数: 35 | 状态分布: {'S': 9, 'R': 25, 'D': 1}
+[2025-12-03 22:06:28.971] ------------------------------------------------------------
+[2025-12-03 22:06:28.971] 检查 #56 | 运行时间: 282s | 系统负载: 33.91 18.63 7.68 35/2992 8221
+[2025-12-03 22:06:28.971] 子进程数: 35 | 状态分布: {'S': 9, 'R': 26}
+[2025-12-03 22:06:34.004] ------------------------------------------------------------
+[2025-12-03 22:06:34.004] 检查 #57 | 运行时间: 287s | 系统负载: 34.08 18.92 7.83 36/2993 8226
+[2025-12-03 22:06:34.005] 子进程数: 35 | 状态分布: {'S': 9, 'R': 26}
+[2025-12-03 22:06:39.045] ------------------------------------------------------------
+[2025-12-03 22:06:39.045] 检查 #58 | 运行时间: 292s | 系统负载: 34.07 19.17 7.97 35/2991 8227
+[2025-12-03 22:06:39.045] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:06:44.084] ------------------------------------------------------------
+[2025-12-03 22:06:44.084] 检查 #59 | 运行时间: 297s | 系统负载: 33.90 19.38 8.10 36/2995 8236
+[2025-12-03 22:06:44.084] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:06:49.124] ------------------------------------------------------------
+[2025-12-03 22:06:49.124] 检查 #60 | 运行时间: 302s | 系统负载: 33.91 19.62 8.24 34/2993 8237
+[2025-12-03 22:06:49.124] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:06:49.124] === 详细子进程列表 ===
+[2025-12-03 22:06:49.124]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  2.7  0.0       04:01 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.9  0.0       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5593    5374 R 93.3  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-2 --pipe 14
+   5594    5374 R 92.8  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-3 --pipe 15
+   5595    5374 R 94.8  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-4 --pipe 16
+   5596    5374 S 98.0  0.1       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-5 --pipe 17
+   5597    5374 R 94.8  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-6 --pipe 18
+   5598    5374 R 95.0  0.5       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-7 --pipe 19
+   5599    5374 S 93.5  0.5       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5600    5374 R 93.4  0.5       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-9 --pipe 21
+   5601    5374 R 93.6  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-10 --pipe 23
+   5602    5374 R 92.7  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-11 --pipe 24
+   5603    5374 R 94.2  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-12 --pipe 25
+   5604    5374 R 93.4  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-13 --pipe 26
+   5605    5374 S 93.1  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-14 --pipe 30
+   5606    5374 R 94.3  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-15 --pipe 31
+   5609    5374 S 93.2  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-18 --pipe 34
+   5610    5374 R 93.6  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-19 --pipe 35
+   5611    5374 R 94.5  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-20 --pipe 36
+   5612    5374 S 94.6  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5613    5374 R 92.8  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-22 --pipe 38
+   5614    5374 R 93.0  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-23 --pipe 39
+   5616    5374 R 98.1  0.5       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5617    5374 S 93.0  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-26 --pipe 42
+   5619    5374 R 93.2  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-28 --pipe 44
+   5620    5374 R 94.2  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-29 --pipe 45
+   5621    5374 R 93.5  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-30 --pipe 46
+   5622    5374 R 92.6  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-31 --pipe 47
+   5623    5374 S 93.6  0.6       03:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   7819    5374 R 97.7  0.5       02:26 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-33 --pipe 48
+   7898    5374 S 97.3  0.5       02:10 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-34 --pipe 48
+   7965    5374 R 97.2  0.5       02:02 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-35 --pipe 48
+   8037    5374 R 98.7  0.5       01:52 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8134    5374 R 99.1  0.5       01:05 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-37 --pipe 48
+   8237    5374 R  100  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:06:54.160] ------------------------------------------------------------
+[2025-12-03 22:06:54.160] 检查 #61 | 运行时间: 307s | 系统负载: 33.84 19.84 8.38 34/2996 8249
+[2025-12-03 22:06:54.160] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:06:59.187] ------------------------------------------------------------
+[2025-12-03 22:06:59.187] 检查 #62 | 运行时间: 313s | 系统负载: 33.77 20.06 8.51 35/2992 8250
+[2025-12-03 22:06:59.187] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:07:04.226] ------------------------------------------------------------
+[2025-12-03 22:07:04.227] 检查 #63 | 运行时间: 318s | 系统负载: 33.87 20.31 8.65 35/2992 8253
+[2025-12-03 22:07:04.227] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:07:09.265] ------------------------------------------------------------
+[2025-12-03 22:07:09.265] 检查 #64 | 运行时间: 323s | 系统负载: 33.88 20.54 8.79 34/2992 8254
+[2025-12-03 22:07:09.265] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:07:14.302] ------------------------------------------------------------
+[2025-12-03 22:07:14.302] 检查 #65 | 运行时间: 328s | 系统负载: 33.89 20.76 8.92 36/2992 8259
+[2025-12-03 22:07:14.302] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:07:19.320] ------------------------------------------------------------
+[2025-12-03 22:07:19.321] 检查 #66 | 运行时间: 333s | 系统负载: 33.82 20.97 9.05 30/2992 8260
+[2025-12-03 22:07:19.321] 子进程数: 35 | 状态分布: {'S': 5, 'R': 25, 'D': 5}
+[2025-12-03 22:07:24.339] ------------------------------------------------------------
+[2025-12-03 22:07:24.339] 检查 #67 | 运行时间: 338s | 系统负载: 33.83 21.18 9.19 31/2992 8263
+[2025-12-03 22:07:24.339] 子进程数: 35 | 状态分布: {'S': 8, 'R': 23, 'D': 4}
+[2025-12-03 22:07:29.371] ------------------------------------------------------------
+[2025-12-03 22:07:29.371] 检查 #68 | 运行时间: 343s | 系统负载: 33.85 21.40 9.32 35/2994 8266
+[2025-12-03 22:07:29.372] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:07:34.405] ------------------------------------------------------------
+[2025-12-03 22:07:34.405] 检查 #69 | 运行时间: 348s | 系统负载: 34.02 21.64 9.46 36/2997 8272
+[2025-12-03 22:07:34.405] 子进程数: 35 | 状态分布: {'S': 7, 'R': 28}
+[2025-12-03 22:07:39.424] ------------------------------------------------------------
+[2025-12-03 22:07:39.425] 检查 #70 | 运行时间: 353s | 系统负载: 34.02 21.84 9.59 27/2997 8275
+[2025-12-03 22:07:39.425] 子进程数: 35 | 状态分布: {'S': 7, 'D': 5, 'R': 23}
+[2025-12-03 22:07:44.464] ------------------------------------------------------------
+[2025-12-03 22:07:44.464] 检查 #71 | 运行时间: 358s | 系统负载: 34.02 22.05 9.73 34/2995 8283
+[2025-12-03 22:07:44.465] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:07:49.502] ------------------------------------------------------------
+[2025-12-03 22:07:49.502] 检查 #72 | 运行时间: 363s | 系统负载: 34.02 22.25 9.86 34/2995 8284
+[2025-12-03 22:07:49.502] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:07:49.502] === 详细子进程列表 ===
+[2025-12-03 22:07:49.502]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  2.2  0.0       05:01 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.7  0.0       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5593    5374 R 93.8  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-2 --pipe 14
+   5594    5374 R 92.7  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-3 --pipe 15
+   5595    5374 R 94.6  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-4 --pipe 16
+   5596    5374 R 97.3  0.1       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-5 --pipe 17
+   5597    5374 R 94.9  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-6 --pipe 18
+   5598    5374 R 94.8  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-7 --pipe 19
+   5599    5374 S 94.7  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5600    5374 R 93.2  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-9 --pipe 21
+   5601    5374 R 93.7  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-10 --pipe 23
+   5602    5374 S 92.5  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-11 --pipe 24
+   5603    5374 R 94.2  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-12 --pipe 25
+   5604    5374 R 93.4  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-13 --pipe 26
+   5605    5374 R 93.6  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-14 --pipe 30
+   5606    5374 R 94.0  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-15 --pipe 31
+   5609    5374 R 93.2  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-18 --pipe 34
+   5610    5374 R 93.4  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-19 --pipe 35
+   5611    5374 S 94.7  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-20 --pipe 36
+   5612    5374 S 95.3  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5613    5374 R 93.3  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-22 --pipe 38
+   5614    5374 R 93.4  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-23 --pipe 39
+   5616    5374 R 97.1  0.5       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5617    5374 R 93.5  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-26 --pipe 42
+   5619    5374 R 93.7  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-28 --pipe 44
+   5620    5374 R 94.2  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-29 --pipe 45
+   5621    5374 R 93.5  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-30 --pipe 46
+   5622    5374 R 92.6  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-31 --pipe 47
+   5623    5374 R 94.4  0.6       04:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   7819    5374 R 96.3  0.5       03:27 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-33 --pipe 48
+   7898    5374 R 95.7  0.6       03:10 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-34 --pipe 48
+   7965    5374 R 95.6  0.5       03:03 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-35 --pipe 48
+   8037    5374 R 96.6  0.5       02:52 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8134    5374 R 96.2  0.5       02:05 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-37 --pipe 48
+   8284    5374 R  100  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:07:54.541] ------------------------------------------------------------
+[2025-12-03 22:07:54.541] 检查 #73 | 运行时间: 368s | 系统负载: 34.09 22.46 9.99 36/2994 8287
+[2025-12-03 22:07:54.541] 子进程数: 35 | 状态分布: {'S': 7, 'R': 27, 'D': 1}
+[2025-12-03 22:07:59.580] ------------------------------------------------------------
+[2025-12-03 22:07:59.580] 检查 #74 | 运行时间: 373s | 系统负载: 34.09 22.65 10.12 34/2994 8351
+[2025-12-03 22:07:59.580] 子进程数: 35 | 状态分布: {'S': 6, 'R': 29}
+[2025-12-03 22:08:04.621] ------------------------------------------------------------
+[2025-12-03 22:08:04.621] 检查 #75 | 运行时间: 378s | 系统负载: 34.40 22.90 10.27 35/2998 8359
+[2025-12-03 22:08:04.621] 子进程数: 35 | 状态分布: {'S': 9, 'R': 26}
+[2025-12-03 22:08:09.660] ------------------------------------------------------------
+[2025-12-03 22:08:09.660] 检查 #76 | 运行时间: 383s | 系统负载: 34.37 23.09 10.40 36/3001 8368
+[2025-12-03 22:08:09.660] 子进程数: 35 | 状态分布: {'S': 7, 'R': 28}
+[2025-12-03 22:08:14.699] ------------------------------------------------------------
+[2025-12-03 22:08:14.699] 检查 #77 | 运行时间: 388s | 系统负载: 34.42 23.29 10.53 34/2999 8373
+[2025-12-03 22:08:14.699] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:08:19.739] ------------------------------------------------------------
+[2025-12-03 22:08:19.739] 检查 #78 | 运行时间: 393s | 系统负载: 34.38 23.46 10.66 35/2999 8377
+[2025-12-03 22:08:19.739] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:08:24.775] ------------------------------------------------------------
+[2025-12-03 22:08:24.775] 检查 #79 | 运行时间: 398s | 系统负载: 34.51 23.67 10.79 35/2999 8382
+[2025-12-03 22:08:24.775] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:08:29.817] ------------------------------------------------------------
+[2025-12-03 22:08:29.817] 检查 #80 | 运行时间: 403s | 系统负载: 34.47 23.84 10.92 34/2999 8383
+[2025-12-03 22:08:29.817] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:08:34.857] ------------------------------------------------------------
+[2025-12-03 22:08:34.857] 检查 #81 | 运行时间: 408s | 系统负载: 34.35 24.00 11.04 35/3000 8388
+[2025-12-03 22:08:34.857] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:08:39.877] ------------------------------------------------------------
+[2025-12-03 22:08:39.877] 检查 #82 | 运行时间: 413s | 系统负载: 34.25 24.15 11.16 34/3001 8391
+[2025-12-03 22:08:39.877] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:08:44.898] ------------------------------------------------------------
+[2025-12-03 22:08:44.898] 检查 #83 | 运行时间: 418s | 系统负载: 34.07 24.28 11.27 32/2999 8458
+[2025-12-03 22:08:44.898] 子进程数: 35 | 状态分布: {'S': 9, 'R': 26}
+[2025-12-03 22:08:49.918] ------------------------------------------------------------
+[2025-12-03 22:08:49.918] 检查 #84 | 运行时间: 423s | 系统负载: 33.98 24.42 11.39 33/2999 8524
+[2025-12-03 22:08:49.918] 子进程数: 35 | 状态分布: {'S': 9, 'R': 26}
+[2025-12-03 22:08:49.918] === 详细子进程列表 ===
+[2025-12-03 22:08:49.918]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  1.8  0.0       06:01 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.6  0.0       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5593    5374 R 94.0  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-2 --pipe 14
+   5594    5374 S 93.5  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-3 --pipe 15
+   5595    5374 R 92.5  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-4 --pipe 16
+   5596    5374 S 97.2  0.5       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-5 --pipe 17
+   5597    5374 R 95.2  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-6 --pipe 18
+   5598    5374 R 95.1  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-7 --pipe 19
+   5599    5374 R 95.3  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5600    5374 R 93.6  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-9 --pipe 21
+   5602    5374 R 93.1  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-11 --pipe 24
+   5604    5374 S 94.0  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-13 --pipe 26
+   5606    5374 R 94.6  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-15 --pipe 31
+   5609    5374 R 93.7  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-18 --pipe 34
+   5610    5374 R 94.0  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-19 --pipe 35
+   5611    5374 S 92.8  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-20 --pipe 36
+   5612    5374 S 95.6  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5613    5374 S 93.9  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-22 --pipe 38
+   5614    5374 R 94.1  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-23 --pipe 39
+   5616    5374 R 97.0  0.5       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5617    5374 R 94.2  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-26 --pipe 42
+   5619    5374 R 94.3  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-28 --pipe 44
+   5620    5374 R 94.7  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-29 --pipe 45
+   5621    5374 R 93.8  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-30 --pipe 46
+   5622    5374 R 93.1  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-31 --pipe 47
+   5623    5374 S 94.9  0.6       06:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   7819    5374 R 96.5  0.6       04:27 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-33 --pipe 48
+   7898    5374 R 95.4  0.6       04:10 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-34 --pipe 48
+   7965    5374 R 96.1  0.6       04:03 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-35 --pipe 48
+   8037    5374 R 96.7  0.6       03:53 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8134    5374 R 95.9  0.6       03:06 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-37 --pipe 48
+   8288    5374 R  102  0.5       00:53 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-38 --pipe 48
+   8393    5374 R  133  0.4       00:07 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-39 --pipe 48
+   8459    5374 R  179  0.2       00:03 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-40 --pipe 48
+   8524    5374 R  0.0  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:08:54.959] ------------------------------------------------------------
+[2025-12-03 22:08:54.959] 检查 #85 | 运行时间: 428s | 系统负载: 33.82 24.55 11.50 34/3000 8594
+[2025-12-03 22:08:54.959] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:08:59.997] ------------------------------------------------------------
+[2025-12-03 22:08:59.997] 检查 #86 | 运行时间: 433s | 系统负载: 33.84 24.71 11.62 64/2997 8723
+[2025-12-03 22:08:59.997] 子进程数: 35 | 状态分布: {'S': 4, 'R': 31}
+[2025-12-03 22:09:05.038] ------------------------------------------------------------
+[2025-12-03 22:09:05.038] 检查 #87 | 运行时间: 438s | 系统负载: 33.77 24.84 11.73 34/2999 8793
+[2025-12-03 22:09:05.038] 子进程数: 35 | 状态分布: {'S': 5, 'R': 30}
+[2025-12-03 22:09:10.059] ------------------------------------------------------------
+[2025-12-03 22:09:10.059] 检查 #88 | 运行时间: 443s | 系统负载: 33.71 24.98 11.85 33/2997 8859
+[2025-12-03 22:09:10.059] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:09:15.082] ------------------------------------------------------------
+[2025-12-03 22:09:15.082] 检查 #89 | 运行时间: 448s | 系统负载: 33.57 25.10 11.96 37/2998 8931
+[2025-12-03 22:09:15.082] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:09:20.102] ------------------------------------------------------------
+[2025-12-03 22:09:20.102] 检查 #90 | 运行时间: 453s | 系统负载: 33.28 25.18 12.05 31/2998 8997
+[2025-12-03 22:09:20.102] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:09:25.121] ------------------------------------------------------------
+[2025-12-03 22:09:25.121] 检查 #91 | 运行时间: 458s | 系统负载: 32.78 25.21 12.13 26/2999 9066
+[2025-12-03 22:09:25.121] 子进程数: 35 | 状态分布: {'S': 15, 'R': 20}
+[2025-12-03 22:09:30.140] ------------------------------------------------------------
+[2025-12-03 22:09:30.140] 检查 #92 | 运行时间: 463s | 系统负载: 32.48 25.27 12.22 30/2997 9132
+[2025-12-03 22:09:30.140] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:09:35.162] ------------------------------------------------------------
+[2025-12-03 22:09:35.162] 检查 #93 | 运行时间: 468s | 系统负载: 32.04 25.30 12.30 32/2969 9238
+[2025-12-03 22:09:35.162] 子进程数: 35 | 状态分布: {'S': 9, 'R': 25, 'D': 1}
+[2025-12-03 22:09:40.183] ------------------------------------------------------------
+[2025-12-03 22:09:40.183] 检查 #94 | 运行时间: 474s | 系统负载: 31.79 25.36 12.39 28/2995 9333
+[2025-12-03 22:09:40.183] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:09:45.203] ------------------------------------------------------------
+[2025-12-03 22:09:45.203] 检查 #95 | 运行时间: 479s | 系统负载: 31.41 25.39 12.47 32/2996 9404
+[2025-12-03 22:09:45.203] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:09:50.223] ------------------------------------------------------------
+[2025-12-03 22:09:50.223] 检查 #96 | 运行时间: 484s | 系统负载: 31.22 25.45 12.56 30/2996 9472
+[2025-12-03 22:09:50.223] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:09:50.223] === 详细子进程列表 ===
+[2025-12-03 22:09:50.223]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  1.5  0.0       07:02 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.5  0.0       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5594    5374 S 89.4  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-3 --pipe 15
+   5596    5374 R 97.3  0.5       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-5 --pipe 17
+   5598    5374 S 94.5  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-7 --pipe 19
+   5599    5374 S 95.6  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5600    5374 S 94.2  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-9 --pipe 21
+   5604    5374 S 90.5  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-13 --pipe 26
+   5612    5374 S 94.6  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5616    5374 R 97.0  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5617    5374 R 94.1  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-26 --pipe 42
+   5620    5374 R 89.5  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-29 --pipe 45
+   5623    5374 R 95.3  0.6       07:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   7819    5374 R 96.2  0.6       05:27 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-33 --pipe 48
+   7898    5374 R 95.6  0.6       05:11 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-34 --pipe 48
+   8037    5374 R 96.8  0.6       04:53 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8134    5374 R 96.2  0.6       04:06 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-37 --pipe 48
+   8288    5374 R 99.2  0.5       01:53 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-38 --pipe 48
+   8393    5374 S 94.7  0.5       01:08 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-39 --pipe 48
+   8459    5374 S  102  0.4       01:03 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-40 --pipe 48
+   8525    5374 R 93.5  0.5       00:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-41 --pipe 48
+   8595    5374 R  102  0.5       00:55 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-42 --pipe 48
+   8660    5374 R 91.9  0.5       00:50 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-43 --pipe 48
+   8730    5374 S  103  0.5       00:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-44 --pipe 48
+   8796    5374 R  104  0.5       00:41 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-45 --pipe 48
+   8867    5374 R  105  0.5       00:37 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-46 --pipe 48
+   8933    5374 R  106  0.4       00:32 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-47 --pipe 48
+   8999    5374 R  107  0.5       00:28 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-48 --pipe 48
+   9067    5374 R  110  0.5       00:24 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-49 --pipe 48
+   9133    5374 R  111  0.1       00:19 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-50 --pipe 48
+   9206    5374 S  115  0.4       00:15 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-51 --pipe 48
+   9270    5374 R  121  0.4       00:11 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-52 --pipe 48
+   9339    5374 R  140  0.4       00:06 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-53 --pipe 48
+   9406    5374 R  188  0.1       00:03 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-54 --pipe 48
+   9472    5374 R  100  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:09:55.245] ------------------------------------------------------------
+[2025-12-03 22:09:55.245] 检查 #97 | 运行时间: 489s | 系统负载: 33.68 26.06 12.83 35/2995 9541
+[2025-12-03 22:09:55.245] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:10:00.286] ------------------------------------------------------------
+[2025-12-03 22:10:00.286] 检查 #98 | 运行时间: 494s | 系统负载: 33.63 26.17 12.93 64/2965 9641
+[2025-12-03 22:10:00.286] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:10:05.314] ------------------------------------------------------------
+[2025-12-03 22:10:05.314] 检查 #99 | 运行时间: 499s | 系统负载: 33.50 26.27 13.04 34/2995 9744
+[2025-12-03 22:10:05.314] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:10:10.352] ------------------------------------------------------------
+[2025-12-03 22:10:10.352] 检查 #100 | 运行时间: 504s | 系统负载: 33.54 26.40 13.15 37/2995 9810
+[2025-12-03 22:10:10.352] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:10:15.394] ------------------------------------------------------------
+[2025-12-03 22:10:15.394] 检查 #101 | 运行时间: 509s | 系统负载: 33.66 26.54 13.27 36/2997 9881
+[2025-12-03 22:10:15.394] 子进程数: 35 | 状态分布: {'S': 8, 'R': 27}
+[2025-12-03 22:10:20.415] ------------------------------------------------------------
+[2025-12-03 22:10:20.415] 检查 #102 | 运行时间: 514s | 系统负载: 33.60 26.65 13.37 35/3000 9953
+[2025-12-03 22:10:20.415] 子进程数: 35 | 状态分布: {'S': 9, 'R': 24, 'D': 2}
+[2025-12-03 22:10:25.442] ------------------------------------------------------------
+[2025-12-03 22:10:25.442] 检查 #103 | 运行时间: 519s | 系统负载: 33.55 26.75 13.48 34/2998 9958
+[2025-12-03 22:10:25.442] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:10:30.480] ------------------------------------------------------------
+[2025-12-03 22:10:30.480] 检查 #104 | 运行时间: 524s | 系统负载: 33.83 26.92 13.61 35/2997 10022
+[2025-12-03 22:10:30.480] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:10:35.520] ------------------------------------------------------------
+[2025-12-03 22:10:35.520] 检查 #105 | 运行时间: 529s | 系统负载: 33.76 27.02 13.71 34/2999 10091
+[2025-12-03 22:10:35.520] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:10:40.558] ------------------------------------------------------------
+[2025-12-03 22:10:40.558] 检查 #106 | 运行时间: 534s | 系统负载: 33.78 27.14 13.82 34/2998 10094
+[2025-12-03 22:10:40.559] 子进程数: 35 | 状态分布: {'S': 11, 'R': 24}
+[2025-12-03 22:10:45.595] ------------------------------------------------------------
+[2025-12-03 22:10:45.596] 检查 #107 | 运行时间: 539s | 系统负载: 33.80 27.25 13.93 33/2997 10097
+[2025-12-03 22:10:45.596] 子进程数: 35 | 状态分布: {'S': 11, 'R': 24}
+[2025-12-03 22:10:50.633] ------------------------------------------------------------
+[2025-12-03 22:10:50.633] 检查 #108 | 运行时间: 544s | 系统负载: 34.30 27.47 14.07 35/2999 10100
+[2025-12-03 22:10:50.633] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:10:50.633] === 详细子进程列表 ===
+[2025-12-03 22:10:50.633]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  1.3  0.0       08:02 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.4  0.0       08:00 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5599    5374 S 95.8  0.6       08:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5612    5374 S 95.0  0.6       08:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5616    5374 R 96.7  0.6       08:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-25 --pipe 41
+   5623    5374 R 95.4  0.6       08:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   8037    5374 S 96.8  0.6       05:53 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8134    5374 R 96.0  0.6       05:06 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-37 --pipe 48
+   8288    5374 R 98.0  0.5       02:53 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-38 --pipe 48
+   8393    5374 R 96.0  0.5       02:08 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-39 --pipe 48
+   8459    5374 S 99.8  0.5       02:04 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-40 --pipe 48
+   8525    5374 R 94.6  0.5       01:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-41 --pipe 48
+   8595    5374 R 99.1  0.5       01:55 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-42 --pipe 48
+   8660    5374 R 94.0  0.5       01:51 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-43 --pipe 48
+   8730    5374 S  100  0.5       01:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-44 --pipe 48
+   8796    5374 R 98.9  0.5       01:41 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-45 --pipe 48
+   8867    5374 R 98.9  0.5       01:37 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-46 --pipe 48
+   8933    5374 R  100  0.5       01:32 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-47 --pipe 48
+   8999    5374 R 99.9  0.5       01:28 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-48 --pipe 48
+   9067    5374 R  100  0.5       01:24 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-49 --pipe 48
+   9133    5374 S  100  0.5       01:20 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-50 --pipe 48
+   9206    5374 R  100  0.5       01:15 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-51 --pipe 48
+   9270    5374 R 99.6  0.5       01:11 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-52 --pipe 48
+   9339    5374 R  100  0.5       01:07 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-53 --pipe 48
+   9406    5374 R 99.8  0.5       01:03 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-54 --pipe 48
+   9474    5374 S  102  0.4       00:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-55 --pipe 48
+   9542    5374 S  100  0.5       00:54 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-56 --pipe 48
+   9609    5374 S  101  0.5       00:50 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-57 --pipe 48
+   9681    5374 R  101  0.5       00:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-58 --pipe 48
+   9747    5374 R  102  0.5       00:41 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-59 --pipe 48
+   9815    5374 R  103  0.4       00:38 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-60 --pipe 48
+   9883    5374 S  104  0.5       00:33 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-61 --pipe 48
+   9959    5374 S  108  0.5       00:24 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-62 --pipe 48
+  10023    5374 R  109  0.5       00:19 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-63 --pipe 48
+  10100    5374 R  0.0  0.0 441077234-00:18:40 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:10:55.672] ------------------------------------------------------------
+[2025-12-03 22:10:55.672] 检查 #109 | 运行时间: 549s | 系统负载: 34.19 27.56 14.17 36/2998 10104
+[2025-12-03 22:10:55.672] 子进程数: 35 | 状态分布: {'S': 11, 'R': 24}
+[2025-12-03 22:11:00.713] ------------------------------------------------------------
+[2025-12-03 22:11:00.713] 检查 #110 | 运行时间: 554s | 系统负载: 34.10 27.65 14.27 35/2998 10105
+[2025-12-03 22:11:00.713] 子进程数: 35 | 状态分布: {'S': 14, 'R': 21}
+[2025-12-03 22:11:05.753] ------------------------------------------------------------
+[2025-12-03 22:11:05.753] 检查 #111 | 运行时间: 559s | 系统负载: 34.01 27.74 14.37 34/2999 10173
+[2025-12-03 22:11:05.753] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:11:10.790] ------------------------------------------------------------
+[2025-12-03 22:11:10.790] 检查 #112 | 运行时间: 564s | 系统负载: 33.93 27.83 14.47 35/2996 10174
+[2025-12-03 22:11:10.790] 子进程数: 35 | 状态分布: {'S': 15, 'R': 20}
+[2025-12-03 22:11:15.824] ------------------------------------------------------------
+[2025-12-03 22:11:15.824] 检查 #113 | 运行时间: 569s | 系统负载: 33.85 27.91 14.57 35/2997 10179
+[2025-12-03 22:11:15.824] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:11:20.863] ------------------------------------------------------------
+[2025-12-03 22:11:20.863] 检查 #114 | 运行时间: 574s | 系统负载: 34.03 28.05 14.69 36/2996 10180
+[2025-12-03 22:11:20.863] 子进程数: 35 | 状态分布: {'S': 11, 'R': 24}
+[2025-12-03 22:11:25.899] ------------------------------------------------------------
+[2025-12-03 22:11:25.900] 检查 #115 | 运行时间: 579s | 系统负载: 34.02 28.15 14.79 33/3000 10250
+[2025-12-03 22:11:25.900] 子进程数: 35 | 状态分布: {'S': 11, 'R': 24}
+[2025-12-03 22:11:30.933] ------------------------------------------------------------
+[2025-12-03 22:11:30.933] 检查 #116 | 运行时间: 584s | 系统负载: 33.94 28.23 14.89 30/2998 10254
+[2025-12-03 22:11:30.933] 子进程数: 35 | 状态分布: {'S': 12, 'R': 19, 'D': 4}
+[2025-12-03 22:11:35.974] ------------------------------------------------------------
+[2025-12-03 22:11:35.974] 检查 #117 | 运行时间: 589s | 系统负载: 34.03 28.34 15.00 35/3001 10260
+[2025-12-03 22:11:35.974] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:11:41.012] ------------------------------------------------------------
+[2025-12-03 22:11:41.013] 检查 #118 | 运行时间: 594s | 系统负载: 34.02 28.43 15.10 33/2999 10261
+[2025-12-03 22:11:41.013] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:11:46.041] ------------------------------------------------------------
+[2025-12-03 22:11:46.041] 检查 #119 | 运行时间: 599s | 系统负载: 34.02 28.53 15.20 34/2998 10265
+[2025-12-03 22:11:46.041] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:11:51.080] ------------------------------------------------------------
+[2025-12-03 22:11:51.080] 检查 #120 | 运行时间: 604s | 系统负载: 34.02 28.62 15.30 35/2998 10266
+[2025-12-03 22:11:51.080] 子进程数: 35 | 状态分布: {'S': 14, 'R': 21}
+[2025-12-03 22:11:51.080] === 详细子进程列表 ===
+[2025-12-03 22:11:51.080]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  1.2  0.0       09:02 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.4  0.0       09:01 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5599    5374 S 96.1  0.6       09:01 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5612    5374 S 95.4  0.6       09:01 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   5623    5374 R 95.4  0.6       09:01 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-32 --pipe 48
+   8037    5374 S 96.9  0.6       06:54 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8134    5374 S 96.2  0.6       06:07 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-37 --pipe 48
+   8288    5374 R 97.1  0.6       03:54 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-38 --pipe 48
+   8393    5374 R 95.7  0.5       03:08 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-39 --pipe 48
+   8459    5374 S 99.3  0.5       03:04 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-40 --pipe 48
+   8525    5374 S 95.9  0.5       03:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-41 --pipe 48
+   8595    5374 S 98.1  0.5       02:56 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-42 --pipe 48
+   8660    5374 R 94.9  0.5       02:51 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-43 --pipe 48
+   8730    5374 S 99.4  0.5       02:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-44 --pipe 48
+   8796    5374 R 97.3  0.5       02:42 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-45 --pipe 48
+   8867    5374 S 98.0  0.5       02:37 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-46 --pipe 48
+   8933    5374 R 97.9  0.5       02:33 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-47 --pipe 48
+   8999    5374 R 98.6  0.5       02:29 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-48 --pipe 48
+   9067    5374 R 98.9  0.5       02:25 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-49 --pipe 48
+   9206    5374 R 98.1  0.5       02:16 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-51 --pipe 48
+   9270    5374 R 97.9  0.5       02:12 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-52 --pipe 48
+   9339    5374 R 98.2  0.5       02:07 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-53 --pipe 48
+   9406    5374 R 98.4  0.5       02:03 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-54 --pipe 48
+   9474    5374 S 99.9  0.4       01:59 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-55 --pipe 48
+   9542    5374 S 99.1  0.5       01:55 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-56 --pipe 48
+   9609    5374 S 97.6  0.5       01:50 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-57 --pipe 48
+   9681    5374 R 99.1  0.5       01:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-58 --pipe 48
+   9747    5374 R 98.3  0.5       01:41 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-59 --pipe 48
+   9815    5374 R 99.5  0.5       01:38 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-60 --pipe 48
+   9883    5374 R 99.0  0.5       01:34 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-61 --pipe 48
+   9959    5374 R 99.9  0.5       01:24 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-62 --pipe 48
+  10023    5374 R 99.8  0.5       01:20 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-63 --pipe 48
+  10110    5374 R 99.7  0.5       00:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-64 --pipe 48
+  10183    5374 R  105  0.5       00:27 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-65 --pipe 48
+  10266    5374 R  0.0  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:11:56.118] ------------------------------------------------------------
+[2025-12-03 22:11:56.118] 检查 #121 | 运行时间: 609s | 系统负载: 33.94 28.69 15.40 38/2998 10269
+[2025-12-03 22:11:56.118] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:12:01.156] ------------------------------------------------------------
+[2025-12-03 22:12:01.156] 检查 #122 | 运行时间: 614s | 系统负载: 34.10 28.81 15.51 35/2998 10270
+[2025-12-03 22:12:01.156] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:12:06.196] ------------------------------------------------------------
+[2025-12-03 22:12:06.196] 检查 #123 | 运行时间: 620s | 系统负载: 34.10 28.90 15.61 35/3001 10276
+[2025-12-03 22:12:06.196] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:12:11.237] ------------------------------------------------------------
+[2025-12-03 22:12:11.237] 检查 #124 | 运行时间: 625s | 系统负载: 34.33 29.03 15.72 34/3001 10277
+[2025-12-03 22:12:11.237] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:12:16.274] ------------------------------------------------------------
+[2025-12-03 22:12:16.274] 检查 #125 | 运行时间: 630s | 系统负载: 34.30 29.12 15.82 34/2999 10280
+[2025-12-03 22:12:16.274] 子进程数: 35 | 状态分布: {'S': 11, 'R': 24}
+[2025-12-03 22:12:21.304] ------------------------------------------------------------
+[2025-12-03 22:12:21.304] 检查 #126 | 运行时间: 635s | 系统负载: 34.12 29.16 15.91 31/2935 10281
+[2025-12-03 22:12:21.304] 子进程数: 35 | 状态分布: {'S': 12, 'R': 22, 'D': 1}
+[2025-12-03 22:12:26.343] ------------------------------------------------------------
+[2025-12-03 22:12:26.343] 检查 #127 | 运行时间: 640s | 系统负载: 34.11 29.24 16.01 35/2996 10347
+[2025-12-03 22:12:26.343] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:12:31.373] ------------------------------------------------------------
+[2025-12-03 22:12:31.373] 检查 #128 | 运行时间: 645s | 系统负载: 34.02 29.31 16.10 29/2997 10350
+[2025-12-03 22:12:31.373] 子进程数: 35 | 状态分布: {'S': 14, 'R': 18, 'D': 3}
+[2025-12-03 22:12:36.399] ------------------------------------------------------------
+[2025-12-03 22:12:36.399] 检查 #129 | 运行时间: 650s | 系统负载: 34.02 29.39 16.20 35/2999 10356
+[2025-12-03 22:12:36.399] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:12:41.439] ------------------------------------------------------------
+[2025-12-03 22:12:41.439] 检查 #130 | 运行时间: 655s | 系统负载: 34.10 29.48 16.30 34/2999 10422
+[2025-12-03 22:12:41.439] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:12:46.478] ------------------------------------------------------------
+[2025-12-03 22:12:46.478] 检查 #131 | 运行时间: 660s | 系统负载: 34.01 29.54 16.39 36/2998 10427
+[2025-12-03 22:12:46.478] 子进程数: 35 | 状态分布: {'S': 15, 'R': 20}
+[2025-12-03 22:12:51.519] ------------------------------------------------------------
+[2025-12-03 22:12:51.519] 检查 #132 | 运行时间: 665s | 系统负载: 34.01 29.61 16.48 34/2998 10428
+[2025-12-03 22:12:51.519] 子进程数: 35 | 状态分布: {'S': 13, 'R': 22}
+[2025-12-03 22:12:51.519] === 详细子进程列表 ===
+[2025-12-03 22:12:51.519]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  1.1  0.0       10:03 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.3  0.0       10:01 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5599    5374 S 96.4  0.6       10:01 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5612    5374 R 95.6  0.6       10:01 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   8037    5374 R 97.1  0.6       07:54 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8288    5374 R 96.9  0.6       04:54 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-38 --pipe 48
+   8393    5374 R 95.7  0.6       04:09 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-39 --pipe 48
+   8459    5374 S 98.7  0.5       04:04 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-40 --pipe 48
+   8525    5374 R 96.2  0.5       04:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-41 --pipe 48
+   8595    5374 S 98.2  0.5       03:56 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-42 --pipe 48
+   8660    5374 R 95.3  0.6       03:52 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-43 --pipe 48
+   8730    5374 S 99.2  0.5       03:47 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-44 --pipe 48
+   8796    5374 S 97.1  0.6       03:42 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-45 --pipe 48
+   8867    5374 S 98.0  0.5       03:38 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-46 --pipe 48
+   8933    5374 R 97.2  0.6       03:33 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-47 --pipe 48
+   8999    5374 R 97.6  0.6       03:29 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-48 --pipe 48
+   9067    5374 R 97.8  0.6       03:25 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-49 --pipe 48
+   9206    5374 R 97.6  0.5       03:16 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-51 --pipe 48
+   9270    5374 S 98.0  0.5       03:12 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-52 --pipe 48
+   9339    5374 R 97.1  0.6       03:08 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-53 --pipe 48
+   9406    5374 R 97.7  0.6       03:04 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-54 --pipe 48
+   9474    5374 S 99.3  0.4       03:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-55 --pipe 48
+   9542    5374 S 98.2  0.5       02:55 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-56 --pipe 48
+   9609    5374 S 97.5  0.5       02:51 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-57 --pipe 48
+   9681    5374 R 97.3  0.5       02:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-58 --pipe 48
+   9747    5374 R 97.0  0.5       02:42 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-59 --pipe 48
+   9815    5374 R 97.7  0.5       02:39 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-60 --pipe 48
+   9883    5374 R 97.4  0.5       02:34 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-61 --pipe 48
+   9959    5374 R 98.5  0.5       02:25 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-62 --pipe 48
+  10023    5374 R 98.0  0.5       02:20 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-63 --pipe 48
+  10110    5374 R 97.4  0.5       01:46 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-64 --pipe 48
+  10183    5374 R 97.5  0.5       01:28 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-65 --pipe 48
+  10282    5374 R  104  0.5       00:30 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-66 --pipe 48
+  10357    5374 S  116  0.4       00:13 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-67 --pipe 48
+  10428    5374 R  0.0  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+[2025-12-03 22:12:56.559] ------------------------------------------------------------
+[2025-12-03 22:12:56.560] 检查 #133 | 运行时间: 670s | 系统负载: 34.09 29.70 16.58 34/3001 10435
+[2025-12-03 22:12:56.560] 子进程数: 35 | 状态分布: {'S': 15, 'R': 20}
+[2025-12-03 22:13:01.597] ------------------------------------------------------------
+[2025-12-03 22:13:01.597] 检查 #134 | 运行时间: 675s | 系统负载: 34.00 29.76 16.67 34/3001 10438
+[2025-12-03 22:13:01.597] 子进程数: 35 | 状态分布: {'S': 15, 'R': 20}
+[2025-12-03 22:13:06.631] ------------------------------------------------------------
+[2025-12-03 22:13:06.631] 检查 #135 | 运行时间: 680s | 系统负载: 33.92 29.81 16.76 36/2997 10441
+[2025-12-03 22:13:06.631] 子进程数: 35 | 状态分布: {'S': 15, 'R': 20}
+[2025-12-03 22:13:11.670] ------------------------------------------------------------
+[2025-12-03 22:13:11.670] 检查 #136 | 运行时间: 685s | 系统负载: 33.85 29.86 16.84 35/2999 10446
+[2025-12-03 22:13:11.670] 子进程数: 35 | 状态分布: {'S': 17, 'R': 18}
+[2025-12-03 22:13:16.709] ------------------------------------------------------------
+[2025-12-03 22:13:16.709] 检查 #137 | 运行时间: 690s | 系统负载: 33.78 29.92 16.93 36/3001 10452
+[2025-12-03 22:13:16.709] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:13:21.739] ------------------------------------------------------------
+[2025-12-03 22:13:21.739] 检查 #138 | 运行时间: 695s | 系统负载: 33.88 30.00 17.03 32/3001 10453
+[2025-12-03 22:13:21.739] 子进程数: 35 | 状态分布: {'S': 15, 'R': 19, 'D': 1}
+[2025-12-03 22:13:26.765] ------------------------------------------------------------
+[2025-12-03 22:13:26.765] 检查 #139 | 运行时间: 700s | 系统负载: 33.81 30.05 17.11 36/2998 10456
+[2025-12-03 22:13:26.765] 子进程数: 35 | 状态分布: {'S': 16, 'R': 19}
+[2025-12-03 22:13:31.809] ------------------------------------------------------------
+[2025-12-03 22:13:31.809] 检查 #140 | 运行时间: 705s | 系统负载: 33.82 30.12 17.20 34/2996 10459
+[2025-12-03 22:13:31.809] 子进程数: 35 | 状态分布: {'S': 15, 'R': 20}
+[2025-12-03 22:13:36.840] ------------------------------------------------------------
+[2025-12-03 22:13:36.840] 检查 #141 | 运行时间: 710s | 系统负载: 33.75 30.16 17.29 39/2998 10466
+[2025-12-03 22:13:36.840] 子进程数: 35 | 状态分布: {'S': 11, 'R': 24}
+[2025-12-03 22:13:41.876] ------------------------------------------------------------
+[2025-12-03 22:13:41.876] 检查 #142 | 运行时间: 715s | 系统负载: 33.85 30.25 17.39 34/2999 10473
+[2025-12-03 22:13:41.876] 子进程数: 35 | 状态分布: {'S': 11, 'R': 23, 'D': 1}
+[2025-12-03 22:13:46.916] ------------------------------------------------------------
+[2025-12-03 22:13:46.916] 检查 #143 | 运行时间: 720s | 系统负载: 33.96 30.39 17.57 34/2996 10545
+[2025-12-03 22:13:46.916] 子进程数: 35 | 状态分布: {'S': 12, 'R': 23}
+[2025-12-03 22:13:51.953] ------------------------------------------------------------
+[2025-12-03 22:13:51.953] 检查 #144 | 运行时间: 725s | 系统负载: 33.88 30.43 17.65 39/2994 10546
+[2025-12-03 22:13:51.954] 子进程数: 35 | 状态分布: {'S': 10, 'R': 25}
+[2025-12-03 22:13:51.954] === 详细子进程列表 ===
+[2025-12-03 22:13:51.954]     PID    PPID S %CPU %MEM     ELAPSED CMD
+   5527    5374 S  1.0  0.0       11:03 /home/ecs-user/LitaAgent/venv311/bin/python -c from joblib.externals.loky.backend.resource_tracker import main; main(3, False)
+   5591    5374 S  0.3  0.0       11:02 /home/ecs-user/LitaAgent/venv311/bin/python -c from multiprocessing.resource_tracker import main;main(10)
+   5599    5374 R 96.4  0.6       11:02 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-8 --pipe 20
+   5612    5374 R 95.7  0.6       11:02 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-21 --pipe 37
+   8037    5374 S 97.3  0.6       08:55 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-36 --pipe 48
+   8288    5374 R 96.7  0.6       05:55 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-38 --pipe 48
+   8393    5374 R 95.9  0.6       05:09 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-39 --pipe 48
+   8459    5374 R 98.2  0.5       05:05 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-40 --pipe 48
+   8525    5374 S 96.5  0.5       05:01 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-41 --pipe 48
+   8595    5374 R 98.0  0.5       04:56 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-42 --pipe 48
+   8660    5374 R 95.4  0.6       04:52 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-43 --pipe 48
+   8730    5374 S 98.9  0.5       04:47 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-44 --pipe 48
+   8796    5374 R 97.0  0.6       04:43 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-45 --pipe 48
+   8867    5374 S 97.9  0.5       04:38 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-46 --pipe 48
+   8999    5374 R 97.2  0.6       04:29 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-48 --pipe 48
+   9067    5374 R 97.6  0.6       04:25 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-49 --pipe 48
+   9206    5374 S 97.7  0.5       04:17 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-51 --pipe 48
+   9270    5374 S 98.1  0.5       04:12 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-52 --pipe 48
+   9339    5374 R 96.7  0.6       04:08 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-53 --pipe 48
+   9406    5374 R 96.7  0.6       04:04 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-54 --pipe 48
+   9474    5374 R 98.9  0.4       04:00 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-55 --pipe 48
+   9542    5374 R 98.1  0.5       03:56 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-56 --pipe 48
+   9609    5374 R 97.1  0.5       03:51 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-57 --pipe 48
+   9681    5374 R 96.8  0.6       03:47 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-58 --pipe 48
+   9747    5374 R 96.5  0.6       03:42 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-59 --pipe 48
+   9815    5374 R 97.5  0.6       03:39 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-60 --pipe 48
+   9883    5374 R 97.1  0.6       03:35 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-61 --pipe 48
+   9959    5374 R 97.8  0.5       03:25 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-62 --pipe 48
+  10023    5374 R 97.1  0.5       03:21 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-63 --pipe 48
+  10110    5374 R 96.8  0.5       02:47 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-64 --pipe 48
+  10183    5374 R 96.4  0.5       02:28 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-65 --pipe 48
+  10282    5374 S 99.8  0.5       01:30 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-66 --pipe 48
+  10357    5374 R  100  0.5       01:14 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-67 --pipe 48
+  10474    5374 S  122  0.1       00:09 /home/ecs-user/LitaAgent/venv311/bin/python -m joblib.externals.loky.backend.popen_loky_posix --process-name LokyProcess-68 --pipe 48
+  10546    5374 R  0.0  0.0       00:00 ps -o pid,ppid,state,%cpu,%mem,etime,cmd --ppid 5374
+
+                                                                           
