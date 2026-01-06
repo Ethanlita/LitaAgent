@@ -178,7 +178,7 @@ if TORCH_AVAILABLE:
             n_heads: int = 4,
             n_layers: int = 4,
             max_seq_len: int = 20,
-            context_dim: int = 29,
+            context_dim: int = 31,
         ):
             super().__init__()
             self.horizon = horizon
@@ -205,7 +205,7 @@ if TORCH_AVAILABLE:
                 nn.Linear(d_model, d_model // 2),
                 nn.ReLU(),
                 nn.Linear(d_model // 2, 1),
-                nn.Softplus(),
+                nn.Sigmoid(),
             )
             self.time_head = nn.Linear(d_model, horizon + 1)
 
@@ -307,6 +307,8 @@ class L3Actor:
 
     def _build_context(self, l3_input: L3Input) -> np.ndarray:
         gb = l3_input.global_broadcast
+        min_price = float(l3_input.min_price) if np.isfinite(l3_input.min_price) else 0.0
+        max_price = float(l3_input.max_price) if np.isfinite(l3_input.max_price) else 0.0
         context = np.concatenate([
             gb.l2_goal.astype(np.float32),
             gb.goal_gap_buy.astype(np.float32),
@@ -317,6 +319,8 @@ class L3Actor:
                 float(l3_input.alpha),
                 1.0 if l3_input.is_buying else 0.0,
                 float(l3_input.B_free) / 10000.0,
+                min_price,
+                max_price,
             ], dtype=np.float32),
         ])
         return context
@@ -341,7 +345,18 @@ class L3Actor:
         delta_t = int(time_logits.argmax(dim=-1).item())
 
         quantity = int(round(max(0.0, float(q_raw))))
-        price = float(max(0.0, float(p_raw)))
+        ratio = float(p_raw)
+        if not np.isfinite(ratio):
+            ratio = 0.5
+        ratio = max(0.0, min(1.0, ratio))
+        min_price = float(l3_input.min_price) if np.isfinite(l3_input.min_price) else 0.0
+        max_price = float(l3_input.max_price) if np.isfinite(l3_input.max_price) else min_price
+        if not np.isfinite(max_price) or max_price <= min_price:
+            if min_price > 0.0:
+                max_price = min_price * 2.0
+            else:
+                max_price = min_price + 1.0
+        price = min_price + ratio * (max_price - min_price)
 
         abs_time = int(l3_input.global_broadcast.current_step + delta_t)
         offer = (int(max(0, quantity)), abs_time, float(max(0.0, price)))

@@ -110,7 +110,7 @@ L3 不再输出残差，而是输出完整动作：
 
 - `op_logits ∈ R^{3}`（Categorical：ACCEPT / REJECT / END）
 - `quantity_head`：输出 `q_raw >= 0`（Softplus）
-- `price_head`：输出 `p_raw >= 0`（Softplus）
+- `price_head`：输出 `price_ratio ∈ [0,1]`（Sigmoid）
 - `time_logits ∈ R^{H+1}`（离散的 \(\delta t\in\{0,1,\dots,H\}\)）
 
 
@@ -1029,6 +1029,8 @@ class L3Input:
     time_mask: np.ndarray          # shape (H+1,)，0 或 -inf
     Q_safe: np.ndarray             # shape (H+1,)，当前方向的安全量
     B_free: float                  # 可用资金（仅买侧有意义）
+    min_price: float               # 价格下界（issue range）
+    max_price: float               # 价格上界（issue range）
 ```
 
 ### 5.3 新的 L3 输出结构
@@ -1372,13 +1374,13 @@ self.price_head = nn.Sequential(
     nn.Linear(d_model, d_model // 2),
     nn.ReLU(),
     nn.Linear(d_model // 2, 1),
-    nn.Softplus(),   # p_raw >= 0
+    nn.Sigmoid(),   # price_ratio ∈ [0,1]
 )
 ```
 
 - `op_logits = op_head(h_last)` → 后续叠加 L1 掩码（仅屏蔽必然违约/浪费/预算不足，不屏蔽价格差）
 - `delta_logits = time_head(h_last)` → 叠加 `time_mask`（不可行 δ 置 -inf）
-- `q_raw = quantity_head(h_last)`，`p_raw = price_head(h_last)` 只在 `REJECT` 时使用
+- `q_raw = quantity_head(h_last)`，`price_ratio = price_head(h_last)` 只在 `REJECT` 时使用
 
 ---
 
@@ -1392,8 +1394,8 @@ self.price_head = nn.Sequential(
 4) 若 `op* == REJECT`：  
    - 先选 `δ* = argmax/采样`（加 `time_mask`）  
    - 生成数量：`q = round(q_raw)`（q_raw 来自 `quantity_head(h_last)`，要求 q_raw ≥ 0）  
-   - 生成价格：`p = p_raw`（p_raw 来自 `price_head(h_last)`，要求 p_raw ≥ 0；价格无 issue range）  
-   - 调用 `clip_action()`：**仅裁剪数量 q** 到当日剩余安全量上界（使用 `Q_safe_remaining` / `Q_safe_sell_remaining`）；**不修改时间 δ***、**不修改价格 p**。若 δ* 超出 issue range，则 q 直接置 0。  
+  - 生成价格：`price_ratio = price_head(h_last)`，映射为 `p = min_price + price_ratio * (max_price - min_price)`（ratio 夹到 [0,1]）  
+  - 调用 `clip_action()`：**仅裁剪数量 q** 到当日剩余安全量上界（使用 `Q_safe_remaining` / `Q_safe_sell_remaining`）；**不修改时间 δ***、**不修改价格 p**。若 δ* 超出 issue range，则 q 直接置 0。  
    - 将 δ* 转回绝对交付日：`t_abs = day + δ*`（SCML time issue 为绝对 step）
 
 ---
@@ -1692,14 +1694,18 @@ class MicroSample:
     time_mask: np.ndarray        # shape (H+1,)
     Q_safe: np.ndarray           # shape (H+1,)
     B_remaining: float
+    min_price: float
+    max_price: float
 
     # ========== 标签 ==========
     action_op: int               # 0=ACCEPT, 1=REJECT, 2=END
     # 说明：PenguinAgent 的 END 多为“隐式 END”（counter_all 省略键 → 控制器补 END）。因此 BC 必须包含 END，且需要 tracker 显式记录该标签（见 7.2.4）。
     target_quantity: Optional[int] = None
     target_price: Optional[float] = None
+    target_price_ratio: Optional[float] = None
     target_time: Optional[int] = None  # delta_t
     # 约束：target_quantity/target_price 保留 tracker 原始 counter offer，不因 time_mask 不可行而改写
+    # 价格训练使用 target_price_ratio（由 min/max 映射）；原始 target_price 保留用于回溯
     # time 可行性由 time_mask/time_valid 单独处理，训练时对无效样本仅做 op 监督
 
     reward: Optional[float] = None

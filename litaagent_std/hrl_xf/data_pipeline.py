@@ -76,8 +76,11 @@ class MicroSample:
     Q_safe: np.ndarray  # shape (H+1,)
     B_free: float
     action_op: int  # 0=ACCEPT, 1=REJECT, 2=END
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
     target_quantity: Optional[int] = None
     target_price: Optional[float] = None
+    target_price_ratio: Optional[float] = None
     target_time: Optional[int] = None  # delta_t
     reward: Optional[float] = None
 
@@ -1127,6 +1130,30 @@ def _parse_action_op(action_op: Any) -> Optional[int]:
     return mapping.get(op)
 
 
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _compute_price_ratio(
+    target_price: Optional[float],
+    min_price: Optional[float],
+    max_price: Optional[float],
+) -> Optional[float]:
+    if target_price is None or min_price is None or max_price is None:
+        return None
+    if not np.isfinite(target_price) or not np.isfinite(min_price) or not np.isfinite(max_price):
+        return None
+    if max_price <= min_price + 1e-6:
+        return None
+    ratio = (float(target_price) - float(min_price)) / (float(max_price) - float(min_price))
+    if not np.isfinite(ratio):
+        return None
+    return float(np.clip(ratio, 0.0, 1.0))
+
+
 def extract_l3_samples_aop(
     negotiation_logs: List[Dict[str, Any]],
     horizon: int = 40,
@@ -1235,6 +1262,10 @@ def extract_l3_samples_aop(
                 target_price = None
                 target_time = None
 
+        min_price = _coerce_float(neg.get('min_price'))
+        max_price = _coerce_float(neg.get('max_price'))
+        target_price_ratio = _compute_price_ratio(target_price, min_price, max_price)
+
         reward = neg.get('reward', None)
         if reward is None:
             reward = 1.0 if neg.get('final_status') == 'succeeded' else 0.0
@@ -1257,9 +1288,12 @@ def extract_l3_samples_aop(
             time_mask=np.asarray(cached["time_mask_buy"] if is_buyer else cached["time_mask_sell"], dtype=np.float32),
             Q_safe=np.asarray(cached["Q_safe_buy"] if is_buyer else cached["Q_safe_sell"], dtype=np.float32),
             B_free=float(cached["B_free"]),
+            min_price=min_price,
+            max_price=max_price,
             action_op=action_op,
             target_quantity=target_quantity,
             target_price=target_price,
+            target_price_ratio=target_price_ratio,
             target_time=target_time,
             reward=reward,
         ))
@@ -3106,6 +3140,8 @@ def _parse_tracker_entries(entries: List[Dict[str, Any]], agent_name: str) -> Li
         'action_offer': None,
         'relative_time': None,
         'l2_goal': None,
+        'min_price': None,
+        'max_price': None,
     })
 
     neg_counter: Dict[str, int] = defaultdict(int)
@@ -3159,6 +3195,10 @@ def _parse_tracker_entries(entries: List[Dict[str, Any]], agent_name: str) -> Li
                 neg['is_buyer'] = (role == 'buyer')
             if 'l2_goal' in data:
                 neg['l2_goal'] = data.get('l2_goal')
+            if 'min_price' in data:
+                neg['min_price'] = _coerce_float(data.get('min_price'))
+            if 'max_price' in data:
+                neg['max_price'] = _coerce_float(data.get('max_price'))
 
         elif event == 'offer_received':
             offer = data.get('offer', {})
@@ -3247,6 +3287,8 @@ def _parse_tracker_entries(entries: List[Dict[str, Any]], agent_name: str) -> Li
             'action_offer': neg.get('action_offer'),
             'relative_time': neg.get('relative_time'),
             'l2_goal': neg.get('l2_goal'),
+            'min_price': neg.get('min_price'),
+            'max_price': neg.get('max_price'),
         })
 
     return result
@@ -3543,6 +3585,14 @@ def save_samples(
             'time_masks': np.stack(time_masks),
             'Q_safe': np.stack(q_safe_masks),
             'B_free': np.array([float(s.B_free) for s in micro_samples], dtype=np.float32),
+            'min_price': np.array([
+                float(s.min_price) if s.min_price is not None else np.nan
+                for s in micro_samples
+            ], dtype=np.float32),
+            'max_price': np.array([
+                float(s.max_price) if s.max_price is not None else np.nan
+                for s in micro_samples
+            ], dtype=np.float32),
             'action_ops': np.array([int(s.action_op) for s in micro_samples], dtype=np.int64),
             'target_q': np.array([
                 float(s.target_quantity) if s.target_quantity is not None else np.nan
@@ -3550,6 +3600,10 @@ def save_samples(
             ], dtype=np.float32),
             'target_p': np.array([
                 float(s.target_price) if s.target_price is not None else np.nan
+                for s in micro_samples
+            ], dtype=np.float32),
+            'target_p_ratio': np.array([
+                float(s.target_price_ratio) if s.target_price_ratio is not None else np.nan
                 for s in micro_samples
             ], dtype=np.float32),
             'target_t': np.array([
@@ -3625,9 +3679,12 @@ def load_samples(
         x_static = data.get('x_static', None)
         X_temporal = data.get('X_temporal', None)
         B_free = data.get('B_free', None)
+        min_price = data.get('min_price', None)
+        max_price = data.get('max_price', None)
         action_ops = data.get('action_ops', None)
         target_q = data.get('target_q', None)
         target_p = data.get('target_p', None)
+        target_p_ratio = data.get('target_p_ratio', None)
         target_t = data.get('target_t', None)
         rewards = data.get('rewards', None)
 
@@ -3655,6 +3712,9 @@ def load_samples(
             tq = target_q[i] if target_q is not None else np.nan
             tp = target_p[i] if target_p is not None else np.nan
             tt = target_t[i] if target_t is not None else -1
+            tpr = target_p_ratio[i] if target_p_ratio is not None else np.nan
+            mp = min_price[i] if min_price is not None else np.nan
+            xp = max_price[i] if max_price is not None else np.nan
 
             micro_samples.append(MicroSample(
                 negotiation_id=str(neg_ids[i]) if neg_ids is not None else str(i),
@@ -3674,9 +3734,12 @@ def load_samples(
                 time_mask=time_mask,
                 Q_safe=q_safe,
                 B_free=float(B_free[i]) if B_free is not None else 0.0,
+                min_price=None if np.isnan(mp) else float(mp),
+                max_price=None if np.isnan(xp) else float(xp),
                 action_op=int(action_ops[i]) if action_ops is not None else 2,
                 target_quantity=None if np.isnan(tq) else int(tq),
                 target_price=None if np.isnan(tp) else float(tp),
+                target_price_ratio=None if np.isnan(tpr) else float(tpr),
                 target_time=None if int(tt) < 0 else int(tt),
                 reward=float(rewards[i]) if rewards is not None else 0.0,
             ))

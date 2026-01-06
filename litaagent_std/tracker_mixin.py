@@ -63,6 +63,80 @@ def _compose_tracker_agent_id(agent_id: str, world_id: str) -> str:
     return f"{agent_id}#W{_world_id_hash(world_id)}"
 
 
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _extract_issue_bounds(issue: Any) -> Tuple[Optional[float], Optional[float]]:
+    if issue is None:
+        return None, None
+    if isinstance(issue, dict):
+        min_val = _coerce_float(
+            issue.get("min_price", issue.get("min_value", issue.get("min", issue.get("low"))))
+        )
+        max_val = _coerce_float(
+            issue.get("max_price", issue.get("max_value", issue.get("max", issue.get("high"))))
+        )
+        if min_val is not None or max_val is not None:
+            return min_val, max_val
+    for name in ("min_value", "min", "low"):
+        if hasattr(issue, name):
+            min_val = _coerce_float(getattr(issue, name))
+            if min_val is not None:
+                break
+        min_val = None
+    for name in ("max_value", "max", "high"):
+        if hasattr(issue, name):
+            max_val = _coerce_float(getattr(issue, name))
+            if max_val is not None:
+                break
+        max_val = None
+    if min_val is not None or max_val is not None:
+        return min_val, max_val
+    if isinstance(issue, (list, tuple)) and len(issue) == 2:
+        min_val = _coerce_float(issue[0])
+        max_val = _coerce_float(issue[1])
+        if min_val is not None or max_val is not None:
+            return min_val, max_val
+    return None, None
+
+
+def _extract_price_bounds(issues: Any) -> Tuple[Optional[float], Optional[float]]:
+    if issues is None:
+        return None, None
+    if isinstance(issues, dict):
+        min_val = _coerce_float(issues.get("min_price"))
+        max_val = _coerce_float(issues.get("max_price"))
+        if min_val is not None or max_val is not None:
+            return min_val, max_val
+        if "price_range" in issues:
+            min_val, max_val = _extract_issue_bounds(issues.get("price_range"))
+            if min_val is not None or max_val is not None:
+                return min_val, max_val
+        if "issues" in issues:
+            min_val, max_val = _extract_price_bounds(issues.get("issues"))
+            if min_val is not None or max_val is not None:
+                return min_val, max_val
+        for key, value in issues.items():
+            if "price" in str(key).lower():
+                min_val, max_val = _extract_issue_bounds(value)
+                if min_val is not None or max_val is not None:
+                    return min_val, max_val
+    if isinstance(issues, (list, tuple)):
+        for item in issues:
+            name = getattr(item, "name", None) or getattr(item, "title", None)
+            if name and "price" in str(name).lower():
+                min_val, max_val = _extract_issue_bounds(item)
+                if min_val is not None or max_val is not None:
+                    return min_val, max_val
+        if len(issues) >= 3:
+            return _extract_issue_bounds(issues[2])
+    return None, None
+
+
 def _ensure_tracker_logger(
     agent: Any,
     agent_id: str,
@@ -510,6 +584,8 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
             return mechanism_id
         is_seller = _infer_is_seller(self, partner_id)
         issues_payload = issues
+        min_price = None
+        max_price = None
         if issues_payload is None:
             issues_payload = {}
             nmi = _get_nmi(self, partner_id)
@@ -518,6 +594,27 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                     issues_payload = {"issues": getattr(nmi, "issues", None)}
                 except Exception:
                     issues_payload = {}
+        else:
+            if not isinstance(issues_payload, dict):
+                issues_payload = {"issues": issues_payload}
+            min_price = _coerce_float(issues_payload.get("min_price")) if isinstance(issues_payload, dict) else None
+            max_price = _coerce_float(issues_payload.get("max_price")) if isinstance(issues_payload, dict) else None
+
+        if min_price is None or max_price is None:
+            nmi = _get_nmi(self, partner_id)
+            if nmi is not None:
+                nmi_issues = getattr(nmi, "issues", None)
+                nmi_min, nmi_max = _extract_price_bounds(nmi_issues)
+                if min_price is None:
+                    min_price = nmi_min
+                if max_price is None:
+                    max_price = nmi_max
+
+        if isinstance(issues_payload, dict):
+            if min_price is not None:
+                issues_payload["min_price"] = float(min_price)
+            if max_price is not None:
+                issues_payload["max_price"] = float(max_price)
         tracker.negotiation_started(
             partner_id,
             issues_payload,
@@ -1488,6 +1585,8 @@ def create_tracked_agent(
                 return mechanism_id
             is_seller = self._infer_is_seller(partner_id)
             issues_payload = issues
+            min_price = None
+            max_price = None
             if issues_payload is None:
                 issues_payload = {}
                 nmi = None
@@ -1500,6 +1599,32 @@ def create_tracked_agent(
                         issues_payload = {"issues": getattr(nmi, "issues", None)}
                     except Exception:
                         issues_payload = {}
+            else:
+                if not isinstance(issues_payload, dict):
+                    issues_payload = {"issues": issues_payload}
+                if isinstance(issues_payload, dict):
+                    min_price = _coerce_float(issues_payload.get("min_price"))
+                    max_price = _coerce_float(issues_payload.get("max_price"))
+
+            if min_price is None or max_price is None:
+                nmi = None
+                try:
+                    nmi = self.get_nmi(partner_id)
+                except Exception:
+                    nmi = None
+                if nmi is not None:
+                    nmi_issues = getattr(nmi, "issues", None)
+                    nmi_min, nmi_max = _extract_price_bounds(nmi_issues)
+                    if min_price is None:
+                        min_price = nmi_min
+                    if max_price is None:
+                        max_price = nmi_max
+
+            if isinstance(issues_payload, dict):
+                if min_price is not None:
+                    issues_payload["min_price"] = float(min_price)
+                if max_price is not None:
+                    issues_payload["max_price"] = float(max_price)
             tracker.negotiation_started(
                 partner_id,
                 issues_payload,

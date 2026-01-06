@@ -725,6 +725,7 @@ def _eval_l3(model, samples, config: TrainConfig, batch_size: int) -> Dict[str, 
     sum_t = 0.0
     op_correct = 0
     q_count = 0
+    p_count = 0
     t_count = 0
 
     with torch.no_grad():
@@ -737,6 +738,9 @@ def _eval_l3(model, samples, config: TrainConfig, batch_size: int) -> Dict[str, 
             target_t = batch["target_t"].squeeze(-1).to(config.device)
             time_mask = batch["time_mask"].to(config.device)
             time_valid = batch["time_valid"].squeeze(-1).to(config.device)
+            price_valid = batch.get("price_valid", None)
+            if price_valid is not None:
+                price_valid = price_valid.squeeze(-1).to(config.device)
 
             op_logits, quantity, price, time_logits = model(history_seq, context, time_mask)
 
@@ -750,14 +754,20 @@ def _eval_l3(model, samples, config: TrainConfig, batch_size: int) -> Dict[str, 
             if valid_mask.any():
                 count = int(valid_mask.sum().item())
                 sum_q += float(F.mse_loss(quantity[valid_mask], target_q[valid_mask], reduction="sum").item())
-                sum_p += float(F.mse_loss(price[valid_mask], target_p[valid_mask], reduction="sum").item())
+                if price_valid is not None:
+                    price_mask = valid_mask & (price_valid > 0.5)
+                else:
+                    price_mask = valid_mask
+                if price_mask.any():
+                    sum_p += float(F.mse_loss(price[price_mask], target_p[price_mask], reduction="sum").item())
+                    p_count += int(price_mask.sum().item())
                 sum_t += float(F.cross_entropy(time_logits[valid_mask], target_t[valid_mask], reduction="sum").item())
                 q_count += count
                 t_count += count
 
     avg_op = sum_op / max(1, total_samples)
     avg_q = sum_q / max(1, q_count)
-    avg_p = sum_p / max(1, q_count)
+    avg_p = sum_p / max(1, p_count)
     avg_t = sum_t / max(1, t_count)
     acc = op_correct / max(1, total_samples)
     total_loss = avg_op + avg_q + avg_p + avg_t

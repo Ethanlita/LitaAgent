@@ -209,11 +209,34 @@ class AgentLogger:
     ):
         """协商开始"""
         self._stats["negotiations_started"] += 1
+        min_price = None
+        max_price = None
+        if isinstance(issues, dict):
+            if "min_price" in issues:
+                min_price = issues.get("min_price")
+            if "max_price" in issues:
+                max_price = issues.get("max_price")
+            if min_price is None and isinstance(issues.get("issues"), dict):
+                nested = issues.get("issues", {})
+                if "min_price" in nested:
+                    min_price = nested.get("min_price")
+                if "max_price" in nested:
+                    max_price = nested.get("max_price")
         data = {
             "partner": partner,
             "issues": str(issues),
             "role": "seller" if is_seller else "buyer",
         }
+        if min_price is not None:
+            try:
+                data["min_price"] = float(min_price)
+            except Exception:
+                pass
+        if max_price is not None:
+            try:
+                data["max_price"] = float(max_price)
+            except Exception:
+                pass
         if mechanism_id:
             data["mechanism_id"] = mechanism_id
         if negotiator_id:

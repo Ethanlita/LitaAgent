@@ -136,6 +136,8 @@ class L3Dataset(Dataset):
     def _build_context(self, s: MicroSample) -> np.ndarray:
         step_progress = float(s.x_static[3]) if s.x_static is not None and len(s.x_static) > 3 else 0.0
         is_buying = 1.0 if s.role == 0 else 0.0
+        min_price = float(s.min_price) if s.min_price is not None and np.isfinite(s.min_price) else 0.0
+        max_price = float(s.max_price) if s.max_price is not None and np.isfinite(s.max_price) else 0.0
         context = np.concatenate([
             np.asarray(s.l2_goal, dtype=np.float32),
             np.asarray(s.goal_gap_buy, dtype=np.float32),
@@ -146,6 +148,8 @@ class L3Dataset(Dataset):
                 0.0,  # α 在 BC 阶段固定为 0
                 is_buying,
                 float(s.B_free) / 10000.0,
+                min_price,
+                max_price,
             ], dtype=np.float32),
         ])
         return context
@@ -183,7 +187,7 @@ class L3Dataset(Dataset):
         context = self._build_context(s)
 
         target_q = float(s.target_quantity) if s.target_quantity is not None else 0.0
-        target_p = float(s.target_price) if s.target_price is not None else 0.0
+        target_p, price_valid = _resolve_price_ratio(s)
         target_t = int(s.target_time) if s.target_time is not None else 0
 
         time_valid = 1.0
@@ -202,6 +206,7 @@ class L3Dataset(Dataset):
             'target_t': torch.LongTensor([target_t]),
             'time_mask': torch.FloatTensor(time_mask),
             'time_valid': torch.FloatTensor([time_valid]),
+            'price_valid': torch.FloatTensor([price_valid]),
             'reward': torch.FloatTensor([s.reward if s.reward is not None else 0.0]),
         }
 
@@ -216,6 +221,7 @@ class L3TensorizedData:
     target_t: "torch.Tensor"
     time_mask: "torch.Tensor"
     time_valid: "torch.Tensor"
+    price_valid: "torch.Tensor"
     reward: "torch.Tensor"
     reward_valid: "torch.Tensor"
 
@@ -225,6 +231,9 @@ class L3TensorizedData:
 
     @classmethod
     def from_numpy(cls, arrays: Dict[str, np.ndarray]) -> "L3TensorizedData":
+        price_valid = arrays.get("price_valid")
+        if price_valid is None:
+            price_valid = np.ones((arrays["target_p"].shape[0], 1), dtype=np.float32)
         return cls(
             history=torch.from_numpy(arrays["history"]),
             context=torch.from_numpy(arrays["context"]),
@@ -234,6 +243,7 @@ class L3TensorizedData:
             target_t=torch.from_numpy(arrays["target_t"]).long(),
             time_mask=torch.from_numpy(arrays["time_mask"]),
             time_valid=torch.from_numpy(arrays["time_valid"]),
+            price_valid=torch.from_numpy(price_valid),
             reward=torch.from_numpy(arrays["reward"]),
             reward_valid=torch.from_numpy(arrays["reward_valid"]).bool(),
         )
@@ -265,6 +275,7 @@ class L3TensorDataset(Dataset):
             'target_t': self.data.target_t[i],
             'time_mask': self.data.time_mask[i],
             'time_valid': self.data.time_valid[i],
+            'price_valid': self.data.price_valid[i],
             'reward': self.data.reward[i],
         }
 
@@ -339,6 +350,26 @@ def _ensure_1d(x: Any, length: int, *, fill: float = 0.0) -> np.ndarray:
     return np.concatenate([arr, pad])
 
 
+def _resolve_price_ratio(s: Optional[MicroSample]) -> Tuple[float, float]:
+    if s is None:
+        return 0.0, 0.0
+    if s.target_price_ratio is not None and np.isfinite(s.target_price_ratio):
+        return float(np.clip(s.target_price_ratio, 0.0, 1.0)), 1.0
+    tp = s.target_price
+    min_p = s.min_price
+    max_p = s.max_price
+    if tp is None or min_p is None or max_p is None:
+        return 0.0, 0.0
+    if not np.isfinite(tp) or not np.isfinite(min_p) or not np.isfinite(max_p):
+        return 0.0, 0.0
+    if max_p <= min_p + 1e-6:
+        return 0.0, 0.0
+    ratio = (float(tp) - float(min_p)) / (float(max_p) - float(min_p))
+    if not np.isfinite(ratio):
+        return 0.0, 0.0
+    return float(np.clip(ratio, 0.0, 1.0)), 1.0
+
+
 def tensorize_l3_samples_chunk(
     samples: List[MicroSample],
     max_history_len: int = 20,
@@ -348,13 +379,14 @@ def tensorize_l3_samples_chunk(
     n = len(samples)
     tm_len = int(horizon) + 1
     history = np.zeros((n, max_history_len, 4), dtype=np.float32)
-    context = np.zeros((n, 29), dtype=np.float32)
+    context = np.zeros((n, 31), dtype=np.float32)
     action_op = np.zeros((n, 1), dtype=np.int64)
     target_q = np.zeros((n, 1), dtype=np.float32)
     target_p = np.zeros((n, 1), dtype=np.float32)
     target_t = np.zeros((n, 1), dtype=np.int64)
     time_mask = np.zeros((n, tm_len), dtype=np.float32)
     time_valid = np.zeros((n, 1), dtype=np.float32)
+    price_valid = np.zeros((n, 1), dtype=np.float32)
     reward = np.full((n, 1), np.nan, dtype=np.float32)
     reward_valid = np.zeros((n,), dtype=np.bool_)
 
@@ -409,6 +441,8 @@ def tensorize_l3_samples_chunk(
         relative_time = float(s.relative_time) if s is not None and s.relative_time is not None else 0.0
         is_buying = 1.0 if s is not None and int(s.role) == 0 else 0.0
         b_free = float(s.B_free) / 10000.0 if s is not None and s.B_free is not None else 0.0
+        min_price = float(s.min_price) if s is not None and s.min_price is not None and np.isfinite(s.min_price) else 0.0
+        max_price = float(s.max_price) if s is not None and s.max_price is not None and np.isfinite(s.max_price) else 0.0
 
         context[i] = np.concatenate(
             [
@@ -416,7 +450,7 @@ def tensorize_l3_samples_chunk(
                 gap_buy,
                 gap_sell,
                 np.array(
-                    [step_progress, relative_time, 0.0, is_buying, b_free],
+                    [step_progress, relative_time, 0.0, is_buying, b_free, min_price, max_price],
                     dtype=np.float32,
                 ),
             ],
@@ -429,7 +463,7 @@ def tensorize_l3_samples_chunk(
         action_op[i, 0] = int(s.action_op) if s is not None else 2
 
         tq = float(s.target_quantity) if s is not None and s.target_quantity is not None else 0.0
-        tp = float(s.target_price) if s is not None and s.target_price is not None else 0.0
+        tp, pv = _resolve_price_ratio(s)
         tt = int(s.target_time) if s is not None and s.target_time is not None else 0
 
         valid = 1.0
@@ -443,6 +477,7 @@ def tensorize_l3_samples_chunk(
         target_p[i, 0] = tp
         target_t[i, 0] = tt
         time_valid[i, 0] = valid
+        price_valid[i, 0] = pv
 
         if s is not None and s.reward is not None:
             reward[i, 0] = float(s.reward)
@@ -457,6 +492,7 @@ def tensorize_l3_samples_chunk(
         "target_t": target_t,
         "time_mask": time_mask,
         "time_valid": time_valid,
+        "price_valid": price_valid,
         "reward": reward,
         "reward_valid": reward_valid,
     }
@@ -858,6 +894,9 @@ def train_l3_bc(
             target_t = batch['target_t'].squeeze(-1).to(config.device)
             time_mask = batch['time_mask'].to(config.device)
             time_valid = batch['time_valid'].squeeze(-1).to(config.device)
+            price_valid = batch.get('price_valid', None)
+            if price_valid is not None:
+                price_valid = price_valid.squeeze(-1).to(config.device)
 
             op_logits, quantity, price, time_logits = model(
                 history_seq, context, time_mask
@@ -869,7 +908,14 @@ def train_l3_bc(
             valid_mask = counter_mask & (time_valid > 0.5)
             if valid_mask.any():
                 loss_q = F.mse_loss(quantity[valid_mask], target_q[valid_mask])
-                loss_p = F.mse_loss(price[valid_mask], target_p[valid_mask])
+                if price_valid is not None:
+                    price_mask = valid_mask & (price_valid > 0.5)
+                else:
+                    price_mask = valid_mask
+                if price_mask.any():
+                    loss_p = F.mse_loss(price[price_mask], target_p[price_mask])
+                else:
+                    loss_p = torch.tensor(0.0, device=config.device)
                 loss_t = F.cross_entropy(time_logits[valid_mask], target_t[valid_mask])
             else:
                 loss_q = torch.tensor(0.0, device=config.device)
@@ -1044,6 +1090,9 @@ def train_l3_awr(
             rewards = batch['reward'].squeeze(-1).to(config.device)
             time_mask = batch['time_mask'].to(config.device)
             time_valid = batch['time_valid'].squeeze(-1).to(config.device)
+            price_valid = batch.get('price_valid', None)
+            if price_valid is not None:
+                price_valid = price_valid.squeeze(-1).to(config.device)
 
             B = history_seq.size(0)
             advantages = rewards
@@ -1063,7 +1112,15 @@ def train_l3_awr(
             if valid_mask.any():
                 w_counter = weights[valid_mask].unsqueeze(-1)
                 loss_q = (w_counter * (quantity[valid_mask] - target_q[valid_mask]) ** 2).mean()
-                loss_p = (w_counter * (price[valid_mask] - target_p[valid_mask]) ** 2).mean()
+                if price_valid is not None:
+                    price_mask = valid_mask & (price_valid > 0.5)
+                else:
+                    price_mask = valid_mask
+                if price_mask.any():
+                    w_price = weights[price_mask].unsqueeze(-1)
+                    loss_p = (w_price * (price[price_mask] - target_p[price_mask]) ** 2).mean()
+                else:
+                    loss_p = torch.tensor(0.0, device=config.device)
                 loss_t = F.cross_entropy(time_logits[valid_mask], target_t[valid_mask], reduction='none')
                 loss_t = (weights[valid_mask] * loss_t).mean()
             else:
