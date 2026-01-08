@@ -1562,13 +1562,11 @@ class HRLXFTrainer:
     
     def train_phase2_ppo(self) -> Dict[str, Any]:
         """Phase 2: PPO 在线微调（预留）."""
-        print("[INFO] Phase 2 PPO training requires SCML simulator integration")
-        return {}
+        raise NotImplementedError("Phase 2 PPO training requires SCML simulator integration")
     
     def train_phase3_selfplay(self) -> Dict[str, Any]:
         """Phase 3: 自博弈（预留）."""
-        print("[INFO] Phase 3 Self-Play training requires opponent pool")
-        return {}
+        raise NotImplementedError("Phase 3 Self-Play training requires opponent pool")
     
     def save_all(self, suffix: str = "final"):
         """保存所有模型."""
