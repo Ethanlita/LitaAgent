@@ -1,5 +1,11 @@
 # **SCML 2025 供应链期货交易代理架构重构蓝皮书：从 HRL-X 到 HRL-XF 的范式演进**
 
+> **更新说明（2026-01）**：
+> - 在线阶段先跑 **IPPO**：仅训练 L3，L2/L4 冻结，显式设 `α=0`
+> - **L3 输出完整 AOP 动作**（`op/time/price/qty`），不再使用残差
+> - **L4 仅输出优先级 α**，不再调制 L3 或做动态预留
+> - MAPPO/集中式 critic 作为远期扩展
+
 ## **1\. 执行摘要：时间维度的引入与架构范式转移**
 
 ### **1.1 2025 赛季的本体论转变**
@@ -329,9 +335,9 @@ class HorizonManagerPPO(tf.keras.Model):
 
 ## ---
 
-**5\. L3 残差执行层：时序决策 Transformer 与相对时间编码**
+**5\. L3 执行层：AOP 决策 Transformer 与相对时间编码**
 
-这是 HRL-XF 改造最深入的部分。原 L3 的 Decision Transformer (DT) 仅处理 $(s, a, r)$ 序列 。现在动作 $a$ 包含了时间维度 $\\delta\_t$，这不仅是一个数值，更是一个具有语义的 token。
+这是 HRL-XF 改造最深入的部分。原 L3 的 Decision Transformer (DT) 仅处理 $(s, a, r)$ 序列。当前动作 $a$ 为 **AOP**：`op + (q, p, \\delta_t)`，其中 $\\delta_t$ 是具有语义的时间 token。
 
 ### **5.1 输入嵌入层：时间的 Token 化**
 
@@ -350,13 +356,14 @@ L2 输出的“分桶需求曲线”如何指导 L3？
 我们将 L2 的 Goal 向量投影后，作为 前缀 Token (Prefix Token) 拼接到 L3 的上下文序列最前端。这类似于 NLP 中的 Prompt Tuning。  
 DT 的注意力机制会自动关注这个 Goal Token。当 Goal Token 显示“Bucket 2 (Days 8-14) 需要大量买入”时，Transformer 在生成动作时会倾向于选择 $\\delta\_t \\in $。
 
-### **5.3 输出头设计：混合分布策略**
+### **5.3 输出头设计：AOP 分布策略**
 
-L3 的输出层需要产生三个分量：
+L3 的输出层需要产生四类分量：
 
-1. **残差数量 ($\\Delta q$)**：连续值，Tanh 激活。  
-2. **残差价格 ($\\Delta p$)**：连续值，Tanh 激活。  
-3. **交货时间 ($\\delta\_t$)**：**离散分类分布 (Categorical Distribution)**。
+1. **操作符 ($op$)**：`ACCEPT / REJECT / END`（Categorical）。  
+2. **交货时间 ($\\delta\_t$)**：**离散分类分布 (Categorical Distribution)**。  
+3. **价格 ($p$)**：Beta 分布映射到 `[min, max]`。  
+4. **数量 ($q$)**：分桶 Categorical 映射到可行区间。  
 
 为什么时间是分类的？因为在谈判中，我们通常会提出离散的选项：“能明天发货吗？”或者“下周一行吗？”。在 $0$ 到 $H$ 之间进行回归不仅困难，而且难以应用 L1 的 Mask。
 
@@ -368,7 +375,7 @@ L3 的时间头输出 logits $\\mathbf{l} \\in \\mathbb{R}^H$。
 $$\\pi\_{time} \= \\text{Softmax}(\\mathbf{l} \+ \\mathbf{m})$$
 
 这确保了 L3 绝不会提议一个会导致未来爆仓的交货时间。  
-**代码实现方案**：
+**代码实现方案**（示意，需改为 AOP 头：`op/time/price/qty`）：
 
 Python
 
@@ -462,7 +469,7 @@ $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{QK^T}{\sqrt{d_k}} + \mat
 4. **时间偏置掩码**：
    - 计算线程间的时间距离：$\Delta_{ij} = |\hat{\delta}_i - \hat{\delta}_j|$
    - 距离越近，偏置越大（表示冲突）：$M_{time}[i,j] = -\alpha \cdot \Delta_{ij}$（或使用可学习参数）
-5. **门控输出**：Transformer 输出通过门控机制调制各 L3 实例的激进程度。
+5. **输出优先级**：Transformer 输出 $\\alpha$ 作为 L3 输入信号，不再直接调制 L3 输出。
 
 这一机制确保了代理不会在同一个时间点过度承诺（Over-commit），而是自动将采购需求分散到不同的时间窗口，实现 **错峰采购**。
 
@@ -487,14 +494,13 @@ $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{QK^T}{\sqrt{d_k}} + \mat
 
 这使得 L2 能够学习到 PenguinAgent 是如何在看到当前状态后，规划未来 20 天的采购分布的。
 
-### **7.2 势能奖励的训练技巧**
+### **7.2 在线奖励与课程学习**
 
-在在线微调（PPO/MAPPO）阶段，使用前述的 $\\Phi(s)$ 势能奖励函数至关重要。  
-但是，初始阶段 $\\Phi(s)$ 的参数（如 $\\gamma$ 和合约估值函数）可能不准确。  
-建议采用 课程学习 (Curriculum Learning)：
+在线阶段先以 **IPPO** 跑通：冻结 L2/L4，`α=0`，仅训练 L3，使用最小谈判奖励（success bonus + surplus - time penalty）。  
+势能奖励 $\\Phi(s)$ 作为后续增强（MAPPO/CTDE）再引入，建议继续采用课程学习：
 
 * **阶段 1**：仅开启现货市场（$\\delta\_t=0$）。训练 L3 掌握基本的议价能力。  
-* **阶段 2**：开启短期期货（$\\delta\_t \\in $）。引入 $\\Phi(s)$，调整 $\\gamma$ 使得代理学会评估等待成本。  
+* **阶段 2**：开启短期期货（$\\delta\_t \\in $）。逐步引入 $\\Phi(s)$，调整 $\\gamma$。  
 * **阶段 3**：开启全时段期货。训练 L2 的长程规划能力。
 
 ## ---

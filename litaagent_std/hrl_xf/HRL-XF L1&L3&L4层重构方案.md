@@ -1393,9 +1393,10 @@ self.price_head = nn.Sequential(
 3) 若 `op* == ACCEPT`：输出 ACCEPT（必须携带对手原始 offer_in）  
 4) 若 `op* == REJECT`：  
    - 先选 `δ* = argmax/采样`（加 `time_mask`）  
-   - 生成数量：`q = round(q_raw)`（q_raw 来自 `quantity_head(h_last)`，要求 q_raw ≥ 0）  
-  - 生成价格：`price_ratio = price_head(h_last)`，映射为 `p = min_price + price_ratio * (max_price - min_price)`（ratio 夹到 [0,1]）  
-  - 调用 `clip_action()`：**仅裁剪数量 q** 到当日剩余安全量上界（使用 `Q_safe_remaining` / `Q_safe_sell_remaining`）；**不修改时间 δ***、**不修改价格 p**。若 δ* 超出 issue range，则 q 直接置 0。  
+   - 生成价格：`price ~ Beta(α,β)`，映射到 `[min_price, max_price]`  
+   - 计算 `Q_max`（基于 `Q_safe_remaining` / `B_free` 与当前 price）  
+   - 生成数量：`qty ~ Categorical(buckets)` 并映射到 `[1, Q_max]`  
+   - 调用 `clip_action()`：**仅裁剪数量 q** 到当日剩余安全量上界；**不修改时间 δ***、**不修改价格 p**。若 δ* 超出 issue range，则 q 直接置 0。  
    - 将 δ* 转回绝对交付日：`t_abs = day + δ*`（SCML time issue 为绝对 step）
 
 ---
@@ -1414,10 +1415,10 @@ BC（监督学习）时：
 \Big)
 \]
 
-RL（MAPPO/PPO）时，logprob 由：
+RL（IPPO/MAPPO）时，logprob 由：
 
 - `log π(op*)`
-- 若 REJECT：`log π(δ*) + log π(q_raw) + log π(p_raw)`（q_raw/p_raw 可建模为 LogNormal / Gamma / TruncatedNormal；若暂时用点估计，可先用行为克隆 warm start + RL 微调）
+- 若 REJECT：`log π(δ*) + log π(price*) + log π(qty*)`（price 用 Beta→区间映射；qty 用离散桶 Categorical）
 
 ---
 
@@ -2415,14 +2416,14 @@ def apply_safety_during_training(self, action_logits, time_mask, Q_safe, B_free)
     - 输出：`α_hat(thread, round)`（允许同一谈判内随轮次变化）
   - [ ] 用监督学习/蒸馏训练 `GlobalCoordinator` 拟合 `α_hat`
   - [ ] 训练目标：`L4Loss = MSE(α_pred, α_hat)` 或 `HuberLoss`
-- [ ] 在线 RL 热身（α 依从 warmup，可选）：
-  - [ ] 在简化奖励下跑短期 PPO/MAPPO，让 L3 对 α 敏感（避免 RL 初期把 α 当噪声）
+- [ ] 在线 RL 热身（IPPO 先行）：
+  - [ ] 冻结 L2/L4，显式设 `α=0`；仅训练 L3（参数共享）
+  - [ ] 使用最小谈判奖励（success bonus + surplus - time penalty）先跑通
 
-### Phase 7：在线学习（MAPPO + Centralized Critic，CTDE）
+### Phase 7：在线学习（IPPO -> MAPPO）
 
-- [ ] Actor：每个线程一份共享参数的 L3（输入含 α 与 GlobalBroadcast）
-- [ ] Critic：集中式价值网络 `V(s_global)`，可观察所有线程状态、目标剩余、已签约量等（不要过复杂）
-- [ ] 奖励：以真实利润为主；必要时加轻度 shaping（如高 α 线程迟迟不成交的惩罚）
+- [ ] Phase 7a（IPPO）：共享 L3 actor-critic，独立 critic（线程局部观测 + broadcast），α 固定为 0
+- [ ] Phase 7b（MAPPO，远期）：集中式 critic + α 联合优化（CTDE）
 
 ### Phase 8：回归测试（必须做）
 

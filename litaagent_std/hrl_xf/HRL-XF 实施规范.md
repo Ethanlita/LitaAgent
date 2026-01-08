@@ -6,6 +6,14 @@
 > - `HRL-X 期货市场适应性重构.md`
 > - `HRL-XF 期货市场代理重构.md`
 
+> **更新说明（2026-01）**：
+> - 在线阶段先跑 **IPPO**：仅训练 L3，L2/L4 冻结，显式设 `α=0`
+> - **L1 仅输出 mask**（`time_mask/Q_safe/Q_safe_sell/B_free`），不再输出 baseline
+> - **L3 输出完整 AOP 动作**（`op/time/price/qty`），提供采样、logprob、entropy、value
+> - **L4 = GlobalMonitor + GlobalCoordinator**，`α` 仅作为 L3 输入，不再做调制/动态预留
+> - **MAPPO/集中式 critic** 保留为远期扩展
+> - 若本文件后续章节与上述冲突，以此更新为准
+
 ---
 
 ## 1. 概述
@@ -16,12 +24,12 @@ HRL-XF (Hybrid Residual Learner - Extended Framework, **Futures Edition**) 是�
 
 | 维度 | HRL-X (现货) | HRL-XF (期货) |
 |------|-------------|---------------|
-| **动作空间** | $(q, p)$ | $(q, p, \delta_t)$ |
+| **动作空间** | $(q, p)$ | AOP: `op` + $(q, p, \delta_t)$ |
 | **状态空间** | 扁平向量 | 混合张量组（含时序） |
 | **L1 约束** | 静态库容检查 | 时序 ATP 算法 |
 | **L2 输出** | 8维（仅买入） | 16维（买卖对称） |
-| **L3 架构** | DT (2分量) | DT (3分量 + 时间分类头) |
-| **L4 机制** | 简单注意力 | 时空注意力 + 冲突消解 |
+| **L3 架构** | DT (2分量) | DT (AOP: op/time/price/qty，可采样分布) |
+| **L4 机制** | 简单注意力 | Monitor + Coordinator（`α` 仅输入，不调制/动态预留） |
 
 ### 1.2 设计决策确认记录
 
@@ -353,7 +361,9 @@ def compute_safe_buy_mask(
     return Q_safe
 ```
 
-### 5.5.1 动态预留后的 Q_safe 更新
+### 5.5.1 （已弃用）动态预留后的 Q_safe 更新
+
+> 当前方案已移除“动态预留/顺序裁剪”机制，L4 不再参与裁剪或重算 Q_safe。本节仅作历史参考。
 
 当 L4 批次规划器为某个线程（交货日 $\delta_t$）预留 $q$ 单位时，需要更新 `Q_in` 并重算 Q_safe：
 
@@ -414,7 +424,6 @@ class L1Output:
     Q_safe_sell: np.ndarray     # shape (H+1,) - 每个交货日的最大安全卖出量，δt ∈ {0, 1, ..., H}
     B_free: float               # 可用资金上限
     time_mask: np.ndarray       # shape (H+1,) - 时间掩码 (0 或 -inf)，δt ∈ {0, 1, ..., H}
-    baseline_action: Tuple[float, float, int]  # (q_base, p_base, t_base)
     
     # 调试信息
     L_trajectory: np.ndarray    # 原材料 backlog 轨迹
@@ -484,15 +493,11 @@ class L1SafetyLayer:
         else:
             time_mask = np.where(Q_safe_sell >= threshold, 0.0, -np.inf)
         
-        # 10. 生成基准动作
-        baseline_action = self._compute_baseline(awi, Q_safe, Q_safe_sell, B_free, is_buying)
-        
         return L1Output(
             Q_safe=Q_safe,
             Q_safe_sell=Q_safe_sell,
             B_free=B_free,
             time_mask=time_mask,
-            baseline_action=baseline_action,
             L_trajectory=backlog,
             C_total=C_total,
             Q_in=Q_in,
@@ -531,52 +536,6 @@ class L1SafetyLayer:
         
         return Payables
     
-    def _compute_baseline(self, awi, Q_safe, Q_safe_sell, B_free, is_buying) -> Tuple[float, float, int]:
-        """计算基准动作（保守、可行优先）"""
-        trading_prices = getattr(awi, 'trading_prices', None)
-        
-        def get_price(product_id, default):
-            if trading_prices is None:
-                return default
-            try:
-                if hasattr(trading_prices, '__getitem__'):
-                    if product_id < len(trading_prices):
-                        return float(trading_prices[product_id])
-            except (IndexError, TypeError):
-                pass
-            return default
-        
-        if is_buying:
-            input_product = awi.my_input_product
-            if hasattr(input_product, '__len__') and not isinstance(input_product, (str, int)):
-                input_product = input_product[0]
-            market_price = get_price(input_product, 10.0)
-            
-            best_delta = 1
-            for delta in range(self.horizon + 1):
-                if Q_safe[delta] >= self.min_tradable_qty:
-                    best_delta = delta
-                    break
-            
-            q_base = min(Q_safe[best_delta] / 2, B_free / max(market_price, 1.0))
-            q_base = max(1.0, q_base)
-            p_base = market_price * 0.95
-        else:
-            output_product = awi.my_output_product
-            if hasattr(output_product, '__len__') and not isinstance(output_product, (str, int)):
-                output_product = output_product[0]
-            market_price = get_price(output_product, 20.0)
-            
-            best_delta = 1
-            for delta in range(self.horizon + 1):
-                if Q_safe_sell[delta] >= self.min_tradable_qty:
-                    best_delta = delta
-                    break
-            
-            q_base = max(1.0, Q_safe_sell[best_delta] / 2)
-            p_base = market_price * 1.05
-        
-        return (q_base, p_base, best_delta)
 ```
 
 ---
@@ -754,196 +713,51 @@ class HorizonManagerPPO(nn.Module):
 
 ---
 
-## 7. L3 残差执行层 - 完整实现规范
+## 7. L3 执行层 - 完整实现规范（AOP/IPPO）
 
 ### 7.1 核心职责
 
-L3 是**轮级残差执行器**，基于谈判历史序列和 L2 目标，输出 $(q, p, \delta_t)$ 的残差/分类。
+L3 是**轮级执行器**，直接输出 AOP 动作：`op ∈ {ACCEPT, REJECT, END}`，若为 `REJECT` 则生成 counter offer `(qty, price, delta_t)`。参数在所有 `negotiator_id` 间共享，支持在线 IPPO/MAPPO。
 
 ### 7.2 输入设计
 
 ```python
 L3_Input = {
-    # 谈判历史序列 (最近 T 轮)
-    "history": Tensor[B, T, 3],  # 每轮: (q, p, delta_t)
-    
-    # L2 目标 (完整16维向量，4桶 × 4分量)
-    "goal": Tensor[B, 16],  # 4桶 × (Q_buy, P_buy, Q_sell, P_sell)
-    
-    # 角色嵌入
-    "role": Tensor[B,],  # 0=Buyer, 1=Seller
-    
-    # L1 安全掩码
-    "time_mask": Tensor[B, H+1],  # 0 或 -inf，δt ∈ {0, 1, ..., H}
-    
-    # 当前对手 Offer
-    "current_offer": Tensor[B, 3],  # (q, p, delta_t)
-    
-    # 基准动作 (来自 L1)
-    "baseline": Tensor[B, 3],  # (q_base, p_base, t_base)
+    "history": Tensor[B, T, 4],    # 谈判历史 (q, p, delta_t, who/flag)
+    "context": Tensor[B, C],       # 本地状态 + GlobalBroadcast（含 L2 目标缺口）
+    "role": Tensor[B,],            # 0=Buyer, 1=Seller
+    "alpha": Tensor[B,],           # L4 优先级（IPPO 阶段固定 0）
+    "time_mask": Tensor[B, H+1],   # 0 或 -inf，δt ∈ {0..H}
+    "has_offer": Tensor[B,],       # 用于 op mask（无 offer 禁止 ACCEPT）
 }
 ```
 
-### 7.3 网络架构
+### 7.3 输出设计（动作分解）
 
 ```
-1. 嵌入层
-   - qty_embed: Dense(d_model)
-   - price_embed: Dense(d_model)
-   - time_embed: Embedding(H+1, d_model)  # 离散时间嵌入
-   - role_embed: Embedding(2, d_model)
-
-2. Goal Prompting
-   - goal_embed: Dense(d_model)
-   - 作为 prefix token 拼接到序列前
-
-3. Transformer Backbone (GPT-2 style)
-   - num_layers: 4
-   - d_model: 128
-   - num_heads: 4
-   - 使用因果掩码 (Causal Mask)
-
-4. 输出头
-   - head_q: Dense(1, Tanh) -> Δq ∈ [-1, 1]
-   - head_p: Dense(1, Tanh) -> Δp ∈ [-1, 1]
-   - head_t: Dense(H+1) -> time_logits (Masked Softmax)，δt ∈ {0, 1, ..., H}
-
-5. 最终动作合成
-   - q_final = q_base + scale_q * Δq
-   - p_final = p_base + scale_p * Δp
-   - t_final = sample from Softmax(time_logits + time_mask)
+op_logits   : (B, 3)     # ACCEPT / REJECT / END
+time_logits : (B, H+1)   # Masked Categorical
+price_ab    : (B, 2)     # Beta(α, β) -> 映射到 [min_price, max_price]
+qty_logits  : (B, Nq)    # 数量分桶 Categorical
+value       : (B, 1)
 ```
 
-### 7.4 PyTorch 实现
+采样顺序：`op -> (if REJECT) delta_t -> price -> Q_max -> quantity`。  
+仅用 `time_mask` 与资源上界保证可行性，避免 `clip_action()` 改写时间/价格导致 logprob 不一致。
 
-```python
-class TemporalDecisionTransformer(nn.Module):
-    """L3 残差执行层 - 时序决策 Transformer"""
-    
-    def __init__(
-        self,
-        horizon: int = 40,
-        d_model: int = 128,
-        n_heads: int = 4,
-        n_layers: int = 4,
-        max_seq_len: int = 20,
-        scale_q: float = 10.0,
-        scale_p: float = 5.0,
-    ):
-        super().__init__()
-        
-        self.horizon = horizon
-        self.d_model = d_model
-        self.scale_q = scale_q
-        self.scale_p = scale_p
-        
-        # 嵌入层
-        self.qty_embed = nn.Linear(1, d_model)
-        self.price_embed = nn.Linear(1, d_model)
-        self.time_embed = nn.Embedding(horizon + 1, d_model)
-        self.role_embed = nn.Embedding(2, d_model)
-        self.goal_embed = nn.Linear(16, d_model)  # 完整16维目标向量
-        self.baseline_embed = nn.Linear(3, d_model)  # 基准动作 (q_base, p_base, t_base)
-        
-        # 位置编码
-        self.pos_embed = nn.Embedding(max_seq_len + 1, d_model)  # +1 for goal token
-        
-        # Transformer
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=n_heads,
-            dim_feedforward=d_model * 4,
-            dropout=0.1,
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-        
-        # 输出头
-        self.head_q = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
-            nn.Linear(d_model // 2, 1),
-            nn.Tanh()
-        )
-        self.head_p = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.ReLU(),
-            nn.Linear(d_model // 2, 1),
-            nn.Tanh()
-        )
-        self.head_t = nn.Linear(d_model, horizon + 1)  # H+1 维，支持 δt ∈ {0, 1, ..., H}
-        
-        # 可学习缩放因子
-        self.residual_scale = nn.Parameter(torch.tensor([scale_q, scale_p]))
-    
-    def forward(self, history, goal, role, time_mask, baseline):
-        """
-        Args:
-            history: (B, T, 3) - 谈判历史 (q, p, delta_t)
-            goal: (B, 16) - L2 目标（4桶 × 4分量）
-            role: (B,) - 角色索引
-            time_mask: (B, H+1) - 时间掩码（0 或 -inf），δt ∈ {0, 1, ..., H}
-            baseline: (B, 3) - 基准动作
-        
-        Returns:
-            delta_q: (B, 1) - 数量残差
-            delta_p: (B, 1) - 价格残差
-            time_logits: (B, H+1) - 时间分类 logits (已 masked)，对应 δt ∈ {0, 1, ..., H}
-        """
-        B, T, _ = history.shape
-        
-        # 1. 嵌入历史序列
-        e_q = self.qty_embed(history[:, :, 0:1])      # (B, T, d)
-        e_p = self.price_embed(history[:, :, 1:2])    # (B, T, d)
-        e_t = self.time_embed(history[:, :, 2].long())  # (B, T, d)
-        
-        tokens = e_q + e_p + e_t  # (B, T, d)
-        
-        # 2. 添加角色嵌入
-        role_emb = self.role_embed(role)  # (B, d)
-        tokens = tokens + role_emb.unsqueeze(1)  # 广播
-        
-        # 3. Goal Prompting (作为 prefix)
-        g_token = self.goal_embed(goal) + self.baseline_embed(baseline)  # (B, d)
-        g_token = g_token.unsqueeze(1)  # (B, 1, d)
-        seq = torch.cat([g_token, tokens], dim=1)  # (B, T+1, d)
-        
-        # 4. 位置编码
-        positions = torch.arange(T + 1, device=seq.device)
-        seq = seq + self.pos_embed(positions)
-        
-        # 5. 因果掩码
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(T + 1).to(seq.device)
-        
-        # 6. Transformer
-        feat = self.transformer(seq, mask=causal_mask)
-        last_feat = feat[:, -1, :]  # (B, d)
-        
-        # 7. 输出头
-        delta_q = self.head_q(last_feat) * self.residual_scale[0]
-        delta_p = self.head_p(last_feat) * self.residual_scale[1]
-        
-        time_logits = self.head_t(last_feat)  # (B, H+1)
-        time_logits = time_logits + time_mask  # 应用 L1 掩码
-        
-        return delta_q, delta_p, time_logits
-    
-    def get_action(self, history, goal, role, time_mask, baseline):
-        """获取最终动作"""
-        delta_q, delta_p, time_logits = self.forward(
-            history, goal, role, time_mask, baseline
-        )
-        
-        # 合成最终动作
-        q_final = baseline[:, 0:1] + delta_q
-        p_final = baseline[:, 1:2] + delta_p
-        
-        # 采样时间
-        time_dist = torch.distributions.Categorical(logits=time_logits)
-        t_final = time_dist.sample()
-        
-        return q_final, p_final, t_final, time_dist.log_prob(t_final)
-```
+### 7.4 关键接口（PPO/IPPO）
+
+- `act(obs, deterministic=False) -> action, logp, value, info`
+- `evaluate_actions(obs, action) -> logp, entropy, value`
+
+`logp` 由 `op` +（若 REJECT）`time + price + qty` 组成；`entropy` 仅统计启用分支。
+
+### 7.5 离线 BC 兼容
+
+- `op` 监督：CE
+- `time/price/qty` 仅在 `op==REJECT` 时监督
+- `ACCEPT` 必须携带对手原始 `offer_in`；`END` 无 counter offer
+- 需要在 tracker 中显式记录 AOP 动作，避免 END/ACCEPT 标签歧义
 
 ---
 
@@ -951,9 +765,9 @@ class TemporalDecisionTransformer(nn.Module):
 
 ### 8.1 核心职责
 
-L4 是**并发协调器**，处理多个谈判线程之间的资源冲突。与“只做残差缩放”的旧设想相比，当前实现更强调 **作用点前移** 与 **顺序无关**：
-- 输出连续权重 $\\alpha$（softmax，线程数可变）作为**全局调度信号**；
-- 在生成报价时（尤其买侧）按 $\\alpha$ 从高到低对各线程候选动作逐一做 `clip_action`，并动态扣减剩余 `B_free/Q_safe`（动态预留，不做固定切块），避免单线程独占全局资源；
+L4 是**并发协调器**，处理多个谈判线程之间的资源冲突。当前实现强调 **顺序无关** 与 **输入可重建**：
+- 输出连续优先级 $\\alpha$（线程数可变）作为全局调度信号；
+- $\\alpha$ **仅作为 L3 输入**（不再调制输出、不做顺序裁剪/动态预留）；
 - 每次决策先收集全部活跃线程特征，统一计算一次 L4 并缓存复用，减少回调顺序导致的差异。
 
 ### 8.2 时空注意力机制
@@ -1072,28 +886,14 @@ class GlobalCoordinator(nn.Module):
         
         return weights, attn_output
     
-    def modulate_l3(self, l3_outputs, weights):
-        """
-        使用权重调制 L3 输出。
-        
-        高权重 -> 更激进（放大残差）
-        低权重 -> 更保守（缩小残差）
-        """
-        # l3_outputs: (delta_q, delta_p, time_logits)
-        delta_q, delta_p, time_logits = l3_outputs
-        
-        # 权重放大因子
-        amplify = 1.0 + weights.unsqueeze(-1)  # (B, K, 1)
-        
-        modulated_q = delta_q * amplify
-        modulated_p = delta_p * amplify
-        
-        return modulated_q, modulated_p, time_logits
+    # 已弃用：L4 不再调制 L3 输出（alpha 仅作为输入信号）
 ```
 
 ---
 
 ## 9. 奖励函数设计
+
+> IPPO 起步建议使用**谈判级最小奖励**（成功奖励 + surplus - 时间惩罚），先保证在线可学，再逐步引入势能整形与复合奖励。
 
 ### 9.1 势能奖励函数 (解决跨期信用分配)
 
@@ -1192,7 +992,7 @@ def reconstruct_l2_goals(daily_logs: List[dict], n_buckets: int = 4) -> List["Ma
     ...
 ```
 
-### 10.2 L3 残差标签提取
+### 10.2 L3 动作标签提取（AOP）
 
 ```python
 def compute_time_mask_offline(
@@ -1202,107 +1002,55 @@ def compute_time_mask_offline(
 ) -> np.ndarray:
     """
     从日志状态离线计算 time_mask（与 L1SafetyLayer 逻辑一致）。
-
-    实现要点：
-    - 先用 compute_q_safe_offline(state_dict, horizon) 得到 Q_safe（H+1）
-    - 再用阈值生成 mask：time_mask = 0 / -inf（用于 L3 的 Masked Softmax）
-
-    详见实现：litaagent_std/hrl_xf/data_pipeline.py:compute_time_mask_offline
     """
     Q_safe = compute_q_safe_offline(state_dict, horizon=horizon)
     return np.where(Q_safe >= min_tradable_qty, 0.0, -np.inf).astype(np.float32)
 
 
-def fix_invalid_time_label(
-    time_label: int,
-    time_mask: np.ndarray,
-    t_base: int = 1,
-) -> int:
-    """
-    修复无效的 time_label：若被 L1 禁止，则投影到最近的合法 delta。
-    
-    Args:
-        time_label: 原始时间标签
-        time_mask: (H+1,) 形状，0.0 表示允许，-inf 表示禁止
-    
-    Returns:
-        修复后的 time_label
-    """
+def fix_invalid_time_label(time_label: int, time_mask: np.ndarray) -> int:
+    """若 time_label 被 L1 禁止，则投影到最近的合法 delta。"""
     if time_label < len(time_mask) and time_mask[time_label] == 0.0:
-        return time_label  # 原本合法
-    
-    # 找最近的合法位置
+        return time_label
     valid_indices = np.where(time_mask == 0.0)[0]
     if len(valid_indices) == 0:
-        # 全部禁止：回退到 baseline 时间（若合法）或 0
-        if t_base < len(time_mask) and time_mask[t_base] == 0.0:
-            return int(t_base)
         return 0
-    
     distances = np.abs(valid_indices - time_label)
     return int(valid_indices[np.argmin(distances)])
 
 
-def extract_l3_residuals(
+def extract_l3_actions_aop(
     negotiation_logs: List[dict],
     *,
     daily_states: Dict[int, dict],
     horizon: int = 40,
 ):
     """
-    从谈判日志中提取 L3 残差标签
-    
-    Returns:
-        List of {history, role, baseline, residual, time_label, time_mask}
-    
-    离线训练注意事项:
-        1. time_mask 使用 compute_time_mask_offline() 从日志状态重建
-        2. 若 time_label 被 time_mask 禁止，使用 fix_invalid_time_label() 修复
+    从谈判日志中提取 L3 AOP 动作标签。
+    Returns: List of {history, role, time_mask, action_op, offer_in, offer_out}
     """
     samples = []
-    fix_count = 0
-    
     for neg in negotiation_logs:
-        # 历史序列
         history = np.array(neg['offer_history'])  # (T, 3)
-        
-        # 角色
         role = 0 if neg['is_buyer'] else 1
-        
         day = int(neg.get('sim_step', neg.get('day', 0)) or 0)
         state = daily_states[day]
-
-        # L1 基准（离线重建，训练/推理一致）
-        baseline = compute_l1_baseline_offline(state, is_buying=neg['is_buyer'], horizon=horizon)
-        baseline = np.array(baseline, dtype=np.float32)
-
-        # time_mask（离线重建，训练/推理一致）
         time_mask = compute_time_mask_offline(state, horizon=horizon)
-        
-        # 专家动作
-        expert_action = np.array(neg['final_action'])  # (q, p, t)
-        
-        # 残差
-        residual = expert_action[:2] - baseline[:2]  # (Δq, Δp)
-        
-        # 时间标签 (分类) - 修复无效值
-        time_label = int(expert_action[2])
-        if time_label >= len(time_mask) or time_mask[time_label] != 0.0:
-            time_label = fix_invalid_time_label(time_label, time_mask, t_base=int(baseline[2]))
-            fix_count += 1
-        
+
+        action_op = neg['action_op']  # 0=ACCEPT,1=REJECT,2=END（需 tracker 显式记录）
+        offer_in = neg.get('offer_in')    # 对手当前 offer
+        offer_out = neg.get('offer_out')  # 我方 counter offer（仅 REJECT）
+
+        if action_op == 1 and offer_out is not None:
+            offer_out[2] = fix_invalid_time_label(int(offer_out[2]), time_mask)
+
         samples.append({
             'history': history,
             'role': role,
-            'baseline': baseline,
-            'residual': residual,
-            'time_label': time_label,
-            'time_mask': time_mask,  # 新增: 真实的 L1 约束
+            'time_mask': time_mask,
+            'action_op': action_op,
+            'offer_in': offer_in,
+            'offer_out': offer_out,
         })
-    
-    if fix_count > 0:
-        print(f"[L3数据] 修复了 {fix_count}/{len(samples)} 个无效 time_label")
-    
     return samples
 ```
 
@@ -1316,8 +1064,9 @@ def extract_l3_residuals(
 |------|------|------|------|----------|
 | 0 | Cold Start | 不崩盘 | 行为克隆 (BC) | PenguinAgent 日志 |
 | 1 | Offline RL | 超越专家均值 | AWR (优势加权回归) | 筛选后的专家轨迹 |
-| 2 | Online Fine-tune | 探索新策略 | PPO + 势能奖励 | SCML 2025 模拟器 |
-| 3 | Self-Play | 逼近纳什均衡 | MAPPO + 对手池 | 历史版本对抗 |
+| 2 | Online Warmup | 先跑通在线 | IPPO（仅 L3，α=0） | SCML 2025 模拟器 |
+| 3 | Online CTDE | 稳定提升 | MAPPO + Centralized Critic | 对手池 |
+| 4 | Self-Play | 逼近纳什均衡 | MAPPO + 对手池 | 历史版本对抗 |
 
 ### 11.2 训练循环伪代码
 
@@ -1383,42 +1132,37 @@ class HRLXFTrainer:
         l2_loss.backward()
         self.l2_optimizer.step()
         
-        # ========== L3 + L4 联合更新 (轮级) ==========
+        # ========== L3 更新 (轮级, AOP) ==========
         with torch.enable_grad():
-            # L4 协调
-            weights, _ = self.l4(
+            # L4 仅输出 alpha（可选择冻结）
+            alpha = self.l4(
                 batch['thread_feats'],
                 batch['thread_times'],
                 batch['thread_roles'],
                 batch['global_feat']
             )
-            
-            # L3 前向 - 使用真实 time_mask (由 compute_time_mask_offline 计算)
-            delta_q, delta_p, time_logits = self.l3(
+
+            # L3 前向（AOP + time_mask）
+            op_logits, time_logits, price_ab, qty_logits, values = self.l3(
                 batch['history'],
-                batch['goal_bucket'],
+                batch['context'],
                 batch['l3_role'],
-                batch['time_mask'],  # 真实 L1 约束，非 ones()
-                batch['baseline']
+                alpha,
+                batch['time_mask'],
+                batch['has_offer'],
             )
-            
-            # L4 调制
-            delta_q, delta_p, _ = self.l4.modulate_l3(
-                (delta_q, delta_p, time_logits), weights
-            )
-            
-            # 损失计算
-            loss_q = F.mse_loss(delta_q, batch['target_residual_q'])
-            loss_p = F.mse_loss(delta_p, batch['target_residual_p'])
-            loss_t = F.cross_entropy(time_logits, batch['target_time'])
-            
-            l3_loss = loss_q + loss_p + loss_t
+
+            # 损失计算（仅对 REJECT 监督 time/price/qty）
+            loss_op = F.cross_entropy(op_logits, batch['action_op'])
+            reject_mask = batch['action_op'] == OP_REJECT
+            loss_t = F.cross_entropy(time_logits[reject_mask], batch['target_time'][reject_mask])
+            loss_p = beta_nll(price_ab[reject_mask], batch['target_price'][reject_mask])
+            loss_q = F.cross_entropy(qty_logits[reject_mask], batch['target_qty'][reject_mask])
+            l3_loss = loss_op + loss_t + loss_p + loss_q
         
         self.l3_optimizer.zero_grad()
-        self.l4_optimizer.zero_grad()
         l3_loss.backward()
         self.l3_optimizer.step()
-        self.l4_optimizer.step()
         
         return {'l2_loss': l2_loss.item(), 'l3_loss': l3_loss.item()}
 ```
@@ -1434,15 +1178,14 @@ litaagent_std/
     │
     ├── # 核心模块
     ├── agent.py            # HRL-XF Agent 主类（StdAgent 逐线程接口）
-    ├── batch_planner.py    # 批次统一规划（动态预留，减少顺序依赖）
     ├── l1_safety.py        # L1 安全层（Q_safe/time_mask + clip_action）
     ├── l2_manager.py       # L2 日级目标层（启发式/神经）
-    ├── l3_executor.py      # L3 残差执行层（启发式/神经）
+    ├── l3_executor.py      # L3 执行层（AOP/IPPO）
     ├── l4_coordinator.py   # L4 并发协调层（启发式/神经，输出连续 α）
     ├── state_builder.py    # 状态张量构建器（在线）
     ├── rewards.py          # 奖励函数（在线 RL 预留）
     ├── data_pipeline.py    # 数据流水线（离线：宏/微/L4 蒸馏样本）
-    └── training.py         # 训练（BC/AWR + L4 蒸馏；在线 PPO/MAPPO 预留）
+    └── training.py         # 训练（BC/AWR + L4 蒸馏；在线 IPPO/MAPPO 预留）
 ```
 
 ---
@@ -1455,7 +1198,7 @@ litaagent_std/
 - [x] 实现 `get_capacity_vector()` / `extract_commitments()`
 
 ### Phase 1: L1 安全护盾
-- [x] 实现 `L1SafetyLayer`（在线）与 `compute_l1_baseline_offline()`（离线对齐）
+- [x] 实现 `L1SafetyLayer`（在线）与 `compute_l1_masks_offline()`（离线对齐）
 - [x] 实现库存轨迹投影与 $Q_{safe}[\delta]$ 计算
 - [x] 实现时间掩码生成与 `clip_action`
 - [ ] 单元测试：极端边界（爆仓、缺货）完整覆盖（目前仅基础/接口测试）
@@ -1466,30 +1209,28 @@ litaagent_std/
 - [x] 实现角色嵌入（`x_role`）
 - [ ] 单元测试：目标向量解码完整覆盖（当前仅最小接口/闭环测试）
 
-### Phase 3: L3 残差执行
-- [x] 实现 `TemporalDecisionTransformer`
-- [x] 实现时间嵌入（离散）与 Goal Prompting
-- [x] 实现混合输出头（连续 residual + 时间分类）与 Masked Softmax
+### Phase 3: L3 执行（AOP）
+- [x] 实现 L3 Actor-Critic 骨架与 AOP 头
+- [x] 实现 op/time/price/qty 输出与 mask
 - [ ] 单元测试：因果掩码/边界情况完整覆盖（当前仅最小接口测试）
 
 ### Phase 4: L4 全局协调
 - [x] 实现 `GlobalCoordinator`（启发式 + 神经网络）
 - [x] L4 输入语义对齐：`thread_feat_set + global_feat`（不依赖 L3 latent）
-- [x] 实现买侧“动态预留”（按 α 排序逐线程裁剪并扣减 `B_free/Q_safe`）
-- [ ] 单元测试：更复杂的多线程冲突场景（当前仅覆盖核心接口/动态预留）
+- [ ] 单元测试：更复杂的多线程冲突场景（当前仅覆盖核心接口）
 
 ### Phase 5: 数据工程
 - [x] 实现 L2 v2 目标重构（`reconstruct_l2_goals()`）
 - [x] 实现 goal_hat 回填（`load_tournament_data(goal_backfill="l2")`）
-- [x] 实现 L3 残差提取（`extract_l3_residuals()`，含 baseline/time_mask 离线对齐）
+- [ ] 实现 L3 AOP 动作提取（`extract_l3_actions_aop()`）
 - [x] 实现状态张量构建器（在线/离线语义对齐）
 - [x] 提供 `hrl_data_runner` 采集专家日志（推荐配合 `--track-only-penguin`）
 
 ### Phase 6: 训练
 - [x] 实现离线 BC（L2/L3）与 L3 AWR
 - [x] 实现 L4 启发式蒸馏训练（监督学习）
-- [ ] 实现势能/复合奖励的在线采样接入（PPO/MAPPO，后续里程碑）
-- [ ] 实现自博弈训练流水线（后续里程碑）
+- [ ] 实现在线 IPPO 采样/更新（仅 L3，α=0）
+- [ ] 实现 MAPPO/自博弈训练流水线（后续里程碑）
 
 ### Phase 7: 集成测试
 - [x] 基础单元测试（`tests/test_hrlxf_*`）

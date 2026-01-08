@@ -1,5 +1,11 @@
 # **HRL-XF：面向SCML 2025期货市场的混合残差分层代理架构深度实施报告**
 
+> **更新说明（2026-01）**：
+> - 当前在线阶段以 **IPPO 先行**：仅训练 L3，L2/L4 冻结，显式设 `α=0`
+> - **L3 不再使用残差**，改为输出完整 AOP 动作（`op/time/price/qty`）
+> - **L4 仅输出优先级 α**，不再调制 L3 或做动态预留
+> - MAPPO/集中式 critic 作为远期扩展
+
 ## **1\. 执行摘要：从现货思维到期货本体论的范式重构**
 
 供应链管理联赛（Supply Chain Management League, SCML）2025标准赛道（Standard League）的规则迭代，标志着自动协商代理竞赛（ANAC）从传统的单次、短视博弈向长周期、高维度的企业资源规划（ERP）模拟环境的根本性跨越。随着非易腐库存（Non-Perishable Inventory）机制的确立、期货合约（Future Contracts）的引入以及非线性短缺惩罚（Shortfall Penalties）的强化，参赛代理面临的决策空间呈现出爆炸性增长。
@@ -91,10 +97,11 @@ $$\\mathcal{S}\_t^+ \= \\{ \\mathbf{x}\_{static}, \\mathbf{X}\_{temporal}, \\mat
 
 HRL-XF必须具备对交易条件的全面掌控力。我们定义了一个混合动作空间，明确包含时间维度的博弈：
 
-$$a\_{offer} \= (q, p, \\delta\_t)$$
+$$a\_{offer} \= (op, q, p, \\delta\_t)$$
 
-* **数量 ($q$)**：连续值，由L3残差头调节。  
-* **价格 ($p$)**：连续值，由L3残差头调节。  
+* **操作符 ($op$)**：`ACCEPT / REJECT / END`（Categorical）。  
+* **数量 ($q$)**：离散分桶 Categorical 映射到可行区间。  
+* **价格 ($p$)**：Beta 分布映射到 `[min, max]`。  
 * **交货时间 ($\\delta\_t$)**：离散分类分布 (Categorical Distribution)，$\\delta\_t \\in \\{0, 1, \\dots, H\\}$。  
   * **设计依据**：在“方案A”中明确指出，时间选择具有多峰分布特性（例如：要么急用明天交货，要么囤货20天后交货，中间日期可能无意义）。因此，不能将其视为回归问题，必须使用Softmax分类头进行预测 1。
 
@@ -240,9 +247,9 @@ L2输出的 $16$ 维向量 $\mathbf{g}\_t$ 将被广播给所有的L3实例。L3
 
 ## ---
 
-**5\. L3 残差执行层：混合头决策Transformer与角色嵌入**
+**5\. L3 执行层：AOP 决策Transformer与角色嵌入**
 
-L3层是微观博弈的执行者。针对“方案B”的缺陷，我们在此恢复了 **$(q, p, \\delta\_t)$ 三分量输出**，并强制加入了 **角色嵌入**。
+L3层是微观博弈的执行者。当前口径为**完整 AOP 动作**：`op ∈ {ACCEPT, REJECT, END}`，若 `REJECT` 则生成 counter offer `(qty, price, \\delta_t)`，并强制加入 **角色嵌入**。
 
 ### **5.1 输入层设计的增强**
 
@@ -256,23 +263,21 @@ L3 Decision Transformer (DT) 的输入不再仅仅是历史序列，而是包含
    * 当L3作为**卖家**（Seller）运行时，输入 $\\mathbf{e}\_{seller}$。此时网络倾向于抬高价格，且关注 $Q\_{sell}$ 目标。  
    * 这种设计实现了**一套权重，双向博弈**，极大提高了参数利用率和泛化能力。
 
-### **5.2 混合输出头拓扑 (Hybrid Head Topology)**
+### **5.2 动作分解头 (AOP Head Topology)**
 
-L3的最后一层隐状态 $h\_{last}$ 被送入三个独立的输出头，以生成完整的动作 $a\_{offer}$：
+L3的最后一层隐状态 $h\_{last}$ 被送入四类输出头，以生成完整的 AOP 动作：
 
-1. **价格残差头 (Price Residual Head)**：  
-   * 结构：Dense \-\> Tanh \-\> Scale。  
-   * 输出：$\\Delta p \\in \[-1, 1\]$。  
-   * 逻辑：最终价格 $P \= P\_{base} \+ \\alpha \\cdot \\Delta p$。如果是买家，$\\Delta p \< 0$ 表示进一步压价；如果是卖家，$\\Delta p \> 0$ 表示尝试溢价。  
-2. **数量残差头 (Quantity Residual Head)**：  
-   * 结构：Dense \-\> Tanh \-\> Scale。  
-   * 输出：$\\Delta q \\in \[-1, 1\]$。  
-   * 逻辑：微调成交量以匹配L2的目标或L1的约束。  
-3. **时序分类头 (Temporal Classification Head) —— 方案A的核心回归**：  
-   * 结构：Dense \-\> Masked Softmax。  
+1. **op 头 (Categorical)**：  
+   * 输出：`ACCEPT / REJECT / END`。  
+2. **时间头 (Masked Categorical)**：  
    * 输出：$\\mathbb{P}(\\delta\_t | context) \\in \\mathbb{R}^{H+1}$。  
-   * **Masking机制**：此处直接应用 L1 生成的 `time_mask`（由 $Q\_{safe}$ 与最小可交易量阈值计算）。数量约束在最终 `clip_action()` 中裁剪，不在 time-head 中按当前数量二次屏蔽。  
-   * **意义**：这一头赋予了L3“讨价还日”的能力（例如：“价格好商量，能不能晚两天发货？”），这是期货谈判的精髓。
+   * 使用 `time_mask` 直接屏蔽不可行交期。  
+3. **价格头 (Beta)**：  
+   * 输出 Beta 参数 $(\\alpha, \\beta)$，映射到 `[min_price, max_price]`。  
+4. **数量头 (Categorical)**：  
+   * 输出数量分桶，结合 `Q_max` 映射到 `[1, Q_max]`。  
+
+采样顺序：`op -> (if REJECT) delta_t -> price -> Q_max -> quantity`，确保动作可行且 logprob 与执行动作一致。
 
 ## ---
 
@@ -284,7 +289,7 @@ L4解决了“并发资源耦合”问题。针对“方案B”中L4逻辑的模
 
 L4不仅要看“谁重要”，还要看“谁和谁冲突”。在期货中，冲突是基于时间的。
 
-* 输入（与当前实现对齐）：所有活跃线程的**显式特征集合** `thread_feat_set`（每个线程一条，包含意向交货时间/角色、谈判进度、报价偏差、该交期的 `X_temporal[δ]` 切片、L1 baseline/约束等）与**全局上下文** `global_feat`（如 `goal_hat`、`x_static`、活跃线程数等）。  
+* 输入（与当前实现对齐）：所有活跃线程的**显式特征集合** `thread_feat_set`（每个线程一条，包含意向交货时间/角色、谈判进度、报价偏差、该交期的 `X_temporal[δ]` 切片、L1 mask/remaining 等）与**全局上下文** `global_feat`（如 `goal_hat`、`x_static`、活跃线程数等）。  
 * **角色嵌入**：L4 仍需要区分买/卖方向（买侧资金流出、卖侧资金流入），但不再依赖 L3 的 `hidden_state/latent` 作为输入，以避免教师/学生输入分布不一致与分布漂移问题。
 
 ### **6.2 注意力机制的数学表达**
@@ -297,7 +302,7 @@ $$\\text{Attention}(Q, K, V) \= \\text{Softmax}\\left(\\frac{QK^T}{\\sqrt{d\_k}}
 
 ### **6.3 资源压力的双向传导**
 
-L4 输出的权重 $\\alpha\_k$ 用于**全局调度**，并可派生调制因子 $m\_k = 1 + \\alpha\_k$ 轻量调制 L3 residual（最终仍受 L1/L2 裁剪约束）。在方案 B 的落地实现中，$\\alpha$ 还会用于“动态预留”：买侧按 $\\alpha$ 从高到低对各线程候选动作逐一裁剪，并动态扣减剩余 `B_free/Q_safe`，从而把 L4 的作用点放到裁剪之前并减少顺序依赖。
+L4 输出的优先级 $\\alpha\_k$ 用于**全局调度信号**，作为 L3 的输入条件；不再派生调制因子，也不做动态预留/顺序裁剪。资源可行性仍由 L1 mask 与 `clip_action` 兜底。
 
 * **资金危机模式**：当 $B\_{proj}$ 显示未来某日资金断裂，L4将注意力集中在该日之前的所有 **Seller** 线程上，迫使其降价回款（Fire Sale）。  
 * **库存告急模式**：当 $I\_{proj}$ 显示未来某日缺货，L4激活该日对应的 **Buyer** 线程，允许其溢价采购。
@@ -323,12 +328,12 @@ PenguinAgent是基于规则的，其日志中没有显式的 $g\_t$。我们需�
 * 公式：$Q\_{sell}^{target} \= I\_{finished} \+ I\_{production\\\_today}$。这意味着它的目标总是清空当前成品库存。  
 * 这种重构为L2提供了明确的“清仓”信号标签。
 
-### **7.2 L3残差的提取**
+### **7.2 L3 动作的提取（AOP）**
 
-* 基准动作 ($a\_{base}$)：由L1逻辑计算出的保守报价。  
-* 专家动作 ($a\_{expert}$)：日志中PenguinAgent的实际报价。  
-* 残差标签 ($\\Delta a\_{label}$)：$a\_{expert} \- a\_{base}$。  
-* **角色嵌入生成**：根据日志中Agent是Buyer还是Seller，生成对应的One-hot向量作为L3输入的标签。
+* **动作类型 ($op$)**：从 tracker 显式记录 `ACCEPT/REJECT/END`。  
+* **报价 ($q,p,\\delta\_t$)**：仅在 `REJECT` 时使用 counter offer；`ACCEPT` 直接复用对手 offer。  
+* **角色嵌入生成**：根据日志中 Agent 是 Buyer 还是 Seller，生成对应的 One-hot 作为 L3 输入标签。  
+* **关键要求**：必须在采集阶段记录 AOP 动作，避免 END/ACCEPT 的事后推断噪声。
 
 ## ---
 
@@ -346,9 +351,9 @@ class HRLXFTrainer:
         # L2：BC 拟合 v2 goal（16 维）
         #   - 标签来自 reconstruct_l2_goals()：成交 + 缺口补偿 + 活跃意图 + 软分桶 + 稳定价格
         #
-        # L3：BC/AWR 拟合 residual（输入显式条件化）
-        #   - micro.goal 应为 goal_hat：由已训练 L2 预测并回填（load_tournament_data(goal_backfill="l2")）
-        #   - baseline/time_mask 由 L1 离线重建得到（与在线一致）
+        # L3：BC/AWR 拟合 AOP 动作（op/time/price/qty）
+        #   - micro.goal 可用 goal_hat 回填（load_tournament_data(goal_backfill="l2")）
+        #   - time_mask 由 L1 离线重建得到（与在线一致）
         ...
 
     def train_l4_distill(self, l4_samples):
@@ -366,7 +371,7 @@ class HRLXFTrainer:
 
 * **目标**：获得一个不崩盘的基准策略。  
 * **数据**：PenguinAgent 2024日志。  
-* **方法**：监督学习。L2学习预测Penguin的日交易分布（买/卖双向）；L3学习预测Penguin的出价残差。  
+* **方法**：监督学习。L2学习预测Penguin的日交易分布（买/卖双向）；L3学习预测Penguin的 AOP 动作。  
 * **关键点**：必须开启L1安全护盾，防止神经网络初期的随机输出导致环境重置。
 
 #### **Phase 1: 离线 ROL (Reward-on-the-Line)**
@@ -375,16 +380,16 @@ class HRLXFTrainer:
 * **方法**：仅筛选PenguinAgent那些利润高于平均值的轨迹进行训练（Advantage Filtering）。  
 * **算法**：AWR (Advantage-Weighted Regression)。L2学会只在“赚钱的日子”模仿专家的库存规划。
 
-#### **Phase 2: 分层联合在线微调 (Exploration)**
+#### **Phase 2: 在线 IPPO（先跑通）**
 
 * **环境**：SCML 2025 模拟器。  
-* **奖励工程**：启用势能函数 $\\Phi(s)$。  
-  * 当L2指令买入期货时，现金减少，但 $\\Phi$ 增加，总奖励平衡。这解决了“买入即亏损”的短视问题。  
-* **探索**：L2的PPO探索噪声 $\\sigma$ 逐渐衰减。L3在L1划定的 $C\_{free}$ 范围内尝试不同的 $\\delta\_t$（例如：尝试比专家更早或更晚交货以换取价格优势）。
+* **策略**：冻结 L2/L4，显式设 `α=0`，仅训练 L3（参数共享）。  
+* **奖励**：最小谈判奖励（success bonus + surplus - time penalty），势能函数 $\\Phi(s)$ 留作后续增强。  
 
 #### **Phase 3: 对抗自博弈 (Robustness)**
 
 * **目标**：防止策略退化，逼近纳什均衡。  
+* **算法**：MAPPO（集中式 critic，CTDE）。  
 * **对手池**：放入Phase 2训练出的HRL-XF快照。  
 * **机制**：新一代代理必须战胜上一代代理才能获得奖励。这将迫使L2学会应对“恶意挤兑”和“虚假报价”。
 

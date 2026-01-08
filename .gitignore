@@ -100,3 +100,6 @@ test_dask_full_logs/
 
 # tournament result
 tournament_history/
+
+# 论文模板
+kuisthesis/
