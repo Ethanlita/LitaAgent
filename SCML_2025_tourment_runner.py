@@ -1,21 +1,24 @@
 import matplotlib.pyplot as plt
-from scml.oneshot import *
-from scml.std import *
+
+try:
+    from scml.std import SCML2025StdWorld
+except ImportError:
+    from scml.std import SCML2024StdWorld as SCML2025StdWorld
+from scml.std.agents import GreedyStdAgent, RandomStdAgent, SyncRandomStdAgent
 
 from litaagent_std.litaagent_cir import LitaAgentCIR
 from litaagent_std.litaagent_y import LitaAgentY
 
 agent_types = [
     SyncRandomStdAgent,
-    RandDistOneShotAgent,
-    GreedyOneShotAgent,
+    GreedyStdAgent,
     RandomStdAgent,
     LitaAgentCIR,
     LitaAgentY
 ]
 
-world = SCML2024StdWorld(
-    **SCML2024StdWorld.generate(agent_types=agent_types, n_steps=50),
+world = SCML2025StdWorld(
+    **SCML2025StdWorld.generate(agent_types=agent_types, n_steps=50),
     construct_graphs=True,
 )
 
