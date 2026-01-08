@@ -10,6 +10,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+import os
+from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
@@ -57,6 +61,7 @@ class LitaAgentHRL(StdAgent):
         mode: str = "heuristic",
         horizon: int = 40,
         debug: bool = False,
+        debug_log_dir: Optional[str] = None,
         l2_model_path: Optional[str] = None,
         l3_model_path: Optional[str] = None,
         l4_model_path: Optional[str] = None,
@@ -67,6 +72,9 @@ class LitaAgentHRL(StdAgent):
         self.mode = mode
         self.horizon = horizon
         self.debug = debug
+        self._debug_log_dir = debug_log_dir
+        self._debug_log_enabled = False
+        self._debug_log_path: Optional[Path] = None
 
         self.l1 = L1SafetyLayer(horizon=horizon)
         self.state_builder = StateBuilder(horizon=horizon)
@@ -89,6 +97,7 @@ class LitaAgentHRL(StdAgent):
 
     def init(self):
         super().init()
+        self._setup_debug_log()
         if self.debug:
             self._log("LitaAgent-HRL (HRL-XF) initialized")
 
@@ -199,23 +208,52 @@ class LitaAgentHRL(StdAgent):
         l3_output = self.l3.compute(l3_input)
         ctx.l3_output = l3_output
 
+        final_response = ResponseType.END_NEGOTIATION
+        final_offer = None
+        accept_feasible = None
+
         if l3_output.action.action_type == "accept":
-            if self._is_accept_feasible(offer, ctx, broadcast):
-                return SAOResponse(ResponseType.ACCEPT_OFFER, offer)
-            counter = self._fallback_counter_offer(ctx, broadcast)
+            accept_feasible = self._is_accept_feasible(offer, ctx, broadcast)
+            if accept_feasible:
+                final_response = ResponseType.ACCEPT_OFFER
+                final_offer = offer
+            else:
+                counter = self._fallback_counter_offer(ctx, broadcast)
+                if counter is None:
+                    final_response = ResponseType.END_NEGOTIATION
+                else:
+                    final_response = ResponseType.REJECT_OFFER
+                    final_offer = counter
+                    self._record_my_offer(ctx, counter)
+        elif l3_output.action.action_type == "end":
+            final_response = ResponseType.END_NEGOTIATION
+        else:
+            counter = self._resolve_counter_offer(ctx, l3_output.action.offer, negotiator_id, broadcast)
             if counter is None:
-                return SAOResponse(ResponseType.END_NEGOTIATION, None)
-            return SAOResponse(ResponseType.REJECT_OFFER, counter)
+                final_response = ResponseType.END_NEGOTIATION
+            else:
+                final_response = ResponseType.REJECT_OFFER
+                final_offer = counter
+                self._record_my_offer(ctx, counter)
 
-        if l3_output.action.action_type == "end":
-            return SAOResponse(ResponseType.END_NEGOTIATION, None)
+        if final_response == ResponseType.ACCEPT_OFFER:
+            final_action = "ACCEPT"
+        elif final_response == ResponseType.REJECT_OFFER:
+            final_action = "REJECT"
+        else:
+            final_action = "END"
 
-        counter = self._resolve_counter_offer(ctx, l3_output.action.offer, negotiator_id, broadcast)
-        if counter is None:
-            return SAOResponse(ResponseType.END_NEGOTIATION, None)
-
-        self._record_my_offer(ctx, counter)
-        return SAOResponse(ResponseType.REJECT_OFFER, counter)
+        self._log_l3_decision(
+            "respond",
+            ctx,
+            l3_input,
+            l3_output,
+            final_action,
+            current_offer=offer,
+            final_offer=final_offer,
+            accept_feasible=accept_feasible,
+        )
+        return SAOResponse(final_response, final_offer)
 
     def propose(self, negotiator_id: str, state: SAOState) -> Optional[Outcome]:
         ctx = self._get_or_create_context(negotiator_id)
@@ -236,13 +274,40 @@ class LitaAgentHRL(StdAgent):
         ctx.l3_output = l3_output
 
         if l3_output.action.action_type == "end":
+            self._log_l3_decision(
+                "propose",
+                ctx,
+                l3_input,
+                l3_output,
+                "END",
+                current_offer=state.current_offer,
+                final_offer=None,
+            )
             return None
 
         offer = self._resolve_counter_offer(ctx, l3_output.action.offer, negotiator_id, broadcast)
         if offer is None:
+            self._log_l3_decision(
+                "propose",
+                ctx,
+                l3_input,
+                l3_output,
+                "END",
+                current_offer=state.current_offer,
+                final_offer=None,
+            )
             return None
 
         self._record_my_offer(ctx, offer)
+        self._log_l3_decision(
+            "propose",
+            ctx,
+            l3_input,
+            l3_output,
+            "REJECT",
+            current_offer=state.current_offer,
+            final_offer=offer,
+        )
         return offer
 
     # ==================== 核心逻辑 ====================
@@ -588,6 +653,116 @@ class LitaAgentHRL(StdAgent):
             return float(issue.min_value), float(issue.max_value)
         except Exception:
             return 0.0, float("inf")
+
+    @staticmethod
+    def _safe_label(value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+
+    def _setup_debug_log(self) -> None:
+        log_dir = self._debug_log_dir or os.getenv("HRL_DEBUG_LOG_DIR")
+        if not log_dir:
+            return
+        try:
+            base_dir = Path(log_dir).expanduser().resolve()
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+        world = getattr(self.awi, "_world", None)
+        world_id = getattr(world, "id", None) or getattr(world, "name", None) or "world"
+        safe_world = self._safe_label(str(world_id))
+        safe_agent = self._safe_label(str(getattr(self, "id", "agent")))
+        pid = os.getpid()
+        self._debug_log_path = base_dir / f"hrl_debug_{safe_world}_{safe_agent}_{pid}.jsonl"
+        self._debug_log_enabled = True
+
+    def _write_debug(self, payload: Dict[str, Any]) -> None:
+        if not self._debug_log_enabled or self._debug_log_path is None:
+            return
+        try:
+            with self._debug_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        except Exception:
+            return
+
+    def _format_offer(self, offer: Optional[Outcome]) -> Optional[Dict[str, Any]]:
+        if offer is None:
+            return None
+        try:
+            qty, delivery, price = offer
+            return {"q": int(qty), "t": int(delivery), "p": float(price)}
+        except Exception:
+            return None
+
+    def _log_l3_decision(
+        self,
+        event: str,
+        ctx: NegotiationContext,
+        l3_input: L3Input,
+        l3_output: L3Output,
+        final_action: str,
+        current_offer: Optional[Outcome] = None,
+        final_offer: Optional[Outcome] = None,
+        accept_feasible: Optional[bool] = None,
+    ) -> None:
+        if not self._debug_log_enabled:
+            return
+
+        op_probs = l3_output.op_probs
+        time_probs = l3_output.time_probs
+        op_id = None
+        op_max = None
+        op_nan = None
+        if op_probs is not None and len(op_probs) > 0:
+            op_nan = bool(np.isnan(op_probs).any())
+            if not np.isnan(op_probs).all():
+                op_id = int(np.nanargmax(op_probs))
+                op_max = float(np.nanmax(op_probs))
+
+        time_id = None
+        time_max = None
+        time_nan = None
+        if time_probs is not None and len(time_probs) > 0:
+            time_nan = bool(np.isnan(time_probs).any())
+            if not np.isnan(time_probs).all():
+                time_id = int(np.nanargmax(time_probs))
+                time_max = float(np.nanmax(time_probs))
+
+        time_mask_valid = None
+        if l3_input.time_mask is not None:
+            time_mask_valid = int(np.isfinite(l3_input.time_mask).sum())
+
+        q_safe_sum = None
+        if l3_input.Q_safe is not None:
+            q_safe_sum = float(np.sum(l3_input.Q_safe))
+
+        payload = {
+            "event": event,
+            "world_step": int(self.awi.current_step),
+            "neg_step": int(ctx.last_step),
+            "relative_time": float(ctx.last_relative_time),
+            "negotiator_id": ctx.negotiation_id,
+            "partner_id": ctx.partner_id,
+            "is_buying": bool(ctx.is_buying),
+            "alpha": float(ctx.alpha),
+            "l3_action": l3_output.action.action_type,
+            "final_action": final_action,
+            "accept_feasible": accept_feasible,
+            "current_offer": self._format_offer(current_offer),
+            "l3_offer": self._format_offer(l3_output.action.offer),
+            "final_offer": self._format_offer(final_offer),
+            "op_id": op_id,
+            "op_max": op_max,
+            "op_nan": op_nan,
+            "time_id": time_id,
+            "time_max": time_max,
+            "time_nan": time_nan,
+            "time_mask_valid": time_mask_valid,
+            "q_safe_sum": q_safe_sum,
+            "b_free": float(l3_input.B_free),
+            "min_price": float(l3_input.min_price),
+            "max_price": float(l3_input.max_price),
+        }
+        self._write_debug(payload)
 
     def _log(self, msg: str) -> None:
         agent_name = getattr(self, "name", "HRL")
