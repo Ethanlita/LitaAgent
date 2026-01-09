@@ -1,4 +1,4 @@
-最后更新：2026-01-09 00:30
+﻿最后更新：2026-01-09 22:59
 # LitaAgent-OS 详细实施方案
 
 本方案基于《LitaAgent-OS设计》文档，将 D-NB (Neural-Bayesian Opponent Model + Heuristic Planner) 的设计转化为可执行的工程实施步骤。
@@ -28,7 +28,7 @@
 * `q_max = nmi.issues[QUANTITY].max_value`（或 `awi.n_lines`），`q_bucket = clip(int(q), 0, q_max)`，取值范围 `0..q_max`。
 
 **特征可观测性矩阵（AcceptModel 输入约束）**
-* Online 可得：`round_rel/round_bucket`、`price_min/price_max`、`role`、history（双方交互）、我方 `need_remaining`/`pen_shortfall`/`cost_disposal`/`trading_price`、offer(`q`,`p`)、`partner_stats_*`
+* Online 可得：`round_rel/round_bucket`、`price_min/price_max`、`role`、history（双方交互）、我方 `need_remaining`/`pen_shortfall`/`cost_disposal`（系数口径）/`trading_price`、offer(`q`,`p`)、`partner_stats_*`
 * Online 可能可得（需 CapabilityProbe）：`system_breach_prob/level`（若系统提供，需 mask）
 * Online 不可得：对手 `need_remaining`、对手 penalties（shortfall/disposal）
 * 规则：AcceptModel 只吃 Online 可得 + 可能可得（带 mask）的特征
@@ -49,7 +49,7 @@
 * `round_rel` (float), `round_bucket` (int)
 * `need_remaining` (int/float)
 * `trading_price` (float)
-* `pen_shortfall` (float), `cost_disposal` (float)
+* `pen_shortfall` (float, 系数), `cost_disposal` (float, 系数)
 * `price_min` (float), `price_max` (float)
 * `system_breach_prob` (float, optional), `system_breach_level` (float, optional)
 
@@ -78,7 +78,7 @@
 * `role` 用 `negotiations.csv.buyer/seller` 判定（`is_buy` 只是 caller 角色）。
 * `need_remaining` 用 `negs.csv.agent_time0/agent_time1` 名称匹配 `needed_*`，并按 proposer 的 role 选择 sales/supplies。
 * `trading_price` 优先 `negs.csv.trading_price`；若用 `stats.csv` 或 `stats.csv.csv`，需按 product 选 `trading_price_<product>`。
-* `shortfall_penalty_<agent>` / `disposal_cost_<agent>` 的 `<agent>` 为 agent 名称（如 `00Gr@0`），按 `sim_step` 对齐。
+* `shortfall_penalty_<agent>` / `disposal_cost_<agent>` 为货币总惩罚，需按 `sim_step` 对齐后还原系数：`pen_shortfall = shortfall_penalty_money / max(1e-6, shortfall_qty * penalty_multiplier_out)`，`cost_disposal = disposal_cost_money / max(1e-6, inventory_penalized * penalty_multiplier_in)`。`penalty_multiplier` 由 `penalties_scale` 决定（trading/catalog/none/unit）。
 * `step`（谈判回合）用 `negotiations/<id>.csv.step`，仿真步用 `negotiations.csv.sim_step` 或 `negs.csv.sim_step`。
 * `n_steps` 用 `params.json.n_steps`（仿真步），谈判步上限用 `negs.csv.n_steps`。
 * `END` 判定包含 `ended`（不仅是 `failed/timedout/broken`）。
@@ -102,7 +102,7 @@
 **Context（在线可观测，Logistic 直接使用）**：
 * `round_rel`, `round_bucket`, `role`
 * `need_remaining`, `need_norm`（我方）
-* `trading_price`, `pen_shortfall_norm`, `cost_disposal_norm`（我方）
+* `trading_price`, `pen_shortfall_norm`, `cost_disposal_norm`（我方；系数口径，不再除 `trading_price`）
 * `price_min`, `price_max`
 * `system_breach_prob` (optional), `system_breach_level` (optional, maskable)
 * `partner_stats_*` (optional; PARTNER scope 统计)
@@ -281,7 +281,7 @@
     *   **逻辑**：
         1.  收集所有收到的 Offer。
         2.  生成可能的接受子集 (Subset)。
-        3.  对每个子集评分：$\text{Score}(S) = \text{Utility} - \text{ShortfallPenalty} - \text{RiskPenalty}$。
+        3.  对每个子集评分：$\text{Score}(S) = \text{Utility} - \text{ShortfallPenalty} - \text{RiskPenalty}$（其中 `ShortfallPenalty/DisposalCost = penalty_unit * qty`，`penalty_unit = 系数 * penalty_multiplier`）。
         4.  选择分数最高的子集 Accept，其余 Reject（带 counter_offer）。
 
 4.  **实现 Probe (探测) 机制**

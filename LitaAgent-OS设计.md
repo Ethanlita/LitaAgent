@@ -1,4 +1,4 @@
-﻿最后更新：2026-01-09 00:30
+﻿最后更新：2026-01-09 22:59
 **D‑NB（Neural‑Bayesian Opponent Model + Heuristic Planner）具体实施方案**
 
 * 设计总览（模块/数据流/职责）
@@ -125,7 +125,7 @@ D‑NB 的设计目标是：
 **offer-centric 标签规则（y_accept）**
 - agreement 匹配我方 offer -> `y_accept=1`（如有重复，取最后一次 match；p 浮点容忍：round(p,k) 或 |p1-p2|<eps）。
 - 我方 offer 后紧跟对手 counter_offer -> `y_accept=0`。
-- END/timeout 默认不入样本；可选 `add_terminal_negative=True` 给最后 outstanding offer 弱负样本（weight≈0.2）。
+- END/timeout 默认不入样本；仅在对手 END/timeout/failed 且无 agreement 时，才可选 `add_terminal_negative=True` 给最后 outstanding offer 弱负样本（weight≈0.2）；我方主动 END 不计入。
 - 落地规则（监督训练）：terminal negative 的 `sample_weight = w_end`（默认 0.2）。
 - 落地规则（BOU）：terminal negative 计为软更新，$\beta \leftarrow \beta + w_{\text{end}}$（允许非整数 Beta 参数）。
 
@@ -174,13 +174,16 @@ D) Offer 与响应字段（response_type: REJECT/ACCEPT/END）
 - `responded_offer`: 仅 `response_sent` 事件；REJECT 用上一条对手 offer，ACCEPT 用 agreement 或最后一条对手 offer。
 - `counter_offer`: REJECT 时用当前 proposer 的 offer。
 - `response_type`: 由事件重建规则得到 `REJECT/ACCEPT/END`。
-- `y_accept`: offer-centric：agreement 匹配我方 offer -> 1；对手 counter_offer -> 0；END/timeout 默认不入样本，可选 `add_terminal_negative=True`。
+- END/timeout 默认不入样本；仅在对手 END/timeout/failed 且无 agreement 时，才可选 `add_terminal_negative=True` 给最后 outstanding offer 弱负样本（weight≈0.2）；我方主动 END 不计入。
 
 E) Context 特征（尽量从系统日志取，取不到可空）
 - `trading_price`: 取 `negs.csv.trading_price`（已按产品）；若用 `stats.csv`（或 `stats.csv.csv`）需按 product 选 `trading_price_<product>`。
 - `need_remaining`: 取 `negs.csv.needed_sales* / needed_supplies*`，按 `agent_time0/agent_time1`(agent 名称)对应 proposer，并根据 role 选择 sales(SELLER)/supplies(BUYER)。
-- `pen_shortfall`, `cost_disposal`: 取 `stats.csv`（或 `stats.csv.csv`）的 `shortfall_penalty_<agent>` / `disposal_cost_<agent>`（`<agent>` 为 agent 名称，如 `00Gr@0`），按 `negotiations.csv.sim_step` 或 `negs.csv.sim_step` 对齐。
-- `pen_shortfall_norm`, `cost_disposal_norm`: 以 `trading_price` 或 `p_max` 归一化。
+- `pen_shortfall`, `cost_disposal`: **系数而非货币**。若从 `stats.csv`（或 `stats.csv.csv`）读取的是货币总惩罚（`shortfall_penalty_<agent>` / `disposal_cost_<agent>`），需还原系数：  
+  - `pen_shortfall = shortfall_penalty_money / max(1e-6, shortfall_qty * penalty_multiplier_out)`  
+  - `cost_disposal = disposal_cost_money / max(1e-6, inventory_penalized * penalty_multiplier_in)`  
+  - `penalty_multiplier` 由 `penalties_scale` 决定：`trading`→`trading_price`（短缺用 `trading_price_{level+1}`，处置用 `trading_price_{level}`），`catalog`→`catalog_price`，`none`→1，`unit`→`unit_price`（缺失时可用当前报价近似）
+- `pen_shortfall_norm`, `cost_disposal_norm`: 直接使用上述系数（已是相对价格尺度），不再除 `trading_price`。
 - `system_breach_prob/level`: 系统日志通常不提供，置空；若运行时可从 bulletin-board 取到，记录到 Tracker。
 
 F) History Tokens（NEGOTIATION scope）
@@ -399,6 +402,19 @@ J) Schema 元字段（系统日志可给或可常量填充）
 
 启发式与 BOU 对 accept 模型只吃 (μ,s)；违约风险由 `BreachInfoProvider` 统一提供（系统优先，其次 breach 模型）。
 
+### 5.1.0 模型工件目录与加载规范（固定）
+
+* 统一模型工件目录：`assets/models/accept/` 与 `assets/models/breach/`。
+* 目录下固定文件：`model.bin` + `model_meta.json`（必需），`calibration.json`（可选）。
+* `model_meta.json` 必含字段：
+  * `model_type`（logistic/transformer）
+  * `schema_version`（如 `v0-A2`）
+  * 离散化参数（如 `round_bucket_T`、`q_bucket_spec`、`p_bin_edges`）
+  * `is_counter`/`is_first_proposal` 是否作为 token
+  * 归一化口径（如 `q_norm = q / n_lines`）
+* `assets/agent_config.json`：记录 `accept_model_dir`/`breach_model_dir` 与关键超参（`prior_strength_s`、`LCB_delta_accept`、`w_end`、`add_terminal_negative`、`buffer_*`、`overfill_penalty_ratio`、`q_candidate`、`price_concession_gamma` 等）。
+* 路径解析必须相对模块文件所在目录，不依赖运行时 CWD；允许环境变量 `LITA_ACCEPT_MODEL_DIR`/`LITA_BREACH_MODEL_DIR` 覆盖。
+
 ---
 
 ### 5.1.1 时间与离散化规则（必须一致）
@@ -408,6 +424,7 @@ J) Schema 元字段（系统日志可给或可常量填充）
 * `round_rel`（连续，0..1）：若 state 提供 `relative_time`，则 `round_rel = state.relative_time`；否则 `round_rel = state.step / max(1, state.n_steps - 1)`。
 * `round_bucket`（离散桶）：`round_bucket = min(T-1, floor(round_rel * T))`，默认 `T=5`（早/中早/中/中晚/晚）。
 * 用途：`round_rel` 用于 Logistic/Transformer；`round_bucket` 用于 BOU 分桶与回退。
+* 在线决策：`first_proposals` 固定 `round_rel=0`；`counter_all/子集选择` 以 `states.relative_time` 为准，缺失时回退到 0。
 
 **价格离散化**
 
@@ -463,7 +480,7 @@ J) Schema 元字段（系统日志可给或可常量填充）
 
 
 ### 5.1.3 特征可观测性矩阵与输入约束
-Online 可得（推理必然可拿）：`round_rel/round_bucket`、`price_min/price_max`、`role`、history（双方交互）、我方 `need_remaining`/`pen_shortfall`/`cost_disposal`/`trading_price`、offer(`q`,`p`)、`partner_stats_*`
+Online 可得（推理必然可拿）：`round_rel/round_bucket`、`price_min/price_max`、`role`、history（双方交互）、我方 `need_remaining`/`pen_shortfall`/`cost_disposal`（系数口径）/`trading_price`、offer(`q`,`p`)、`partner_stats_*`
 Online 可能可得（需 CapabilityProbe）：`system_breach_prob/level`（若系统提供，需 mask）
 Online 不可得：对手 `need_remaining`、对手 penalties（shortfall/disposal）
 硬规则：AcceptModel 只吃 Online 可得 + 可能可得（带 mask）特征；对手私有量不进模型输入（可用于分析/评估）
@@ -483,7 +500,7 @@ Online 不可得：对手 `need_remaining`、对手 penalties（shortfall/dispos
 * 我方状态：
 
   * `need_norm = remaining_need / n_lines`
-  * `pen_shortfall_norm, cost_disposal_norm`（用 trading_price 归一）
+  * `pen_shortfall_norm, cost_disposal_norm`（系数口径，无需再除 trading_price）
 * 对手公开风险：
 
   * `system_breach_prob`（如果可得；否则置空/0 并加 mask）
@@ -492,6 +509,7 @@ Online 不可得：对手 `need_remaining`、对手 penalties（shortfall/dispos
   * `opp_accept_rate_lastK`
   * `opp_counter_rate_lastK`（counter / (counter + accept)）
   * `opp_concession_speed`（对方出价从 max→min 的速度）
+  * 冷启动默认 0.5（避免全 0 输入导致极端偏置）
 
 输出：
 
@@ -559,7 +577,7 @@ key = (pid, role, round_bucket, p_bin, q_bucket_coarse)
 
 **更新触发方向**
 - 仅当 pid 作为 responder 回应我方 offer 时更新；我方作为 responder 的事件不更新。
-- END/timeout 默认不更新；若启用 `add_terminal_negative`，可对最后 outstanding offer 做弱负更新。
+- END/timeout 默认不更新；仅对对手 END/timeout/failed 且无 agreement 的情形启用 `add_terminal_negative`；我方主动 END 不更新。
 
 ### 6.1 用模型输出构造 Beta 先验（核心做法） 用模型输出构造 Beta 先验（核心做法）
 
@@ -649,15 +667,14 @@ p^{\text{eff}}_i(o) = \mathrm{LCB}(p^{\text{sign}}_i(o)) \cdot \mathrm{LCB}(p^{\
 #### 目标（一个可实现版本）
 
 在所有对手上选一组 offer (o_i)（很多对手可选 q=0 表示不出价），最大化：
-
 [
 \max \sum_i \Big( \tilde q_i(o_i)\cdot m_i(o_i) \Big) - \lambda \sum_i q_i \cdot (1-\mathrm{LCB}(p^{\text{fulfill}}_i))
 ]
 
 其中：
 
-* (m_i(o_i)) 是边际收益（买方：越便宜越好；卖方：越贵越好）
-* (\tilde q_i(o_i)= q_i \cdot \mathrm{LCB}(p^{\text{sign}}_i)\cdot \mathrm{LCB}(p^{\text{fulfill}}_i))，即同时考虑签约与履约
+* (m_i(o_i)) 用 trading_price 近似：卖方 `m=(p-trading_price)/max(1e-6,trading_price)`，买方 `m=(trading_price-p)/max(1e-6,trading_price)`，再乘数量；若无 trading_price 用单调近似。
+* (\tilde q_i(o_i)= q_i \cdot \mathrm{LCB}(p^{\text{sign}}_i)\cdot \mathrm{LCB}(p^{\text{fulfill}}_i))，即同时考虑签约与履约（我方作为 proposer 时适用）。
 * 第二项是“残余履约风险惩罚”（可选；若 \tilde q 已含 p^{eff}，默认可设 \lambda=0，避免双计）
 
 #### 关键约束（保证不缺量）
@@ -668,10 +685,16 @@ p^{\text{eff}}_i(o) = \mathrm{LCB}(p^{\text{sign}}_i(o)) \cdot \mathrm{LCB}(p^{\
 \sum_i \tilde q_i(o_i) \ge \text{need}\cdot (1+\text{buffer}(t))
 ]
 
-同时防止极端过量（可选）：
-[
-\sum_i q_i \le \text{need} + \text{overcap}
-]
+buffer(t) 固定定义：t=round_rel，buffer(t)=b_min+(b_max-b_min)*t^gamma；默认 b_min=0.05、b_max=0.35、gamma=2。
+
+#### 实现要点（与代码一致）
+
+* 首轮报价 `round_rel` 固定 0（`round_bucket=0`），不要用仿真日进度代替谈判进度。
+* 价格不再固定极值：按让步曲线 `round_rel^price_concession_gamma` 在 `[p_min,p_max]` 内线性移动（买方从低到高，卖方从高到低）。
+* 先用候选数量 `q_candidate` 计算 `μ/LCB` 与排序，再用最终 `q` 重新估计 `p_eff` 做分配与更新。
+* 报价的 `time` 只按 issues 的合法范围读取与校验（OneShot 常为常数，但不能硬编码为 `current_step`）。
+
+超量控制：不做硬上限，在 counter_all 的子集评分里加入 overfill 惩罚（`overfill_penalty_ratio <= 0.1`，实际货币惩罚再乘 `penalty_multiplier`）。
 
 #### 为什么这比裁剪更好？
 
@@ -692,20 +715,24 @@ p^{\text{eff}}_i(o) = \mathrm{LCB}(p^{\text{sign}}_i(o)) \cdot \mathrm{LCB}(p^{\
 
 买方（需要买够）：
 [
-\text{Score}(S) = \text{Utility}(S) - \text{ShortfallPenalty}(\text{need}-\sum_{o\in S}\tilde q(o)) - \text{RiskPenalty}(S)
+\text{Score}(S) = \text{Utility}(S) - \text{ShortfallPenalty}(\text{need}-\sum_{o\in S}\tilde q(o)) - \text{OverfillPenalty}(\sum_{o\in S}\tilde q(o)-\text{need}) - \text{RiskPenalty}(S)
 ]
 
 卖方（需要卖出）：
 [
-\text{Score}(S) = \text{Utility}(S) - \text{DisposalCost}(\text{need}-\sum_{o\in S}\tilde q(o)) - \text{RiskPenalty}(S)
+\text{Score}(S) = \text{Utility}(S) - \text{DisposalCost}(\text{need}-\sum_{o\in S}\tilde q(o)) - \text{OverfillPenalty}(\sum_{o\in S}\tilde q(o)-\text{need}) - \text{RiskPenalty}(S)
 ]
 
 其中：
 
-* (\tilde q(o)=q\cdot p^{eff}_{opp})（同时考虑签约与履约）
+* 接受对方 offer 时视为 `P_sign=1`，因此 \tilde q = q*LCB(P_fulfill)；若是我方发出 counter_offer，则 \tilde q = q*LCB(P_sign)*LCB(P_fulfill)。
+* 超量惩罚：`over = max(0, sum(tilde q)-need)`；`OverfillPenalty = overfill_penalty_ratio * penalty_unit * over`，其中 `penalty_unit = pen_shortfall * penalty_multiplier_out`（买方）或 `cost_disposal * penalty_multiplier_in`（卖方），且 `overfill_penalty_ratio <= 0.1`。
 * `RiskPenalty` 可按 breach_prob 做加权
 
 4. 选分数最高的子集，接受其 offers，其余拒绝（带 counter_offer）
+
+5. 接受子集后先更新剩余需求：`need' = max(0, need - sum(q_accept))`；若 `need'=0`，对其余对手直接 END；否则用 `need'` 重新生成 counter_offer，**必须返回 `REJECT + counter_offer`，禁止 `REJECT + None`**（否则会被视为 END）。
+6. 本轮 `round_rel` 取 `states` 的 `relative_time`（缺失时取最小值或 0），不要用仿真日进度。
 
 > 这一步就是把 “违约概率” 真正用在决策里：不是只过滤对手，而是决定**接受组合**。
 
@@ -761,7 +788,7 @@ OneShot 中你经常遇到你从未交互过的对手。你要避免一上来给
 **标签**：
 - `y_accept=1`：agreement 匹配我方 offer
 - `y_accept=0`：对手 counter_offer
-- END/timeout 默认不入样本；可选 `add_terminal_negative=True` 给最后 outstanding offer 弱负样本（weight≈0.2）
+- END/timeout 默认不入样本；仅在对手 END/timeout/failed 且无 agreement 时，才可选 `add_terminal_negative=True` 给最后 outstanding offer 弱负样本（weight≈0.2）；我方主动 END 不计入。
 
 #### Schema v0-B：Breach 数据集（违约/履约）
 
@@ -785,13 +812,15 @@ OneShot 中你经常遇到你从未交互过的对手。你要避免一上来给
 
 * `LCB_delta_accept`（0.1~0.4）
 * `LCB_delta_fulfill`
-* `prior_strength_s_accept`（2~20）
+* `prior_strength_s_accept`（默认 8，推荐 2~20）
 * `prior_strength_s_breach`
-* `buffer_schedule`：max/min/exp（像 Rchan 那样也可以自适应）
+* `buffer_schedule`：固定 `b_min/b_max/gamma`，默认 0.05/0.35/2
 * `probe_q`、`probe_steps`（前几步强制探测）
+* `q_candidate`（候选数量，用于先验估计）
 * `portfolio_K`（计算 budget：topK 进入枚举，其他用贪心）
 * `risk_lambda`（违约风险惩罚系数）
-* `overcap`（允许过量上限）
+* `overfill_penalty_ratio`（超量惩罚系数，≤短缺惩罚的 10%）
+* `price_concession_gamma`（让步曲线幂指数）
 * `price_policy`（min/max 切换时机阈值）
 
 调参方法（工程上可快速落地）：
@@ -849,6 +878,7 @@ J = \mathbb{E}[\text{score}] - \eta \cdot \text{Std}[\text{score}] + \gamma \cdo
 
   * 覆写：init, before_step, first_proposals, counter_all, on_negotiation_success, on_negotiation_failure
   * 可选覆写：on_contract_executed, on_contract_breached, on_contracts_finalized
+  * before_step 还需要清空会话级缓存（等待响应/最后报价/已接受/已结束）与历史，避免跨天“幽灵拒绝”
 
 并把它接入你们 OneShot agent（LitaAgent‑OS 或临时基于 Cautious/Rchan 的壳子）。
 

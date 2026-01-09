@@ -28,8 +28,8 @@ from functools import wraps
 # 尝试导入 Tracker
 try:
     from scml_analyzer.auto_tracker import (
-        TrackerManager, 
-        TrackerConfig, 
+        TrackerManager,
+        TrackerConfig,
         AgentLogger,
         configure_tracker,
         save_all_logs,
@@ -37,6 +37,29 @@ try:
     TRACKER_AVAILABLE = True
 except ImportError:
     TRACKER_AVAILABLE = False
+
+
+def _patch_oneshot_adapter_execution_forward() -> None:
+    try:
+        from scml.oneshot.sysagents import DefaultOneShotAdapter
+    except Exception:
+        return
+    patched = getattr(DefaultOneShotAdapter.on_contract_executed, "_lita_patched", False)
+    if patched:
+        return
+    original = DefaultOneShotAdapter.on_contract_executed
+
+    def _forward_on_contract_executed(self, contract):
+        try:
+            obj = getattr(self, "_obj", None)
+            if obj is not None and hasattr(obj, "on_contract_executed"):
+                obj.on_contract_executed(contract)
+        except Exception:
+            pass
+        return original(self, contract)
+
+    _forward_on_contract_executed._lita_patched = True
+    DefaultOneShotAdapter.on_contract_executed = _forward_on_contract_executed
 
 
 def _get_world_id_from_awi(awi: Any) -> str:
@@ -151,6 +174,8 @@ def _ensure_tracker_logger(
         logger_agent_id = _compose_tracker_agent_id(agent_id, world_id)
         current_logger = TrackerManager.get_logger(logger_agent_id, agent_type)
         setattr(agent, "_tracker_logger_key", logger_key)
+    if current_logger is not None:
+        current_logger.world_id = world_id
     return current_logger
 
 
@@ -201,6 +226,15 @@ class LitaTrackerMixin:
         if self.tracker:
             mechanism_id = data.get("mechanism_id")
             negotiator_id = data.get("negotiator_id")
+            buyer = data.get("buyer")
+            seller = data.get("seller")
+            is_seller = data.get("is_seller")
+            role = data.get("role")
+            if buyer is None and seller is None and is_seller is not None:
+                buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner, bool(is_seller))
+            if role is None and is_seller is not None:
+                role = "seller" if is_seller else "buyer"
+
             if event == "started":
                 self.tracker.negotiation_started(
                     partner,
@@ -208,6 +242,9 @@ class LitaTrackerMixin:
                     data.get("is_seller", False),
                     mechanism_id=mechanism_id,
                     negotiator_id=negotiator_id,
+                    buyer=buyer,
+                    seller=seller,
+                    role=role,
                 )
             elif event == "offer_made":
                 self.tracker.negotiation_offer_made(
@@ -216,6 +253,9 @@ class LitaTrackerMixin:
                     data.get("reason", ""),
                     mechanism_id=mechanism_id,
                     negotiator_id=negotiator_id,
+                    buyer=buyer,
+                    seller=seller,
+                    role=role,
                 )
             elif event == "offer_received":
                 self.tracker.negotiation_offer_received(
@@ -223,6 +263,9 @@ class LitaTrackerMixin:
                     data.get("offer", {}),
                     mechanism_id=mechanism_id,
                     negotiator_id=negotiator_id,
+                    buyer=buyer,
+                    seller=seller,
+                    role=role,
                 )
             elif event == "accept":
                 self.tracker.negotiation_accept(
@@ -231,6 +274,9 @@ class LitaTrackerMixin:
                     data.get("reason", ""),
                     mechanism_id=mechanism_id,
                     negotiator_id=negotiator_id,
+                    buyer=buyer,
+                    seller=seller,
+                    role=role,
                 )
             elif event == "reject":
                 self.tracker.negotiation_reject(
@@ -239,6 +285,9 @@ class LitaTrackerMixin:
                     data.get("reason", ""),
                     mechanism_id=mechanism_id,
                     negotiator_id=negotiator_id,
+                    buyer=buyer,
+                    seller=seller,
+                    role=role,
                 )
             elif event == "success":
                 self.tracker.negotiation_success(
@@ -246,6 +295,9 @@ class LitaTrackerMixin:
                     data.get("agreement", {}),
                     mechanism_id=mechanism_id,
                     negotiator_id=negotiator_id,
+                    buyer=buyer,
+                    seller=seller,
+                    role=role,
                 )
             elif event == "failure":
                 self.tracker.negotiation_failure(
@@ -253,13 +305,34 @@ class LitaTrackerMixin:
                     data.get("reason", ""),
                     mechanism_id=mechanism_id,
                     negotiator_id=negotiator_id,
+                    buyer=buyer,
+                    seller=seller,
+                    role=role,
                 )
     
-    def track_contract(self, contract_id: str, partner: str, quantity: int, 
-                       price: float, delivery_day: int, is_seller: bool):
+    def track_contract(
+        self,
+        contract_id: str,
+        partner: str,
+        quantity: int,
+        price: float,
+        delivery_day: int,
+        is_seller: bool,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+    ):
         """记录合同签署"""
         if self.tracker:
-            self.tracker.contract_signed(contract_id, partner, quantity, price, delivery_day, is_seller)
+            self.tracker.contract_signed(
+                contract_id,
+                partner,
+                quantity,
+                price,
+                delivery_day,
+                is_seller,
+                buyer=buyer,
+                seller=seller,
+            )
     
     def track_inventory(self, raw_material: int, product: int, balance: float, **extra):
         """记录库存状态"""
@@ -310,20 +383,92 @@ def _extract_contract_terms(contract) -> Tuple[int, float, int, Optional[str], O
     agreement = getattr(contract, 'agreement', contract)
     if isinstance(agreement, dict):
         qty = int(agreement.get('quantity', 0))
-        price = float(agreement.get('unit_price', 0))
-        delivery = int(agreement.get('time', 0))
+        price = float(agreement.get('unit_price', agreement.get('price', 0)))
+        delivery = int(agreement.get('time', agreement.get('delivery_day', 0)))
         buyer = agreement.get('buyer', None)
         seller = agreement.get('seller', None)
     else:
         qty = int(getattr(agreement, 'quantity', 0))
-        price = float(getattr(agreement, 'unit_price', 0))
-        delivery = int(getattr(agreement, 'time', 0))
+        price = float(getattr(agreement, 'unit_price', getattr(agreement, 'price', 0)))
+        delivery = int(getattr(agreement, 'time', getattr(agreement, 'delivery_day', 0)))
         buyer = getattr(contract, 'buyer', None)
         seller = getattr(contract, 'seller', None)
 
-    annotation = getattr(contract, 'annotation', {})
+    annotation = getattr(contract, 'annotation', {}) or {}
+    if isinstance(annotation, dict):
+        if buyer is None:
+            buyer = annotation.get('buyer', None)
+        if seller is None:
+            seller = annotation.get('seller', None)
+    if buyer is None:
+        buyer = getattr(contract, 'buyer', None)
+    if seller is None:
+        seller = getattr(contract, 'seller', None)
+
     product_index = annotation.get('product', None) if isinstance(annotation, dict) else None
     return qty, price, delivery, buyer, seller, product_index
+
+
+def _infer_buyer_seller_from_role(
+    agent_id: Optional[str],
+    partner_id: Optional[str],
+    is_seller: bool,
+) -> Tuple[Optional[str], Optional[str]]:
+    if not agent_id or not partner_id:
+        return None, None
+    if is_seller:
+        return partner_id, agent_id
+    return agent_id, partner_id
+
+
+def _infer_contract_parties(
+    agent: Any,
+    contract: Any,
+) -> Tuple[int, float, int, Optional[str], Optional[str], Optional[str], Optional[int]]:
+    qty, price, delivery, buyer, seller, product_index = _extract_contract_terms(contract)
+    agent_id = getattr(agent, "id", None)
+
+    partner = None
+    partners = getattr(contract, "partners", None)
+    if partners:
+        try:
+            for p in list(partners):
+                if agent_id and p != agent_id:
+                    partner = p
+                    break
+        except Exception:
+            pass
+
+    annotation = getattr(contract, "annotation", {}) or {}
+    if partner is None and isinstance(annotation, dict):
+        ann_partners = annotation.get("partners", None)
+        if ann_partners:
+            try:
+                for p in list(ann_partners):
+                    if agent_id and p != agent_id:
+                        partner = p
+                        break
+            except Exception:
+                pass
+
+    if agent_id and partner and (buyer is None or seller is None):
+        my_input_product = getattr(agent.awi, "my_input_product", None)
+        awi_is_first_level = getattr(agent.awi, "is_first_level", False)
+        is_buying = _infer_is_buying_for_contract(
+            agent_id,
+            my_input_product,
+            awi_is_first_level,
+            buyer,
+            product_index,
+        )
+        if is_buying:
+            buyer = buyer or agent_id
+            seller = seller or partner
+        else:
+            seller = seller or agent_id
+            buyer = buyer or partner
+
+    return qty, price, delivery, buyer, seller, partner, product_index
 
 
 def _infer_is_buying_for_contract(
@@ -500,6 +645,7 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
     original_step = agent_class.step if hasattr(agent_class, 'step') else None
     original_on_negotiation_success = agent_class.on_negotiation_success if hasattr(agent_class, 'on_negotiation_success') else None
     original_on_negotiation_failure = agent_class.on_negotiation_failure if hasattr(agent_class, 'on_negotiation_failure') else None
+    original_on_contract_executed = agent_class.on_contract_executed if hasattr(agent_class, 'on_contract_executed') else None
     original_counter_all = agent_class.counter_all if hasattr(agent_class, 'counter_all') else None
     original_first_proposals = agent_class.first_proposals if hasattr(agent_class, 'first_proposals') else None
     
@@ -615,12 +761,16 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                 issues_payload["min_price"] = float(min_price)
             if max_price is not None:
                 issues_payload["max_price"] = float(max_price)
+        buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner_id, is_seller)
         tracker.negotiation_started(
             partner_id,
             issues_payload,
             is_seller=is_seller,
             mechanism_id=mechanism_id,
             negotiator_id=partner_id,
+            buyer=buyer,
+            seller=seller,
+            role="seller" if is_seller else "buyer",
         )
         seen.add(seen_key)
         return mechanism_id
@@ -720,8 +870,10 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                     exo_output_price = getattr(awi, 'current_exogenous_output_price', 0) or 0
                     
                     # 今日协商需求
-                    needed_supplies = getattr(awi, 'needed_supplies', 0) or 0
-                    needed_sales = getattr(awi, 'needed_sales', 0) or 0
+                    needed_supplies_raw = getattr(awi, 'needed_supplies', 0) or 0
+                    needed_sales_raw = getattr(awi, 'needed_sales', 0) or 0
+                    needed_supplies = max(0, int(needed_supplies_raw))
+                    needed_sales = max(0, int(needed_sales_raw))
                     
                     # 已签约数量
                     total_supplies = getattr(awi, 'total_supplies', 0) or 0
@@ -803,6 +955,8 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                         # 协商需求
                         needed_supplies=needed_supplies,
                         needed_sales=needed_sales,
+                        needed_supplies_raw=needed_supplies_raw,
+                        needed_sales_raw=needed_sales_raw,
                         # 已签约
                         total_supplies=total_supplies,
                         total_sales=total_sales,
@@ -849,38 +1003,45 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
             tracker = self.tracker
             if tracker:
                 try:
-                    partner = [p for p in contract.partners if p != self.id][0]
-                    agreement = contract.agreement
-                    
-                    # 尽量使用 annotation/product/buyer 正确判断买卖方向（中间层不能用 is_first_level 硬猜）
-                    my_input_product = getattr(self.awi, 'my_input_product', 0)
-                    my_output_product = getattr(self.awi, 'my_output_product', 1)
-                    annotation = getattr(contract, 'annotation', {})
-                    product_index = annotation.get('product', None) if isinstance(annotation, dict) else None
-                    if hasattr(product_index, '__len__') and not isinstance(product_index, (str, int)):
-                        product_index = product_index[0] if len(product_index) > 0 else None
+                    qty, price, time, buyer, seller, partner, product_index = _infer_contract_parties(self, contract)
+                    if not partner:
+                        partner = "unknown"
 
-                    if product_index is not None:
+                    # 尽量使用 annotation/product/buyer 正确判断买卖方向（中间层不能用 is_first_level 硬猜）
+                    my_output_product = getattr(self.awi, 'my_output_product', 1)
+                    is_seller = None
+                    if seller is not None and self.id == seller:
+                        is_seller = True
+                    elif buyer is not None and self.id == buyer:
+                        is_seller = False
+                    elif product_index is not None:
                         is_seller = (product_index == my_output_product)
                     else:
-                        buyer = getattr(contract, 'buyer', None)
-                        if buyer is not None:
-                            is_seller = (self.id != buyer)
-                        else:
-                            is_seller = not getattr(self.awi, 'is_first_level', True)
-                    
+                        is_seller = not getattr(self.awi, 'is_first_level', True)
+
                     tracker.contract_signed(
                         contract_id=str(contract.id),
                         partner=partner,
-                        quantity=agreement.get("quantity", 0) if isinstance(agreement, dict) else getattr(agreement, 'quantity', 0),
-                        price=agreement.get("unit_price", 0) if isinstance(agreement, dict) else getattr(agreement, 'unit_price', 0),
-                        delivery_day=agreement.get("time", 0) if isinstance(agreement, dict) else getattr(agreement, 'time', 0),
+                        quantity=qty,
+                        price=price,
+                        delivery_day=time,
                         is_seller=is_seller,
+                        buyer=buyer,
+                        seller=seller,
                     )
-                    tracker.negotiation_success(partner, {
-                        "quantity": agreement.get("quantity", 0) if isinstance(agreement, dict) else getattr(agreement, 'quantity', 0),
-                        "price": agreement.get("unit_price", 0) if isinstance(agreement, dict) else getattr(agreement, 'unit_price', 0),
-                    })
+                    tracker.negotiation_success(
+                        partner,
+                        {
+                            "quantity": qty,
+                            "price": price,
+                            "time": time,
+                            "buyer": buyer,
+                            "seller": seller,
+                        },
+                        buyer=buyer,
+                        seller=seller,
+                        role="seller" if is_seller else "buyer",
+                    )
                 except Exception:
                     pass
         agent_class.on_negotiation_success = patched_on_negotiation_success
@@ -893,10 +1054,61 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
             if tracker:
                 try:
                     partner = partners[0] if partners else "unknown"
-                    tracker.negotiation_failure(partner, "negotiation_ended_without_agreement")
+                    is_seller = _infer_is_seller(self, partner) if partner != "unknown" else False
+                    buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner, is_seller)
+                    tracker.negotiation_failure(
+                        partner,
+                        "negotiation_ended_without_agreement",
+                        buyer=buyer,
+                        seller=seller,
+                        role="seller" if is_seller else "buyer",
+                    )
                 except Exception:
                     pass
         agent_class.on_negotiation_failure = patched_on_negotiation_failure
+
+    # 包装 on_contract_executed 方法
+    if original_on_contract_executed:
+        def patched_on_contract_executed(self, contract):
+            original_on_contract_executed(self, contract)
+            tracker = self.tracker
+            if tracker:
+                try:
+                    qty, price, delivery, buyer, seller, partner, product_index = _infer_contract_parties(self, contract)
+                    current_step = int(getattr(self.awi, "current_step", 0) or 0)
+                    my_output_product = getattr(self.awi, "my_output_product", 1)
+                    is_seller = None
+                    if seller is not None and self.id == seller:
+                        is_seller = True
+                    elif buyer is not None and self.id == buyer:
+                        is_seller = False
+                    elif product_index is not None:
+                        is_seller = (product_index == my_output_product)
+                    else:
+                        is_seller = not getattr(self.awi, "is_first_level", True)
+
+                    if is_seller:
+                        sales = getattr(self, "_tracker_exec_sales_by_day", {})
+                        sales[current_step] = int(sales.get(current_step, 0)) + int(qty)
+                        self._tracker_exec_sales_by_day = sales
+                    else:
+                        supplies = getattr(self, "_tracker_exec_supplies_by_day", {})
+                        supplies[current_step] = int(supplies.get(current_step, 0)) + int(qty)
+                        self._tracker_exec_supplies_by_day = supplies
+
+                    tracker.contract_executed(
+                        contract_id=str(getattr(contract, "id", "")),
+                        quantity=qty,
+                        partner=partner,
+                        price=price,
+                        delivery_day=delivery,
+                        buyer=buyer,
+                        seller=seller,
+                        role="seller" if is_seller else "buyer",
+                    )
+                except Exception:
+                    pass
+        agent_class.on_contract_executed = patched_on_contract_executed
     
     # 包装 step 方法 - 在最后一步自动保存 Tracker 数据（支持并行模式）
     # 注意：使用环境变量传递 log_dir，因为子进程会继承父进程的环境变量
@@ -966,6 +1178,9 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                         state = states.get(partner_id)
                         response = responses.get(partner_id)
                         mechanism_id = _ensure_negotiation_started(self, partner_id, state=state)
+                        is_seller = _infer_is_seller(self, partner_id)
+                        buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner_id, is_seller)
+                        role = "seller" if is_seller else "buyer"
                         
                         # 解析报价 (quantity, time, unit_price)
                         offer_qty = offer[0] if offer else 0
@@ -983,6 +1198,9 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                             },
                             mechanism_id=mechanism_id,
                             negotiator_id=partner_id,
+                            buyer=buyer,
+                            seller=seller,
+                            role=role,
                         )
                         
                         # 记录我们的响应
@@ -1001,6 +1219,9 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                                     reason="accepted_in_counter_all",
                                     mechanism_id=mechanism_id,
                                     negotiator_id=partner_id,
+                                    buyer=buyer,
+                                    seller=seller,
+                                    role=role,
                                 )
                             elif response_type == "REJECT_OFFER" and counter_offer:
                                 counter_qty = counter_offer[0] if counter_offer else 0
@@ -1018,6 +1239,9 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                                     reason="counter_offer",
                                     mechanism_id=mechanism_id,
                                     negotiator_id=partner_id,
+                                    buyer=buyer,
+                                    seller=seller,
+                                    role=role,
                                 )
                             elif response_type == "END_NEGOTIATION":
                                 tracker.negotiation_reject(
@@ -1030,6 +1254,9 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                                     reason="end_negotiation",
                                     mechanism_id=mechanism_id,
                                     negotiator_id=partner_id,
+                                    buyer=buyer,
+                                    seller=seller,
+                                    role=role,
                                 )
                     
                     # AOP 动作记录（覆盖 states.keys()，补齐隐式 END）
@@ -1131,6 +1358,9 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                             prop_qty = proposal[0] if proposal else 0
                             prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
                             prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
+                            is_seller = _infer_is_seller(partner_id)
+                            buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner_id, is_seller)
+                            role = "seller" if is_seller else "buyer"
 
                             issues_payload = {
                                 "quantity_range": str(prop_qty),
@@ -1155,6 +1385,9 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                                 reason="first_proposal",
                                 mechanism_id=mechanism_id,
                                 negotiator_id=partner_id,
+                                buyer=buyer,
+                                seller=seller,
+                                role=role,
                             )
 
                             tracker.custom(
@@ -1163,7 +1396,7 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
                                 negotiator_id=partner_id,
                                 mechanism_id=mechanism_id,
                                 partner=partner_id,
-                                role="seller" if _infer_is_seller(partner_id) else "buyer",
+                                role=role,
                                 round=0,
                                 action_op="REJECT",
                                 response_type="REJECT_OFFER",
@@ -1182,13 +1415,14 @@ def patch_agent_class(agent_class: Type, captured_log_dir: Optional[str] = None)
 def inject_tracker_to_agents(agent_classes: List[Type]) -> List[Type]:
     """
     为多个 Agent 类注入 Tracker 功能
-    
+
     Args:
         agent_classes: Agent 类列表
         
     Returns:
         修补后的 Agent 类列表
     """
+    _patch_oneshot_adapter_execution_forward()
     if not TRACKER_AVAILABLE:
         print("[Tracker] Warning: scml_analyzer not available, tracking disabled")
         return agent_classes
@@ -1212,11 +1446,12 @@ def inject_tracker_to_agents(agent_classes: List[Type]) -> List[Type]:
 def setup_tracker_for_tournament(log_dir: str, enabled: bool = True):
     """
     为比赛配置 Tracker
-    
+
     Args:
         log_dir: 日志目录
         enabled: 是否启用 Tracker
     """
+    _patch_oneshot_adapter_execution_forward()
     if not TRACKER_AVAILABLE:
         return
     
@@ -1273,6 +1508,7 @@ def create_tracked_agent(
         )
         # 然后可以在比赛中使用 TrackedLitaAgentY
     """
+    _patch_oneshot_adapter_execution_forward()
     if not TRACKER_AVAILABLE:
         print(f"[Tracker] Warning: scml_analyzer not available, returning original class")
         return base_class
@@ -1318,6 +1554,8 @@ def create_tracked_agent(
         def init(self):
             """初始化时记录"""
             super().init()
+            self._tracker_exec_sales_by_day = {}
+            self._tracker_exec_supplies_by_day = {}
             tracker = self.tracker
             if tracker:
                 identity = _build_agent_identity(self, base_class=base_class)
@@ -1327,122 +1565,138 @@ def create_tracked_agent(
                     level=getattr(self.awi, 'level', None),
                     **identity,
                 )
+
+        def _log_daily_status(self):
+            tracker = self.tracker
+            if not tracker:
+                return
+            try:
+                awi = self.awi
+                tracker.set_day(awi.current_step)
+                balance = getattr(awi, 'current_balance', 0.0) or 0.0
+                score = getattr(awi, 'current_score', 1.0) or 1.0
+                exo_input_qty = getattr(awi, 'current_exogenous_input_quantity', 0) or 0
+                exo_output_qty = getattr(awi, 'current_exogenous_output_quantity', 0) or 0
+                exo_input_price = getattr(awi, 'current_exogenous_input_price', 0) or 0
+                exo_output_price = getattr(awi, 'current_exogenous_output_price', 0) or 0
+                needed_supplies_raw = getattr(awi, 'needed_supplies', 0) or 0
+                needed_sales_raw = getattr(awi, 'needed_sales', 0) or 0
+                needed_supplies = max(0, int(needed_supplies_raw))
+                needed_sales = max(0, int(needed_sales_raw))
+                total_supplies = getattr(awi, 'total_supplies', 0) or 0
+                total_sales = getattr(awi, 'total_sales', 0) or 0
+                disposal_cost = getattr(awi, 'current_disposal_cost', 0) or 0
+                shortfall_penalty = getattr(awi, 'current_shortfall_penalty', 0) or 0
+                storage_cost = getattr(awi, 'current_storage_cost', 0) or 0
+                n_lines = getattr(awi, 'n_lines', 0) or 0
+                n_steps = getattr(awi, 'n_steps', 100) or 100
+                current_step = getattr(awi, 'current_step', 0) or 0
+
+                exec_sales = int(getattr(self, "_tracker_exec_sales_by_day", {}).get(current_step, 0))
+                exec_supplies = int(getattr(self, "_tracker_exec_supplies_by_day", {}).get(current_step, 0))
+
+                # === HRL-XF 训练所需字段 ===
+                trading_prices = getattr(awi, 'trading_prices', None)
+                if trading_prices is not None:
+                    trading_prices_list = list(trading_prices) if hasattr(trading_prices, '__iter__') else []
+                else:
+                    trading_prices_list = []
+
+                my_input_product = getattr(awi, 'my_input_product', 0) or 0
+                my_output_product = getattr(awi, 'my_output_product', 1) or 1
+                spot_price_in = trading_prices_list[my_input_product] if my_input_product < len(trading_prices_list) else 10.0
+                spot_price_out = trading_prices_list[my_output_product] if my_output_product < len(trading_prices_list) else 20.0
+
+                # 真实库存
+                current_inventory = getattr(awi, 'current_inventory', None)
+                if current_inventory is not None:
+                    if hasattr(current_inventory, '__iter__') and not isinstance(current_inventory, (str, dict)):
+                        inventory_input = int(current_inventory[0]) if len(current_inventory) > 0 else 0
+                        inventory_output = int(current_inventory[-1]) if len(current_inventory) > 0 else 0
+                    elif isinstance(current_inventory, dict):
+                        inventory_input = int(current_inventory.get('input', 0))
+                        inventory_output = int(current_inventory.get('output', 0))
+                    else:
+                        inventory_input = int(current_inventory)
+                        inventory_output = 0
+                else:
+                    inventory_input = exo_input_qty
+                    inventory_output = exo_output_qty
+
+                remaining_steps = n_steps - current_step
+
+                # === 从 AWI future_* 重建 commitments ===
+                max_len = min(remaining_steps + 1, 50)
+                Q_in, Q_out, Payables, Receivables, has_future = _build_commitments_from_future(
+                    awi, current_step, max_len
+                )
+
+                offers_snapshot = _extract_offers_snapshot(awi, current_step)
+
+                tracker.inventory_state(
+                    raw_material=inventory_input,
+                    product=inventory_output,
+                    balance=balance,
+                )
+                # P0 修复: 获取 n_products 用于正确计算 x_role
+                n_products = getattr(awi, 'n_products', my_output_product + 1) or (my_output_product + 1)
+
+                tracker.custom("daily_status",
+                    score=score,
+                    balance=balance,
+                    initial_balance=_get_initial_balance(awi, getattr(self, "id", None)),
+                    exo_input_qty=exo_input_qty,
+                    exo_input_price=exo_input_price,
+                    exo_output_qty=exo_output_qty,
+                    exo_output_price=exo_output_price,
+                    needed_supplies=needed_supplies,
+                    needed_sales=needed_sales,
+                    needed_supplies_raw=needed_supplies_raw,
+                    needed_sales_raw=needed_sales_raw,
+                    total_supplies=total_supplies,
+                    total_sales=total_sales,
+                    executed_supplies=exec_supplies,
+                    executed_sales=exec_sales,
+                    disposal_cost=disposal_cost,
+                    shortfall_penalty=shortfall_penalty,
+                    storage_cost=storage_cost,
+                    n_lines=n_lines,
+                    n_steps=n_steps,
+                    current_step=current_step,
+                    # HRL-XF 新增字段
+                    spot_price_in=float(spot_price_in),
+                    spot_price_out=float(spot_price_out),
+                    trading_prices=trading_prices_list,
+                    inventory_input=inventory_input,
+                    inventory_output=inventory_output,
+                    my_input_product=my_input_product,
+                    my_output_product=my_output_product,
+                    n_products=n_products,  # P0 修复: 用于正确计算 is_last_level 和 x_role
+                    # 合同承诺（用于离线计算 L1 baseline）
+                    # H=40 天规划视界，记录 H+1=41 个时间点
+                    commitments={
+                        'Q_in': Q_in[:41],
+                        'Q_out': Q_out[:41],
+                        'Payables': Payables[:41],
+                        'Receivables': Receivables[:41],
+                    },
+                    # 活跃谈判快照（用于离线重建6-8 通道）
+                    offers_snapshot=offers_snapshot,
+                )
+            except Exception:
+                pass
         
         def before_step(self):
-            """每步开始时记录状态（包含 HRL-XF 训练所需字段）"""
+            """???????????? HRL-XF ???????"""
             super().before_step()
             tracker = self.tracker
             if tracker:
                 tracker.set_day(self.awi.current_step)
-                try:
-                    awi = self.awi
-                    balance = getattr(awi, 'current_balance', 0.0) or 0.0
-                    score = getattr(awi, 'current_score', 1.0) or 1.0
-                    exo_input_qty = getattr(awi, 'current_exogenous_input_quantity', 0) or 0
-                    exo_output_qty = getattr(awi, 'current_exogenous_output_quantity', 0) or 0
-                    exo_input_price = getattr(awi, 'current_exogenous_input_price', 0) or 0
-                    exo_output_price = getattr(awi, 'current_exogenous_output_price', 0) or 0
-                    needed_supplies = getattr(awi, 'needed_supplies', 0) or 0
-                    needed_sales = getattr(awi, 'needed_sales', 0) or 0
-                    total_supplies = getattr(awi, 'total_supplies', 0) or 0
-                    total_sales = getattr(awi, 'total_sales', 0) or 0
-                    disposal_cost = getattr(awi, 'current_disposal_cost', 0) or 0
-                    shortfall_penalty = getattr(awi, 'current_shortfall_penalty', 0) or 0
-                    storage_cost = getattr(awi, 'current_storage_cost', 0) or 0
-                    n_lines = getattr(awi, 'n_lines', 0) or 0
-                    
-                    # === HRL-XF 训练所需字段 ===
-                    trading_prices = getattr(awi, 'trading_prices', None)
-                    if trading_prices is not None:
-                        trading_prices_list = list(trading_prices) if hasattr(trading_prices, '__iter__') else []
-                    else:
-                        trading_prices_list = []
-                    
-                    my_input_product = getattr(awi, 'my_input_product', 0) or 0
-                    my_output_product = getattr(awi, 'my_output_product', 1) or 1
-                    spot_price_in = trading_prices_list[my_input_product] if my_input_product < len(trading_prices_list) else 10.0
-                    spot_price_out = trading_prices_list[my_output_product] if my_output_product < len(trading_prices_list) else 20.0
-                    
-                    # 真实库存
-                    current_inventory = getattr(awi, 'current_inventory', None)
-                    if current_inventory is not None:
-                        if hasattr(current_inventory, '__iter__') and not isinstance(current_inventory, (str, dict)):
-                            inventory_input = int(current_inventory[0]) if len(current_inventory) > 0 else 0
-                            inventory_output = int(current_inventory[-1]) if len(current_inventory) > 0 else 0
-                        elif isinstance(current_inventory, dict):
-                            inventory_input = int(current_inventory.get('input', 0))
-                            inventory_output = int(current_inventory.get('output', 0))
-                        else:
-                            inventory_input = int(current_inventory)
-                            inventory_output = 0
-                    else:
-                        inventory_input = exo_input_qty
-                        inventory_output = exo_output_qty
-                    
-                    n_steps = getattr(awi, 'n_steps', 100) or 100
-                    current_step = getattr(awi, 'current_step', 0) or 0
-                    remaining_steps = n_steps - current_step
-                    
-                    # === 从 AWI future_* 重建 commitments ===
-                    max_len = min(remaining_steps + 1, 50)
-                    Q_in, Q_out, Payables, Receivables, has_future = _build_commitments_from_future(
-                        awi, current_step, max_len
-                    )
-                    
-                    offers_snapshot = _extract_offers_snapshot(awi, current_step)
-                    
-                    tracker.inventory_state(
-                        raw_material=inventory_input,
-                        product=inventory_output,
-                        balance=balance,
-                    )
-                    # P0 修复: 获取 n_products 用于正确计算 x_role
-                    n_products = getattr(awi, 'n_products', my_output_product + 1) or (my_output_product + 1)
-                    
-                    tracker.custom("daily_status",
-                        score=score,
-                        balance=balance,
-                        initial_balance=_get_initial_balance(awi, getattr(self, "id", None)),
-                        exo_input_qty=exo_input_qty,
-                        exo_input_price=exo_input_price,
-                        exo_output_qty=exo_output_qty,
-                        exo_output_price=exo_output_price,
-                        needed_supplies=needed_supplies,
-                        needed_sales=needed_sales,
-                        total_supplies=total_supplies,
-                        total_sales=total_sales,
-                        disposal_cost=disposal_cost,
-                        shortfall_penalty=shortfall_penalty,
-                        storage_cost=storage_cost,
-                        n_lines=n_lines,
-                        n_steps=n_steps,
-                        current_step=current_step,
-                        # HRL-XF 新增字段
-                        spot_price_in=float(spot_price_in),
-                        spot_price_out=float(spot_price_out),
-                        trading_prices=trading_prices_list,
-                        inventory_input=inventory_input,
-                        inventory_output=inventory_output,
-                        my_input_product=my_input_product,
-                        my_output_product=my_output_product,
-                        n_products=n_products,  # P0 修复: 用于正确计算 is_last_level 和 x_role
-                        # 合同承诺（用于离线计算 L1 baseline）
-                        # H=40 天规划视界，记录 H+1=41 个时间点
-                        commitments={
-                            'Q_in': Q_in[:41],
-                            'Q_out': Q_out[:41],
-                            'Payables': Payables[:41],
-                            'Receivables': Receivables[:41],
-                        },
-                        # 活跃谈判快照（用于离线重建 6-8 通道）
-                        offers_snapshot=offers_snapshot,
-                    )
-                except Exception:
-                    pass
-        
+
         def step(self):
             """执行步骤，在最后一步保存数据"""
             super().step()
+            self._log_daily_status()
             tracker = self.tracker
             if tracker:
                 try:
@@ -1477,32 +1731,23 @@ def create_tracked_agent(
             tracker = self.tracker
             if tracker:
                 try:
-                    partner = [p for p in contract.partners if p != self.id][0]
-                    agreement = contract.agreement
-                    
+                    qty, price, time, buyer, seller, partner, product_index = _infer_contract_parties(self, contract)
+                    if not partner:
+                        partner = "unknown"
+
                     # P1 修复: 使用 product_index 正确判断买卖方向
-                    # - 如果交易的是 my_input_product，我们是买家 (is_seller=False)
-                    # - 如果交易的是 my_output_product，我们是卖家 (is_seller=True)
-                    my_input_product = getattr(self.awi, 'my_input_product', 0)
                     my_output_product = getattr(self.awi, 'my_output_product', 1)
-                    annotation = getattr(contract, 'annotation', {})
-                    product_index = annotation.get('product', None) if isinstance(annotation, dict) else None
-                    
-                    if product_index is not None:
+                    is_seller = None
+                    if seller is not None and self.id == seller:
+                        is_seller = True
+                    elif buyer is not None and self.id == buyer:
+                        is_seller = False
+                    elif product_index is not None:
                         is_seller = (product_index == my_output_product)
                     else:
-                        # 回退: 检查 contract.buyer 字段
-                        buyer = getattr(contract, 'buyer', None)
-                        if buyer is not None:
-                            is_seller = (self.id != buyer)
-                        else:
-                            # 最后回退: 基于层级（不推荐，可能不准确）
-                            is_seller = not getattr(self.awi, 'is_first_level', True)
-                    
-                    qty = agreement.get("quantity", 0) if isinstance(agreement, dict) else getattr(agreement, 'quantity', 0)
-                    price = agreement.get("unit_price", 0) if isinstance(agreement, dict) else getattr(agreement, 'unit_price', 0)
-                    time = agreement.get("time", 0) if isinstance(agreement, dict) else getattr(agreement, 'time', 0)
-                    
+                        # 最后回退: 基于层级（不推荐，可能不准确）
+                        is_seller = not getattr(self.awi, 'is_first_level', True)
+
                     tracker.contract_signed(
                         contract_id=str(contract.id),
                         partner=partner,
@@ -1510,8 +1755,16 @@ def create_tracked_agent(
                         price=price,
                         delivery_day=time,
                         is_seller=is_seller,
+                        buyer=buyer,
+                        seller=seller,
                     )
-                    tracker.negotiation_success(partner, {"quantity": qty, "price": price})
+                    tracker.negotiation_success(
+                        partner,
+                        {"quantity": qty, "price": price, "time": time, "buyer": buyer, "seller": seller},
+                        buyer=buyer,
+                        seller=seller,
+                        role="seller" if is_seller else "buyer",
+                    )
                 except Exception:
                     pass
         
@@ -1522,7 +1775,76 @@ def create_tracked_agent(
             if tracker:
                 try:
                     partner = partners[0] if partners else "unknown"
-                    tracker.negotiation_failure(partner, "negotiation_ended_without_agreement")
+                    is_seller = self._infer_is_seller(partner) if partner != "unknown" else False
+                    buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner, is_seller)
+                    tracker.negotiation_failure(
+                        partner,
+                        "negotiation_ended_without_agreement",
+                        buyer=buyer,
+                        seller=seller,
+                        role="seller" if is_seller else "buyer",
+                    )
+                except Exception:
+                    pass
+
+        def _infer_contract_is_seller(self, contract) -> bool:
+            my_input_product = getattr(self.awi, "my_input_product", 0)
+            my_output_product = getattr(self.awi, "my_output_product", 1)
+            annotation = getattr(contract, "annotation", {}) or {}
+            product_index = annotation.get("product", None) if isinstance(annotation, dict) else None
+            if hasattr(product_index, "__len__") and not isinstance(product_index, (str, int)):
+                product_index = product_index[0] if len(product_index) > 0 else None
+            if product_index is not None:
+                return product_index == my_output_product
+
+            seller = annotation.get("seller", None)
+            buyer = annotation.get("buyer", None)
+            if seller is not None:
+                return seller == getattr(self, "id", None)
+            if buyer is not None:
+                return buyer != getattr(self, "id", None)
+
+            buyer_id = getattr(contract, "buyer", None)
+            if buyer_id is not None:
+                return buyer_id != getattr(self, "id", None)
+            if getattr(self.awi, "is_first_level", False):
+                return True
+            if getattr(self.awi, "is_last_level", False):
+                return False
+            return False
+
+        def on_contract_executed(self, contract):
+            super().on_contract_executed(contract)
+            tracker = self.tracker
+            if tracker:
+                try:
+                    qty, price, delivery, buyer, seller, partner, product_index = _infer_contract_parties(self, contract)
+                    current_step = int(getattr(self.awi, "current_step", 0) or 0)
+                    is_seller = None
+                    if seller is not None and self.id == seller:
+                        is_seller = True
+                    elif buyer is not None and self.id == buyer:
+                        is_seller = False
+                    else:
+                        is_seller = self._infer_contract_is_seller(contract)
+                    if is_seller:
+                        sales = getattr(self, "_tracker_exec_sales_by_day", {})
+                        sales[current_step] = int(sales.get(current_step, 0)) + int(qty)
+                        self._tracker_exec_sales_by_day = sales
+                    else:
+                        supplies = getattr(self, "_tracker_exec_supplies_by_day", {})
+                        supplies[current_step] = int(supplies.get(current_step, 0)) + int(qty)
+                        self._tracker_exec_supplies_by_day = supplies
+                    tracker.contract_executed(
+                        contract_id=str(getattr(contract, "id", "")),
+                        quantity=qty,
+                        partner=partner,
+                        price=price,
+                        delivery_day=delivery,
+                        buyer=buyer,
+                        seller=seller,
+                        role="seller" if is_seller else "buyer",
+                    )
                 except Exception:
                     pass
 
@@ -1625,12 +1947,16 @@ def create_tracked_agent(
                     issues_payload["min_price"] = float(min_price)
                 if max_price is not None:
                     issues_payload["max_price"] = float(max_price)
+            buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner_id, is_seller)
             tracker.negotiation_started(
                 partner_id,
                 issues_payload,
                 is_seller=is_seller,
                 mechanism_id=mechanism_id,
                 negotiator_id=partner_id,
+                buyer=buyer,
+                seller=seller,
+                role="seller" if is_seller else "buyer",
             )
             seen.add(seen_key)
             return mechanism_id
@@ -1694,6 +2020,9 @@ def create_tracked_agent(
                         state = states.get(partner_id)
                         response = responses.get(partner_id)
                         mechanism_id = self._ensure_negotiation_started(partner_id, state=state)
+                        is_seller = self._infer_is_seller(partner_id)
+                        buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner_id, is_seller)
+                        role = "seller" if is_seller else "buyer"
                         
                         offer_qty = offer[0] if offer else 0
                         offer_time = offer[1] if offer and len(offer) > 1 else 0
@@ -1709,6 +2038,9 @@ def create_tracked_agent(
                             },
                             mechanism_id=mechanism_id,
                             negotiator_id=partner_id,
+                            buyer=buyer,
+                            seller=seller,
+                            role=role,
                         )
                         
                         if response:
@@ -1726,6 +2058,9 @@ def create_tracked_agent(
                                     reason="accepted_in_counter_all",
                                     mechanism_id=mechanism_id,
                                     negotiator_id=partner_id,
+                                    buyer=buyer,
+                                    seller=seller,
+                                    role=role,
                                 )
                             elif response_type == "REJECT_OFFER" and counter_offer:
                                 counter_qty = counter_offer[0] if counter_offer else 0
@@ -1743,6 +2078,9 @@ def create_tracked_agent(
                                     reason="counter_offer",
                                     mechanism_id=mechanism_id,
                                     negotiator_id=partner_id,
+                                    buyer=buyer,
+                                    seller=seller,
+                                    role=role,
                                 )
                             elif response_type == "END_NEGOTIATION":
                                 tracker.negotiation_reject(
@@ -1755,6 +2093,9 @@ def create_tracked_agent(
                                     reason="end_negotiation",
                                     mechanism_id=mechanism_id,
                                     negotiator_id=partner_id,
+                                    buyer=buyer,
+                                    seller=seller,
+                                    role=role,
                                 )
 
                     # AOP 动作记录（覆盖 states.keys()，补齐隐式 END）
@@ -1816,6 +2157,8 @@ def create_tracked_agent(
                             prop_time = proposal[1] if proposal and len(proposal) > 1 else 0
                             prop_price = proposal[2] if proposal and len(proposal) > 2 else 0
                             is_seller = self._infer_is_seller(partner_id)
+                            buyer, seller = _infer_buyer_seller_from_role(getattr(self, "id", None), partner_id, is_seller)
+                            role = "seller" if is_seller else "buyer"
                             issues_payload = {
                                 "quantity_range": str(prop_qty),
                                 "time_range": str(prop_time),
@@ -1837,6 +2180,9 @@ def create_tracked_agent(
                                 reason="first_proposal",
                                 mechanism_id=mechanism_id,
                                 negotiator_id=partner_id,
+                                buyer=buyer,
+                                seller=seller,
+                                role=role,
                             )
 
                             tracker.custom(
@@ -1845,7 +2191,7 @@ def create_tracked_agent(
                                 negotiator_id=partner_id,
                                 mechanism_id=mechanism_id,
                                 partner=partner_id,
-                                role="seller" if is_seller else "buyer",
+                                role=role,
                                 round=0,
                                 action_op="REJECT",
                                 response_type="REJECT_OFFER",

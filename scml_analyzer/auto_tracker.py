@@ -206,6 +206,9 @@ class AgentLogger:
         is_seller: bool,
         mechanism_id: Optional[str] = None,
         negotiator_id: Optional[str] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
     ):
         """协商开始"""
         self._stats["negotiations_started"] += 1
@@ -225,8 +228,12 @@ class AgentLogger:
         data = {
             "partner": partner,
             "issues": str(issues),
-            "role": "seller" if is_seller else "buyer",
+            "role": role or ("seller" if is_seller else "buyer"),
         }
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
         if min_price is not None:
             try:
                 data["min_price"] = float(min_price)
@@ -249,9 +256,18 @@ class AgentLogger:
         offer: Dict,
         mechanism_id: Optional[str] = None,
         negotiator_id: Optional[str] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
     ):
         """收到报价"""
         data = {"partner": partner, "offer": offer}
+        if role:
+            data["role"] = role
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
         if mechanism_id:
             data["mechanism_id"] = mechanism_id
         if negotiator_id:
@@ -265,10 +281,19 @@ class AgentLogger:
         reason: str = "",
         mechanism_id: Optional[str] = None,
         negotiator_id: Optional[str] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
     ):
         """发出报价"""
         self._stats["offers_made"] += 1
         data = {"partner": partner, "offer": offer, "reason": reason}
+        if role:
+            data["role"] = role
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
         if mechanism_id:
             data["mechanism_id"] = mechanism_id
         if negotiator_id:
@@ -282,10 +307,19 @@ class AgentLogger:
         reason: str = "",
         mechanism_id: Optional[str] = None,
         negotiator_id: Optional[str] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
     ):
         """接受报价"""
         self._stats["offers_accepted"] += 1
         data = {"partner": partner, "offer": offer, "reason": reason}
+        if role:
+            data["role"] = role
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
         if mechanism_id:
             data["mechanism_id"] = mechanism_id
         if negotiator_id:
@@ -299,10 +333,19 @@ class AgentLogger:
         reason: str = "",
         mechanism_id: Optional[str] = None,
         negotiator_id: Optional[str] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
     ):
         """拒绝报价"""
         self._stats["offers_rejected"] += 1
         data = {"partner": partner, "offer": offer, "reason": reason}
+        if role:
+            data["role"] = role
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
         if mechanism_id:
             data["mechanism_id"] = mechanism_id
         if negotiator_id:
@@ -315,10 +358,19 @@ class AgentLogger:
         agreement: Dict,
         mechanism_id: Optional[str] = None,
         negotiator_id: Optional[str] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
     ):
         """协商成功"""
         self._stats["negotiations_success"] += 1
         data = {"partner": partner, "agreement": agreement}
+        if role:
+            data["role"] = role
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
         if mechanism_id:
             data["mechanism_id"] = mechanism_id
         if negotiator_id:
@@ -331,10 +383,19 @@ class AgentLogger:
         reason: str = "",
         mechanism_id: Optional[str] = None,
         negotiator_id: Optional[str] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
     ):
         """协商失败"""
         self._stats["negotiations_failed"] += 1
         data = {"partner": partner, "reason": reason}
+        if role:
+            data["role"] = role
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
         if mechanism_id:
             data["mechanism_id"] = mechanism_id
         if negotiator_id:
@@ -345,24 +406,54 @@ class AgentLogger:
     
     def contract_signed(self, contract_id: str, partner: str, 
                         quantity: int, price: float, delivery_day: int,
-                        is_seller: bool):
+                        is_seller: bool,
+                        buyer: Optional[str] = None,
+                        seller: Optional[str] = None):
         """合同签署"""
         self._stats["contracts_signed"] += 1
-        self._log("contract", "signed", {
+        data = {
             "contract_id": contract_id,
             "partner": partner,
             "quantity": quantity,
             "price": price,
             "delivery_day": delivery_day,
             "role": "seller" if is_seller else "buyer",
-        })
+        }
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
+        self._log("contract", "signed", data)
     
-    def contract_executed(self, contract_id: str, quantity: int):
+    def contract_executed(
+        self,
+        contract_id: str,
+        quantity: int,
+        partner: Optional[str] = None,
+        price: Optional[float] = None,
+        delivery_day: Optional[int] = None,
+        buyer: Optional[str] = None,
+        seller: Optional[str] = None,
+        role: Optional[str] = None,
+    ):
         """合同执行"""
-        self._log("contract", "executed", {
+        data = {
             "contract_id": contract_id,
             "quantity": quantity,
-        })
+        }
+        if partner is not None:
+            data["partner"] = partner
+        if price is not None:
+            data["price"] = price
+        if delivery_day is not None:
+            data["delivery_day"] = delivery_day
+        if role:
+            data["role"] = role
+        if buyer is not None:
+            data["buyer"] = buyer
+        if seller is not None:
+            data["seller"] = seller
+        self._log("contract", "executed", data)
     
     def contract_breached(self, contract_id: str, reason: str = ""):
         """合同违约"""

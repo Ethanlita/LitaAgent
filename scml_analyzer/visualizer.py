@@ -54,6 +54,24 @@ def _extract_short_name(full_name: str) -> str:
     return short
 
 
+def _infer_track_from_params(params: Dict[str, Any]) -> str:
+    if params.get("oneshot_world") is True:
+        return "oneshot"
+    if params.get("std_world") is True:
+        return "std"
+
+    for key in ("world_generator_name", "score_calculator_name"):
+        name = str(params.get(key, "") or "").lower()
+        if "oneshot" in name:
+            return "oneshot"
+
+    for name in list(params.get("competitors", [])) + list(params.get("non_competitors", [])):
+        if "oneshot" in str(name).lower():
+            return "oneshot"
+
+    return "std"
+
+
 class VisualizerData:
     """
     从 negmas tournament 目录自动加载所有数据
@@ -83,6 +101,7 @@ class VisualizerData:
         # Tracker 数据
         self._tracker_data: Dict[str, Dict] = {}  # agent_id -> tracker export data
         self._tracker_summary: Dict = {}
+        self._world_dir_cache: Dict[str, Optional[Path]] = {}
         
         # 自动加载数据
         self.load_all()
@@ -123,6 +142,10 @@ class VisualizerData:
     def _load_params(self):
         """加载 params.json"""
         self._params = self._load_json("params.json")
+        if self._params:
+            track = _infer_track_from_params(self._params)
+            if "oneshot_world" not in self._params and "std_world" not in self._params:
+                self._params["oneshot_world"] = track == "oneshot"
     
     def _load_total_scores(self):
         """加载 total_scores.csv"""
@@ -224,6 +247,38 @@ class VisualizerData:
         # 按天和时间戳排序
         entries.sort(key=lambda e: (e.get("day", 0), e.get("timestamp", "")))
         return entries[:limit]
+
+    def _normalize_negotiation_data(self, data: Dict) -> Dict:
+        if not isinstance(data, dict):
+            return {}
+        result = dict(data)
+        offer = result.get("offer")
+        if isinstance(offer, dict):
+            for key in ("quantity", "unit_price", "delivery_day", "round", "price", "time", "buyer", "seller"):
+                if key not in result and key in offer:
+                    result[key] = offer[key]
+        if "unit_price" not in result and "price" in result:
+            result["unit_price"] = result.get("price")
+        if "delivery_day" not in result and "time" in result:
+            result["delivery_day"] = result.get("time")
+
+        agreement = result.get("agreement")
+        if isinstance(agreement, dict):
+            normalized = dict(agreement)
+            if "price" not in normalized and "unit_price" in normalized:
+                normalized["price"] = normalized.get("unit_price")
+            if "time" not in normalized and "delivery_day" in normalized:
+                normalized["time"] = normalized.get("delivery_day")
+            if "buyer" in result and "buyer" not in normalized:
+                normalized["buyer"] = result.get("buyer")
+            if "seller" in result and "seller" not in normalized:
+                normalized["seller"] = result.get("seller")
+            result["agreement"] = normalized
+            if "buyer" not in result and "buyer" in normalized:
+                result["buyer"] = normalized.get("buyer")
+            if "seller" not in result and "seller" in normalized:
+                result["seller"] = normalized.get("seller")
+        return result
     
     def get_tracker_time_series(self, agent_type: str) -> Dict[str, List]:
         """获取某个 Agent 类型的时间序列数据（汇总）"""
@@ -261,20 +316,27 @@ class VisualizerData:
         for e in entries:
             partner = e.get("data", {}).get("partner", "unknown")
             day = e.get("day", 0)
-            key = f"{e.get('agent_id')}_{partner}_{day}"
+            agent_id = e.get("agent_id")
+            agent_world = None
+            if agent_id in self._tracker_data:
+                agent_world = self._tracker_data[agent_id].get("world_id")
+            world_id = e.get("world_id") or agent_world or "unknown"
+            key = f"{agent_id}_{partner}_{day}_{world_id}"
             
             if key not in negotiations:
                 negotiations[key] = {
-                    "agent_id": e.get("agent_id"),
+                    "agent_id": agent_id,
                     "partner": partner,
                     "day": day,
+                    "world": world_id,
                     "events": [],
                     "result": "ongoing",
                 }
             
+            normalized = self._normalize_negotiation_data(e.get("data", {}))
             negotiations[key]["events"].append({
                 "event": e.get("event"),
-                "data": e.get("data"),
+                "data": normalized,
                 "timestamp": e.get("timestamp"),
             })
             
@@ -289,39 +351,192 @@ class VisualizerData:
         result.sort(key=lambda n: (n["day"], n["agent_id"], n["partner"]))
         return result[:limit]
     
-    def get_daily_status(self, agent_type: str) -> List[Dict]:
-        """获取每日状态数据"""
+    def get_daily_status(self, agent_type: str, world_id: Optional[str] = None) -> List[Dict]:
+        """获取每日状态（默认取每个 agent/day 的最新记录）"""
         entries = self.get_tracker_entries_by_type(agent_type, limit=10000)
-        daily_status = []
-        
+        latest = {}
         for e in entries:
             if e.get("category") == "custom" and e.get("event") == "daily_status":
-                status = {
-                    "agent_id": e.get("agent_id"),
-                    "day": e.get("day"),
-                    **e.get("data", {})
-                }
-                daily_status.append(status)
-        
+                key = (e.get("agent_id"), e.get("day", 0))
+                ts = e.get("timestamp", "")
+                if key not in latest or ts > latest[key].get("timestamp", ""):
+                    latest[key] = e
+
+        daily_status = []
+        for e in latest.values():
+            agent_id = e.get("agent_id")
+            agent_world = None
+            if agent_id in self._tracker_data:
+                agent_world = self._tracker_data[agent_id].get("world_id")
+            entry_world = e.get("world_id") or agent_world or "unknown"
+            if world_id and entry_world != world_id:
+                continue
+            status = {
+                "agent_id": agent_id,
+                "day": e.get("day"),
+                "world_id": entry_world,
+                **e.get("data", {})
+            }
+            if "demand_supplies" not in status:
+                status["demand_supplies"] = status.get("exo_output_qty", 0) or 0
+            if "demand_sales" not in status:
+                status["demand_sales"] = status.get("exo_input_qty", 0) or 0
+            if "needed_supplies" not in status:
+                status["needed_supplies"] = status.get("needed_supplies", 0) or 0
+            if "needed_sales" not in status:
+                status["needed_sales"] = status.get("needed_sales", 0) or 0
+            if "total_supplies" not in status:
+                status["total_supplies"] = status.get("total_supplies", 0) or 0
+            if "total_sales" not in status:
+                status["total_sales"] = status.get("total_sales", 0) or 0
+            if "executed_supplies" not in status:
+                status["executed_supplies"] = status.get("executed_supplies", 0) or 0
+            if "executed_sales" not in status:
+                status["executed_sales"] = status.get("executed_sales", 0) or 0
+            daily_status.append(status)
+
         daily_status.sort(key=lambda s: (s.get("day", 0), s.get("agent_id", "")))
         return daily_status
 
-    # ========== 单 World 模式相关方法 ==========
-    
+    def get_daily_detail(self, agent_id: str, day: int, world_id: Optional[str] = None) -> Dict:
+        """获取单个 Agent 在某一天的详细视图"""
+        data = self.get_single_agent_data(agent_id)
+        if not data:
+            return {}
+
+        entries = data.get("entries", [])
+        if not isinstance(day, int):
+            try:
+                day = int(day)
+            except Exception:
+                day = 0
+
+        def _world_match(entry: Dict) -> bool:
+            if not world_id:
+                return True
+            entry_world = entry.get("world_id") or data.get("world_id") or "unknown"
+            return entry_world == world_id
+
+        daily_entries = [
+            e for e in entries
+            if e.get("category") == "custom"
+            and e.get("event") == "daily_status"
+            and e.get("day") == day
+            and _world_match(e)
+        ]
+        daily_entry = None
+        if daily_entries:
+            daily_entry = max(daily_entries, key=lambda e: e.get("timestamp", ""))
+
+        daily_status = dict(daily_entry.get("data", {})) if daily_entry else {}
+        daily_status["agent_id"] = agent_id
+        daily_status["day"] = day
+        daily_status["world_id"] = world_id or data.get("world_id") or "unknown"
+        if "demand_supplies" not in daily_status:
+            daily_status["demand_supplies"] = daily_status.get("exo_output_qty", 0) or 0
+        if "demand_sales" not in daily_status:
+            daily_status["demand_sales"] = daily_status.get("exo_input_qty", 0) or 0
+        if "needed_supplies" not in daily_status:
+            daily_status["needed_supplies"] = daily_status.get("needed_supplies", 0) or 0
+        if "needed_sales" not in daily_status:
+            daily_status["needed_sales"] = daily_status.get("needed_sales", 0) or 0
+        if "total_supplies" not in daily_status:
+            daily_status["total_supplies"] = daily_status.get("total_supplies", 0) or 0
+        if "total_sales" not in daily_status:
+            daily_status["total_sales"] = daily_status.get("total_sales", 0) or 0
+        if "executed_supplies" not in daily_status:
+            daily_status["executed_supplies"] = daily_status.get("executed_supplies", 0) or 0
+        if "executed_sales" not in daily_status:
+            daily_status["executed_sales"] = daily_status.get("executed_sales", 0) or 0
+
+        signed = []
+        executed = []
+        for e in entries:
+            if not _world_match(e):
+                continue
+            if e.get("day") != day:
+                continue
+            if e.get("category") != "contract":
+                continue
+            payload = dict(e.get("data", {}))
+            payload["timestamp"] = e.get("timestamp", "")
+            if e.get("event") == "signed":
+                signed.append(payload)
+            elif e.get("event") == "executed":
+                executed.append(payload)
+
+        signed_by_id = {}
+        for item in signed:
+            cid = item.get("contract_id")
+            if cid:
+                signed_by_id[cid] = item
+
+        for item in executed:
+            cid = item.get("contract_id")
+            if not cid or cid not in signed_by_id:
+                continue
+            ref = signed_by_id[cid]
+            for key in ("partner", "price", "delivery_day", "buyer", "seller", "role"):
+                if item.get(key) is None and ref.get(key) is not None:
+                    item[key] = ref.get(key)
+
+        def _infer_role(item: Dict) -> Optional[str]:
+            role = item.get("role")
+            if role:
+                return role
+            buyer = item.get("buyer")
+            seller = item.get("seller")
+            if buyer and buyer == agent_id:
+                return "buyer"
+            if seller and seller == agent_id:
+                return "seller"
+            return None
+
+        totals = {
+            "signed_sales": 0,
+            "signed_supplies": 0,
+            "executed_sales": 0,
+            "executed_supplies": 0,
+        }
+        for item in signed:
+            qty = item.get("quantity", 0) or 0
+            role = _infer_role(item)
+            if role == "seller":
+                totals["signed_sales"] += qty
+            elif role == "buyer":
+                totals["signed_supplies"] += qty
+        for item in executed:
+            qty = item.get("quantity", 0) or 0
+            role = _infer_role(item)
+            if role == "seller":
+                totals["executed_sales"] += qty
+            elif role == "buyer":
+                totals["executed_supplies"] += qty
+
+        return {
+            "agent_id": agent_id,
+            "day": day,
+            "world_id": world_id or data.get("world_id") or "unknown",
+            "daily_status": daily_status,
+            "contracts_signed": signed,
+            "contracts_executed": executed,
+            "totals": totals,
+        }
+
     def get_available_worlds_from_tracker(self) -> List[Dict]:
         """从 Tracker 数据中获取所有可用的 World 列表
-        
+
         Returns:
             [{"world_id": "...", "agents": [{"agent_id": "00LY@0", "agent_type": "LitaAgentY", "level": 0}, ...]}]
         """
         from collections import defaultdict
-        
+
         worlds = defaultdict(list)
-        
+
         for agent_id, data in self._tracker_data.items():
             world_id = data.get("world_id", "unknown")
             agent_type = _extract_short_name(data.get("agent_type", "Unknown"))
-            
+
             # 解析 level（格式: 00LY@0 -> level 0）
             level = None
             if "@" in agent_id:
@@ -329,14 +544,14 @@ class VisualizerData:
                     level = int(agent_id.split("@")[-1])
                 except ValueError:
                     pass
-            
+
             worlds[world_id].append({
                 "agent_id": agent_id,
                 "agent_type": agent_type,
                 "level": level,
                 "display_name": f"{agent_id} ({agent_type})" if level is None else f"{agent_id} ({agent_type}) L{level}",
             })
-        
+
         result = []
         for world_id, agents in worlds.items():
             # 按 level 排序
@@ -346,7 +561,7 @@ class VisualizerData:
                 "agents": agents,
                 "agent_count": len(agents),
             })
-        
+
         result.sort(key=lambda w: w["world_id"])
         return result
     
@@ -381,6 +596,114 @@ class VisualizerData:
         # 按 agent_type, world_id, level 排序
         instances.sort(key=lambda a: (a["agent_type"], a["world_id"], a["level"] if a["level"] is not None else 999))
         return instances
+
+    def _find_world_dir(self, world_id: str) -> Optional[Path]:
+        if world_id in self._world_dir_cache:
+            return self._world_dir_cache[world_id]
+        if not world_id or world_id == "unknown":
+            self._world_dir_cache[world_id] = None
+            return None
+        keys = [world_id]
+        if "/" in world_id:
+            keys.extend([part for part in world_id.split("/") if part])
+        for agents_file in self.tournament_dir.rglob("agents.csv"):
+            parent_name = agents_file.parent.name
+            if parent_name == world_id:
+                self._world_dir_cache[world_id] = agents_file.parent
+                return agents_file.parent
+            if any(parent_name == key for key in keys):
+                self._world_dir_cache[world_id] = agents_file.parent
+                return agents_file.parent
+            if any(key and key in parent_name for key in keys):
+                self._world_dir_cache[world_id] = agents_file.parent
+                return agents_file.parent
+        self._world_dir_cache[world_id] = None
+        return None
+
+    def _load_world_agents_csv(self, world_id: str) -> Dict[str, str]:
+        world_dir = self._find_world_dir(world_id)
+        if not world_dir:
+            return {}
+        agents_file = world_dir / "agents.csv"
+        if not agents_file.exists():
+            return {}
+        agents = {}
+        try:
+            with open(agents_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    name = row.get("name") or ""
+                    agent_type = row.get("type") or ""
+                    if not name or name == "NoAgent":
+                        continue
+                    agents[name] = agent_type
+        except Exception:
+            return {}
+        return agents
+
+    def get_world_structure(self, world_id: str) -> Dict:
+        agents = self._load_world_agents_csv(world_id)
+        source = "world_logs"
+        partial = False
+        if not agents:
+            source = "tracker"
+            partial = True
+            for agent_id, data in self._tracker_data.items():
+                if data.get("world_id") != world_id:
+                    continue
+                agent_type = _extract_short_name(data.get("agent_type", "Unknown"))
+                agents[agent_id] = agent_type
+
+        layers: Dict[int, List[Dict]] = {}
+        special: Dict[str, List[Dict]] = {"SELLER": [], "BUYER": []}
+        for name, agent_type in agents.items():
+            if name in special:
+                special[name].append({
+                    "agent_id": name,
+                    "agent_type": agent_type,
+                    "display_name": f"{name} ({agent_type})" if agent_type else name,
+                    "level": None,
+                })
+                continue
+            if "@" not in name:
+                continue
+            try:
+                level = int(name.split("@")[-1])
+            except ValueError:
+                continue
+            layers.setdefault(level, []).append({
+                "agent_id": name,
+                "agent_type": agent_type,
+                "display_name": f"{name} ({agent_type})" if agent_type else name,
+                "level": level,
+            })
+
+        layer_list: List[Dict] = []
+        for level in sorted(layers.keys()):
+            layer_agents = sorted(layers[level], key=lambda a: a.get("agent_id", ""))
+            layer_list.append({
+                "label": f"\u5c42\u7ea7 {level + 1}",
+                "level": level,
+                "agent_count": len(layer_agents),
+                "agents": layer_agents,
+            })
+
+        seller_agents = special.get("SELLER", [])
+        buyer_agents = special.get("BUYER", [])
+        structure = [
+            {"label": "SELLER", "level": None, "agent_count": len(seller_agents), "agents": seller_agents},
+            *layer_list,
+            {"label": "BUYER", "level": None, "agent_count": len(buyer_agents), "agents": buyer_agents},
+        ]
+
+        return {
+            "world_id": world_id,
+            "layers": structure,
+            "max_level": max(layers.keys()) if layers else None,
+            "total_agents": sum(len(v) for v in layers.values()),
+            "source": source,
+            "is_partial": partial,
+        }
     
     def get_single_agent_data(self, agent_id: str) -> Dict:
         """获取单个 Agent 实例的完整数据
@@ -480,6 +803,7 @@ class VisualizerData:
         
         # 按 level 排序 agents
         agents.sort(key=lambda a: (a["level"] if a["level"] is not None else 999, a["agent_id"]))
+        structure = self.get_world_structure(world_id)
         
         return {
             "world_id": world_id,
@@ -489,6 +813,7 @@ class VisualizerData:
             "all_entries": all_entries,
             "entry_count": len(all_entries),
             "time_series_by_agent": time_series_by_agent,
+            "world_structure": structure,
         }
     
     def get_single_world_negotiations(self, world_id: str) -> List[Dict]:
@@ -526,11 +851,12 @@ class VisualizerData:
                         "result": "ongoing",
                     }
                 
+                normalized = self._normalize_negotiation_data(entry.get("data", {}))
                 negotiations[key]["events"].append({
                     "from_agent": agent_id,
                     "from_type": agent_type,
                     "event": entry.get("event"),
-                    "data": entry.get("data"),
+                    "data": normalized,
                     "timestamp": entry.get("timestamp"),
                 })
                 
@@ -949,6 +1275,39 @@ def generate_html_report(data: VisualizerData) -> str:
             gap: 20px;
             margin-bottom: 20px;
         }}
+        .layer-grid {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 20px;
+        }}
+        .layer-card {{
+            background: #fafafa;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 10px 12px;
+            min-width: 160px;
+        }}
+        .layer-title {{
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 6px;
+        }}
+        .layer-agents {{
+            font-size: 0.85em;
+            color: #444;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }}
+        .layer-agent-chip {{
+            background: #eef2ff;
+            border-radius: 999px;
+            padding: 2px 8px;
+        }}
+        .layer-empty {{
+            color: #999;
+        }}
         .stat-box {{
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -1152,7 +1511,7 @@ def generate_html_report(data: VisualizerData) -> str:
                 </div>
                 <div class="stat-box">
                     <div class="value">{summary.get('n_agents', 0)}</div>
-                    <div class="label">参与的 Agent</div>
+                    <div class="label">参赛 Agent</div>
                 </div>
                 <div class="stat-box">
                     <div class="value">{len(summary.get('agent_types', []))}</div>
@@ -1244,11 +1603,11 @@ def generate_html_report(data: VisualizerData) -> str:
                     <option value="">选择具体运行 (Run)...</option>
                 </select>
                 <button onclick="loadAllWorlds()" style="padding: 10px 15px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer;">
-                    显示所有
+                    显示全部
                 </button>
             </div>
             <div id="worldScoresContainer" style="max-height: 500px; overflow-y: auto; margin-top: 15px;">
-                <p style="color: #666;">点击"显示所有"查看所有 world 的得分，或选择特定配置/运行</p>
+                <p style="color: #666;">点击“显示全部”查看所有 world 的得分，或选择特定配置/运行</p>
             </div>
         </div>
         
@@ -1266,10 +1625,14 @@ def generate_html_report(data: VisualizerData) -> str:
             </div>
         </div>
         
-        <!-- 时间序列图 -->
+        <!-- 时间序列分析 -->
         <div class="card">
             <h2>📉 时间序列分析</h2>
             <div class="controls">
+                <select id="timeSeriesAgentSelect" onchange="updateTimeSeriesChart()" style="margin-right: 10px;">
+                    <option value="">选择 Agent...</option>
+                    {agent_options}
+                </select>
                 <select id="metricSelect" onchange="updateTimeSeriesChart()">
                     <option value="balance">余额</option>
                     <option value="raw_material">原材料</option>
@@ -1279,6 +1642,7 @@ def generate_html_report(data: VisualizerData) -> str:
             <div class="chart-container">
                 <canvas id="timeSeriesChart"></canvas>
             </div>
+            <div id="timeSeriesHint" style="color: #666; margin-top: 8px;"></div>
         </div>
         
         <!-- 协商详情 -->
@@ -1294,9 +1658,9 @@ def generate_html_report(data: VisualizerData) -> str:
                 </div>
                 <div>
                     <label>时间范围:</label>
-                    <input type="number" id="negDayFrom" placeholder="起始Day" min="0" style="width: 80px; padding: 8px;">
+                    <input type="number" id="negDayFrom" placeholder="起始 Day" min="0" style="width: 80px; padding: 8px;">
                     <span>-</span>
-                    <input type="number" id="negDayTo" placeholder="结束Day" min="0" style="width: 80px; padding: 8px;">
+                    <input type="number" id="negDayTo" placeholder="结束 Day" min="0" style="width: 80px; padding: 8px;">
                 </div>
                 <div>
                     <label>对手:</label>
@@ -1330,6 +1694,9 @@ def generate_html_report(data: VisualizerData) -> str:
                     <option value="">选择 Agent...</option>
                     {agent_options}
                 </select>
+                <select id="dailyWorldSelect" onchange="loadDailyStatus()" style="margin-left: 10px;">
+                    <option value="">全部 World</option>
+                </select>
             </div>
             <div id="dailyStatusContainer" style="max-height: 500px; overflow-y: auto;">
                 <p style="color: #666;">请选择一个 Agent 查看每日状态</p>
@@ -1338,7 +1705,29 @@ def generate_html_report(data: VisualizerData) -> str:
                 <canvas id="dailyChart"></canvas>
             </div>
         </div>
-        
+
+        <!-- 单日视图 -->
+        <div class="card">
+            <h2>🧭 单日视图</h2>
+            <div class="controls">
+                <select id="dailyDetailWorldSelect" onchange="updateDailyDetailAgents()">
+                    <option value="">选择 World...</option>
+                </select>
+                <select id="dailyDetailAgentSelect" style="margin-left: 10px;" onchange="updateDailyDetailSlider()">
+                    <option value="">选择 Agent 实例...</option>
+                </select>
+                <input type="range" id="dailyDetailDaySlider" min="0" max="0" step="1" value="0" oninput="syncDailyDetailDay(this.value)" style="margin-left: 10px; width: 160px;">
+                <input type="number" id="dailyDetailDayInput" min="0" step="1" value="0" oninput="syncDailyDetailDay(this.value)" style="margin-left: 10px; width: 80px; padding: 6px;">
+                <span id="dailyDetailDayValue" style="margin-left: 6px; color: #555;">天: 0</span>
+                <button onclick="loadDailyDetail()" style="padding: 8px 15px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; margin-left: 10px;">
+                    加载
+                </button>
+            </div>
+            <div id="dailyDetailContainer" style="max-height: 700px; overflow-y: auto;">
+                <p style="color: #666;">请选择 World/Agent/天 后加载</p>
+            </div>
+        </div>
+
         <!-- ========== 单 World 分析模式 ========== -->
         <div class="card" style="border: 2px solid #667eea;">
             <h2>🔬 单 World 深度分析</h2>
@@ -1369,6 +1758,9 @@ def generate_html_report(data: VisualizerData) -> str:
                 
                 <h4 style="margin-bottom: 10px;">🤖 参与的 Agent</h4>
                 <div id="singleWorldAgents" style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;"></div>
+
+                <h4 style="margin-bottom: 10px;">ðŸ§­ ä¾›åº”é“¾å±‚çº§</h4>
+                <div id="singleWorldStructure" class="layer-grid"></div>
             </div>
             
             <!-- 单 World 时间序列 -->
@@ -1573,7 +1965,14 @@ def generate_html_report(data: VisualizerData) -> str:
         }}
         
         // 页面加载时初始化
-        document.addEventListener('DOMContentLoaded', initWorldData);
+        document.addEventListener('DOMContentLoaded', () => {{
+            initWorldData();
+            const tsSelect = document.getElementById('timeSeriesAgentSelect');
+            if (tsSelect && tsSelect.options.length > 1 && !tsSelect.value) {{
+                tsSelect.value = tsSelect.options[1].value;
+            }}
+            updateTimeSeriesChart();
+        }});
         // ========== World/Run 相关函数结束 ==========
         
         // 得分分布图
@@ -1685,55 +2084,75 @@ def generate_html_report(data: VisualizerData) -> str:
         // 时间序列图
         let timeSeriesChart = null;
         
-        function updateTimeSeriesChart() {{
+        async function updateTimeSeriesChart() {{
             const metric = document.getElementById('metricSelect').value;
+            const agentType = document.getElementById('timeSeriesAgentSelect').value;
             const ctx = document.getElementById('timeSeriesChart').getContext('2d');
-            
+            const hint = document.getElementById('timeSeriesHint');
+
             if (timeSeriesChart) {{
                 timeSeriesChart.destroy();
+                timeSeriesChart = null;
             }}
-            
-            // 这里需要真实的时间序列数据
-            // 目前使用模拟数据演示
-            const labels = Array.from({{length: 30}}, (_, i) => `Day ${{i + 1}}`);
-            const datasets = [];
-            
-            let colorIndex = 0;
-            const colors = [
-                'rgba(102, 126, 234, 0.8)',
-                'rgba(118, 75, 162, 0.8)',
-                'rgba(234, 102, 126, 0.8)',
-                'rgba(126, 234, 102, 0.8)',
-                'rgba(234, 206, 102, 0.8)',
-            ];
-            
-            for (const agentId of Object.keys(agentStats).slice(0, 5)) {{
-                datasets.push({{
-                    label: agentId.split('@')[0],
-                    data: labels.map(() => Math.random() * 1000 + 500),
-                    borderColor: colors[colorIndex % colors.length],
-                    fill: false,
-                    tension: 0.1
-                }});
-                colorIndex++;
+
+            if (!agentType) {{
+                if (hint) hint.textContent = '请选择 Agent 查看时间序列';
+                return;
             }}
-            
-            timeSeriesChart = new Chart(ctx, {{
-                type: 'line',
-                data: {{
-                    labels: labels,
-                    datasets: datasets
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {{
-                        y: {{
-                            beginAtZero: false
+
+            if (hint) hint.textContent = '加载中...';
+
+            try {{
+                const response = await fetch(apiUrl(`/api/time_series/${{encodeURIComponent(agentType)}}`));
+                const data = await response.json();
+                const rawSeries = data ? data[metric] : [];
+                const series = (rawSeries || [])
+                    .map(item => [Number(item[0]), Number(item[1])])
+                    .filter(item => Number.isFinite(item[0]) && Number.isFinite(item[1]))
+                    .sort((a, b) => a[0] - b[0]);
+
+                if (!series.length) {{
+                    if (hint) hint.textContent = '暂无时间序列数据';
+                    return;
+                }}
+
+                const labels = series.map(item => `第${{item[0]}}天`);
+                const values = series.map(item => item[1]);
+                const metricLabels = {{
+                    balance: '余额',
+                    raw_material: '原材料',
+                    product: '产品',
+                }};
+                const metricLabel = metricLabels[metric] || metric;
+
+                if (hint) hint.textContent = `${{agentType}} / ${{metricLabel}}（${{series.length}} 天）`;
+
+                timeSeriesChart = new Chart(ctx, {{
+                    type: 'line',
+                    data: {{
+                        labels: labels,
+                        datasets: [{{
+                            label: `${{agentType}} - ${{metricLabel}}`,
+                            data: values,
+                            borderColor: 'rgba(102, 126, 234, 0.8)',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            fill: true,
+                            tension: 0.1
+                        }}]
+                    }},
+                    options: {{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {{
+                            y: {{
+                                beginAtZero: false
+                            }}
                         }}
                     }}
-                }}
-            }});
+                }});
+            }} catch (error) {{
+                if (hint) hint.textContent = '加载失败';
+            }}
         }}
         
         // 加载协商详情
@@ -1825,25 +2244,62 @@ def generate_html_report(data: VisualizerData) -> str:
                 // 提取最终协议
                 let agreement = null;
                 let rounds = [];
+                let buyer = null;
+                let seller = null;
                 if (neg.events) {{
                     for (const event of neg.events) {{
                         const data = event.data || {{}};
+                        const offer = data.offer || data;
+                        if (!buyer) {{
+                            buyer = data.buyer || (data.agreement ? data.agreement.buyer : null) || buyer;
+                        }}
+                        if (!seller) {{
+                            seller = data.seller || (data.agreement ? data.agreement.seller : null) || seller;
+                        }}
                         if (event.event === 'success') {{
-                            agreement = data.agreement || {{}};
+                            if (data.agreement) {{
+                                agreement = agreement ? {{ ...agreement, ...data.agreement }} : data.agreement;
+                            }}
+                        }} else if (event.event === 'accept') {{
+                            if (!agreement && offer && (offer.quantity !== undefined || offer.unit_price !== undefined || offer.price !== undefined)) {{
+                                agreement = offer;
+                            }}
+                            rounds.push({{
+                                type: 'accept',
+                                round: (offer.round ?? data.round),
+                                quantity: offer.quantity,
+                                unit_price: offer.unit_price ?? offer.price,
+                                delivery_day: offer.delivery_day ?? offer.time,
+                                reason: data.reason
+                            }});
+                        }} else if (event.event === 'reject') {{
+                            rounds.push({{
+                                type: 'reject',
+                                round: (offer.round ?? data.round),
+                                quantity: offer.quantity,
+                                unit_price: offer.unit_price ?? offer.price,
+                                delivery_day: offer.delivery_day ?? offer.time,
+                                reason: data.reason
+                            }});
                         }} else if (event.event === 'offer_received' || event.event === 'offer_made') {{
                             rounds.push({{
                                 type: event.event === 'offer_received' ? 'received' : 'made',
-                                round: data.round || '?',
-                                quantity: data.quantity,
-                                unit_price: data.unit_price,
-                                delivery_day: data.delivery_day
+                                round: (offer.round ?? data.round),
+                                quantity: offer.quantity,
+                                unit_price: offer.unit_price ?? offer.price,
+                                delivery_day: offer.delivery_day ?? offer.time,
+                                reason: data.reason
                             }});
                         }}
                     }}
                 }}
                 
+                const agreementQty = agreement ? (agreement.quantity ?? 'N/A') : 'N/A';
+                const agreementPrice = agreement ? (agreement.price ?? agreement.unit_price ?? 'N/A') : 'N/A';
+                const agreementTime = agreement ? (agreement.time ?? agreement.delivery_day ?? 'N/A') : 'N/A';
+                
                 const agreementText = agreement ? 
-                    `Q=${{agreement.quantity || 'N/A'}}, P=${{agreement.price || 'N/A'}}` : 
+                    `Q=${{agreementQty}}, P=${{agreementPrice}}` : 
                     (neg.result === 'failure' ? '无协议' : '-');
                 
                 html += `<div class="neg-detail">
@@ -1866,6 +2322,8 @@ def generate_html_report(data: VisualizerData) -> str:
                                     <div><strong>Day:</strong> ${{neg.day}}</div>
                                     <div><strong>对手:</strong> ${{neg.partner}}</div>
                                     <div><strong>World:</strong> ${{neg.world || 'N/A'}}</div>
+                                    <div><strong>买方:</strong> ${{buyer || 'N/A'}}</div>
+                                    <div><strong>卖方:</strong> ${{seller || 'N/A'}}</div>
                                     <div><strong>事件数:</strong> ${{neg.events ? neg.events.length : 0}}</div>
                                 </div>
                             </div>
@@ -1874,9 +2332,9 @@ def generate_html_report(data: VisualizerData) -> str:
                                 <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; font-size: 0.9em;">
                                     <div><strong>状态:</strong> <span style="color: ${{resultColor}};">${{resultText}}</span></div>
                                     ${{agreement ? `
-                                    <div><strong>数量:</strong> ${{agreement.quantity || 'N/A'}}</div>
-                                    <div><strong>单价:</strong> ${{agreement.price || 'N/A'}}</div>
-                                    <div><strong>交货日:</strong> ${{agreement.time || 'N/A'}}</div>
+                                    <div><strong>数量:</strong> ${{agreementQty}}</div>
+                                    <div><strong>单价:</strong> ${{agreementPrice}}</div>
+                                    <div><strong>交货日:</strong> ${{agreementTime}}</div>
                                     ` : '<div style="color: #999;">无协议达成</div>'}}
                                 </div>
                             </div>
@@ -1887,12 +2345,12 @@ def generate_html_report(data: VisualizerData) -> str:
                             <div style="background: #f8f9fa; padding: 10px; border-radius: 6px;">
                                 ${{rounds.map(r => `
                                 <div class="neg-round">
-                                    <span style="width: 30px; text-align: center; font-weight: bold;">R${{r.round}}</span>
-                                    <span style="width: 80px; color: ${{r.type === 'received' ? '#28a745' : '#007bff'}};">
-                                        ${{r.type === 'received' ? '← 收到' : '→ 发出'}}
+                                    <span style="width: 30px; text-align: center; font-weight: bold;">R${{r.round ?? '?'}}</span>
+                                    <span style="width: 90px; color: ${{r.type === 'received' || r.type === 'accept' ? '#28a745' : (r.type === 'reject' ? '#dc3545' : '#007bff')}};">
+                                        ${{r.type === 'received' ? '← 收到' : (r.type === 'made' ? '→ 发出' : (r.type === 'accept' ? '✓ 接受' : (r.type === 'reject' ? '✗ 拒绝' : r.type)))}}
                                     </span>
                                     <span style="flex: 1;">
-                                        Q=${{r.quantity || 'N/A'}}, P=${{r.unit_price || 'N/A'}}, D=${{r.delivery_day || 'N/A'}}
+                                        Q=${{r.quantity ?? 'N/A'}}, P=${{r.unit_price ?? 'N/A'}}, D=${{r.delivery_day ?? 'N/A'}}${{r.reason ? ` <span style="color: #999;">(${{r.reason}})</span>` : ''}}
                                     </span>
                                 </div>
                                 `).join('')}}
@@ -1920,6 +2378,7 @@ def generate_html_report(data: VisualizerData) -> str:
         // 加载每日状态
         async function loadDailyStatus() {{
             const agentType = document.getElementById('dailyAgentSelect').value;
+            const worldId = document.getElementById('dailyWorldSelect') ? document.getElementById('dailyWorldSelect').value : '';
             const container = document.getElementById('dailyStatusContainer');
             
             if (!agentType) {{
@@ -1931,7 +2390,8 @@ def generate_html_report(data: VisualizerData) -> str:
             container.innerHTML = '<p style="color: #666;">加载中...</p>';
             
             try {{
-                const response = await fetch(apiUrl(`/api/daily_status/${{encodeURIComponent(agentType)}}`));
+                const worldParam = worldId ? `&world=${{encodeURIComponent(worldId)}}` : '';
+                const response = await fetch(apiUrl(`/api/daily_status/${{encodeURIComponent(agentType)}}`) + worldParam);
                 const dailyStatus = await response.json();
                 
                 if (dailyStatus.length === 0) {{
@@ -1956,10 +2416,14 @@ def generate_html_report(data: VisualizerData) -> str:
                             exo_input_price: 0,
                             exo_output_qty: 0,
                             exo_output_price: 0,
+                            demand_supplies: 0,
+                            demand_sales: 0,
                             needed_supplies: 0,
                             needed_sales: 0,
                             total_supplies: 0,
                             total_sales: 0,
+                            executed_supplies: 0,
+                            executed_sales: 0,
                             n_lines: 0,
                         }};
                     }}
@@ -1973,10 +2437,14 @@ def generate_html_report(data: VisualizerData) -> str:
                     dayData[day].exo_input_price += status.exo_input_price || 0;
                     dayData[day].exo_output_qty += status.exo_output_qty || 0;
                     dayData[day].exo_output_price += status.exo_output_price || 0;
+                    dayData[day].demand_supplies += (status.exo_output_qty ?? status.demand_supplies ?? 0);
+                    dayData[day].demand_sales += (status.exo_input_qty ?? status.demand_sales ?? 0);
                     dayData[day].needed_supplies += status.needed_supplies || 0;
                     dayData[day].needed_sales += status.needed_sales || 0;
                     dayData[day].total_supplies += status.total_supplies || 0;
                     dayData[day].total_sales += status.total_sales || 0;
+                    dayData[day].executed_supplies += status.executed_supplies || 0;
+                    dayData[day].executed_sales += status.executed_sales || 0;
                     dayData[day].n_lines += status.n_lines || 0;
                 }}
                 
@@ -1998,6 +2466,8 @@ def generate_html_report(data: VisualizerData) -> str:
                     <th>需求销售</th>
                     <th>已签采购</th>
                     <th>已签销售</th>
+                    <th>实际采购</th>
+                    <th>实际销售</th>
                     <th>处置成本</th>
                     <th>短缺惩罚</th>
                     <th>存储成本</th>
@@ -2016,10 +2486,12 @@ def generate_html_report(data: VisualizerData) -> str:
                         <td>${{(d.exo_input_price / c).toFixed(0)}}</td>
                         <td>${{(d.exo_output_qty / c).toFixed(1)}}</td>
                         <td>${{(d.exo_output_price / c).toFixed(0)}}</td>
-                        <td>${{(d.needed_supplies / c).toFixed(1)}}</td>
-                        <td>${{(d.needed_sales / c).toFixed(1)}}</td>
+                        <td>${{(d.demand_supplies / c).toFixed(1)}}</td>
+                        <td>${{(d.demand_sales / c).toFixed(1)}}</td>
                         <td>${{(d.total_supplies / c).toFixed(1)}}</td>
                         <td>${{(d.total_sales / c).toFixed(1)}}</td>
+                        <td>${{(d.executed_supplies / c).toFixed(1)}}</td>
+                        <td>${{(d.executed_sales / c).toFixed(1)}}</td>
                         <td>${{(d.disposal_cost / c).toFixed(3)}}</td>
                         <td>${{(d.shortfall_penalty / c).toFixed(3)}}</td>
                         <td>${{(d.storage_cost / c).toFixed(3)}}</td>
@@ -2089,11 +2561,245 @@ def generate_html_report(data: VisualizerData) -> str:
         }}
         
         // ========== 单 World 分析模式 JavaScript ==========
-        let singleWorldData = null;
+        
+        async function initDailyDetailSelectors() {{
+            const worldSelect = document.getElementById('dailyDetailWorldSelect');
+            const agentSelect = document.getElementById('dailyDetailAgentSelect');
+            if (!worldSelect || !agentSelect) return;
+            try {{
+                if (!trackerWorlds || trackerWorlds.length === 0) {{
+                    const resp = await fetch(apiUrl('/api/tracker_worlds'));
+                    trackerWorlds = await resp.json();
+                }}
+                if (!agentInstances || agentInstances.length === 0) {{
+                    const resp = await fetch(apiUrl('/api/agent_instances'));
+                    agentInstances = await resp.json();
+                }}
+                worldSelect.innerHTML = '<option value="">选择 World...</option>';
+                for (const world of trackerWorlds) {{
+                    const agentCount = world.agent_count || (world.agents ? world.agents.length : 0);
+                    const worldId = world.world_id || 'unknown';
+                    const label = worldId === 'unknown'
+                        ? `[未命名] ${{agentCount}} 个 Agent`
+                        : `${{worldId.substring(0, 40)}}... (${{agentCount}} 个 Agent)`;
+                    worldSelect.innerHTML += `<option value="${{worldId}}">${{label}}</option>`;
+                }}
+                updateDailyDetailAgents();
+            }} catch (error) {{
+                console.error('加载单日视图列表失败:', error);
+            }}
+        }}
+
+        function updateDailyDetailAgents() {{
+            const worldId = document.getElementById('dailyDetailWorldSelect').value;
+            const agentSelect = document.getElementById('dailyDetailAgentSelect');
+            if (!agentSelect) return;
+            const candidates = worldId ? agentInstances.filter(a => a.world_id === worldId) : agentInstances;
+            agentSelect.innerHTML = '<option value="">选择 Agent 实例...</option>';
+            for (const inst of candidates) {{
+                agentSelect.innerHTML += `<option value="${{inst.agent_id}}">${{inst.display_name}}</option>`;
+            }}
+            updateDailyDetailSlider();
+        }}
+
+        function syncDailyDetailDay(value) {{
+            const slider = document.getElementById('dailyDetailDaySlider');
+            const input = document.getElementById('dailyDetailDayInput');
+            const label = document.getElementById('dailyDetailDayValue');
+            const parsed = parseInt(value, 10);
+            const min = slider ? parseInt(slider.min || '0', 10) : 0;
+            const max = slider ? parseInt(slider.max || '0', 10) : parsed;
+            let v = Number.isFinite(parsed) ? parsed : 0;
+            if (Number.isFinite(min)) v = Math.max(v, min);
+            if (Number.isFinite(max)) v = Math.min(v, max);
+            if (slider) slider.value = String(v);
+            if (input) input.value = String(v);
+            if (label) label.textContent = `天: ${{v}}`;
+        }}
+
+        async function updateDailyDetailSlider() {{
+            const agentId = document.getElementById('dailyDetailAgentSelect').value;
+            const worldId = document.getElementById('dailyDetailWorldSelect').value;
+            const slider = document.getElementById('dailyDetailDaySlider');
+            const input = document.getElementById('dailyDetailDayInput');
+            if (!slider || !input) return;
+            if (!agentId) {{
+                slider.max = '0';
+                slider.value = '0';
+                input.max = '0';
+                input.value = '0';
+                syncDailyDetailDay(0);
+                return;
+            }}
+            try {{
+                const resp = await fetch(apiUrl('/api/single_agent') + `&agent_id=${{encodeURIComponent(agentId)}}`);
+                const data = await resp.json();
+                const entries = data.entries || [];
+                let maxDay = 0;
+                for (const e of entries) {{
+                    if (e.category === 'custom' && e.event === 'daily_status') {{
+                        const entryWorld = e.world_id || data.world_id || 'unknown';
+                        if (worldId && entryWorld !== worldId) continue;
+                        const day = e.day ?? 0;
+                        if (day > maxDay) maxDay = day;
+                    }}
+                }}
+                slider.max = String(maxDay);
+                input.max = String(maxDay);
+                const current = parseInt(input.value || slider.value, 10);
+                const next = Number.isFinite(current) ? Math.min(current, maxDay) : maxDay;
+                syncDailyDetailDay(next);
+            }} catch (error) {{
+                console.error('刷新可选天数失败:', error);
+            }}
+        }}
+
+        async function loadDailyDetail() {{
+            const agentId = document.getElementById('dailyDetailAgentSelect').value;
+            const daySlider = document.getElementById('dailyDetailDaySlider');
+            const dayInput = document.getElementById('dailyDetailDayInput');
+            const worldId = document.getElementById('dailyDetailWorldSelect').value;
+            const container = document.getElementById('dailyDetailContainer');
+
+            if (!agentId) {{
+                container.innerHTML = '<p style="color: #666;">请选择 Agent 实例</p>';
+                return;
+            }}
+
+            let day = 0;
+            if (dayInput) {{
+                day = parseInt(dayInput.value || '0', 10);
+            }} else if (daySlider) {{
+                day = parseInt(daySlider.value || '0', 10);
+            }}
+            if (!Number.isFinite(day)) day = 0;
+            syncDailyDetailDay(day);
+            if (daySlider) {{
+                day = parseInt(daySlider.value || '0', 10);
+            }}
+
+            container.innerHTML = '<p style="color: #666;">加载中...</p>';
+
+            try {{
+                const worldParam = worldId ? `&world=${{encodeURIComponent(worldId)}}` : '';
+                const response = await fetch(apiUrl('/api/daily_detail') + `&agent_id=${{encodeURIComponent(agentId)}}&day=${{day}}` + worldParam);
+                const detail = await response.json();
+
+                if (!detail || !detail.daily_status) {{
+                    container.innerHTML = '<p style="color: #666;">暂无该日数据</p>';
+                    return;
+                }}
+
+                const status = detail.daily_status || {{}};
+                const demandSupplies = status.exo_output_qty ?? status.demand_supplies ?? 0;
+                const demandSales = status.exo_input_qty ?? status.demand_sales ?? 0;
+                const totals = detail.totals || {{}};
+
+                const summaryHtml = `
+                <div style="background: #f8f9fa; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+                    <div><strong>代理:</strong> ${{detail.agent_id || agentId}}</div>
+                    <div><strong>天:</strong> ${{detail.day}}</div>
+                    <div><strong>世界:</strong> ${{detail.world_id || 'N/A'}}</div>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; font-size: 0.9em; margin-bottom: 12px;">
+                    <div><strong>需求采购:</strong> ${{demandSupplies}}</div>
+                    <div><strong>需求销售:</strong> ${{demandSales}}</div>
+                    <div><strong>需采购:</strong> ${{status.needed_supplies ?? 0}}</div>
+                    <div><strong>需销售:</strong> ${{status.needed_sales ?? 0}}</div>
+                    <div><strong>已签采购:</strong> ${{status.total_supplies ?? 0}}</div>
+                    <div><strong>已签销售:</strong> ${{status.total_sales ?? 0}}</div>
+                    <div><strong>实际采购:</strong> ${{status.executed_supplies ?? 0}}</div>
+                    <div><strong>实际销售:</strong> ${{status.executed_sales ?? 0}}</div>
+                    <div><strong>外生输入量:</strong> ${{status.exo_input_qty ?? 0}}</div>
+                    <div><strong>外生输入价:</strong> ${{status.exo_input_price ?? 0}}</div>
+                    <div><strong>外生输出量:</strong> ${{status.exo_output_qty ?? 0}}</div>
+                    <div><strong>外生输出价:</strong> ${{status.exo_output_price ?? 0}}</div>
+                    <div><strong>处置成本:</strong> ${{status.disposal_cost ?? 0}}</div>
+                    <div><strong>短缺惩罚:</strong> ${{status.shortfall_penalty ?? 0}}</div>
+                    <div><strong>存储成本:</strong> ${{status.storage_cost ?? 0}}</div>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; font-size: 0.9em; margin-bottom: 12px;">
+                    <div><strong>总签采购:</strong> ${{totals.signed_supplies ?? 0}}</div>
+                    <div><strong>总签销售:</strong> ${{totals.signed_sales ?? 0}}</div>
+                    <div><strong>总执行采购:</strong> ${{totals.executed_supplies ?? 0}}</div>
+                    <div><strong>总执行销售:</strong> ${{totals.executed_sales ?? 0}}</div>
+                </div>
+                `;
+
+                const renderContracts = (items, title) => {{
+                    if (!items || items.length === 0) {{
+                        return `<p style="color: #999;">${{title}}暂无记录</p>`;
+                    }}
+                    const rows = items.map(item => `
+                        <tr>
+                            <td>${{item.contract_id || 'N/A'}}</td>
+                            <td>${{item.partner || 'N/A'}}</td>
+                            <td>${{item.buyer || 'N/A'}}</td>
+                            <td>${{item.seller || 'N/A'}}</td>
+                            <td>${{item.quantity ?? 0}}</td>
+                            <td>${{item.price ?? item.unit_price ?? 'N/A'}}</td>
+                            <td>${{item.delivery_day ?? item.time ?? 'N/A'}}</td>
+                            <td>${{item.role || 'N/A'}}</td>
+                        </tr>
+                    `).join('');
+                    return `
+                        <h4 style="margin: 10px 0 6px; color: #333;">${{title}}</h4>
+                        <div style="overflow-x: auto;">
+                        <table style="width: 100%; font-size: 0.85em; white-space: nowrap;">
+                            <thead><tr>
+                                <th>协议ID</th>
+                                <th>对手</th>
+                                <th>买方</th>
+                                <th>卖方</th>
+                                <th>数量</th>
+                                <th>单价</th>
+                                <th>交货日</th>
+                                <th>角色</th>
+                            </tr></thead>
+                            <tbody>${{rows}}</tbody>
+                        </table>
+                        </div>
+                    `;
+                }};
+
+                const html = summaryHtml
+                    + renderContracts(detail.contracts_signed, '已签合同')
+                    + renderContracts(detail.contracts_executed, '已执行合同');
+
+                container.innerHTML = html;
+            }} catch (error) {{
+                container.innerHTML = `<p style="color: #dc3545;">加载失败: ${{error.message}}</p>`;
+            }}
+        }}
+let singleWorldData = null;
         let singleWorldNegotiations = [];
         let singleWorldChart = null;
         let trackerWorlds = [];
         let agentInstances = [];
+
+        async function initDailyWorlds() {{
+            const select = document.getElementById('dailyWorldSelect');
+            if (!select) return;
+            try {{
+                let worlds = trackerWorlds;
+                if (!worlds || worlds.length === 0) {{
+                    const resp = await fetch(apiUrl('/api/tracker_worlds'));
+                    worlds = await resp.json();
+                    trackerWorlds = worlds;
+                }}
+                select.innerHTML = '<option value="">全部 World</option>';
+                for (const world of worlds) {{
+                    const agentCount = world.agent_count || (world.agents ? world.agents.length : 0);
+                    const worldId = world.world_id || 'unknown';
+                    const label = worldId === 'unknown'
+                        ? `[未命名] ${{agentCount}} 个 Agent`
+                        : `${{worldId.substring(0, 40)}}... (${{agentCount}} 个 Agent)`;
+                    select.innerHTML += `<option value="${{worldId}}">${{label}}</option>`;
+                }}
+            }} catch (error) {{
+                console.error('加载 World 列表失败:', error);
+            }}
+        }}
         
         // 初始化单 World 模式数据
         async function initSingleWorldMode() {{
@@ -2189,6 +2895,7 @@ def generate_html_report(data: VisualizerData) -> str:
                     </span>
                 `).join('');
                 document.getElementById('singleWorldAgents').innerHTML = agentsHtml;
+                renderWorldStructure(singleWorldData.world_structure || {{}});
                 
                 // 时间序列
                 timeSeries.style.display = 'block';
@@ -2269,6 +2976,29 @@ def generate_html_report(data: VisualizerData) -> str:
         }}
         
         // 渲染单 World 协商
+        function renderWorldStructure(structure) {{
+            const container = document.getElementById('singleWorldStructure');
+            if (!container) return;
+            const layers = (structure && structure.layers) ? structure.layers : [];
+            if (!layers.length) {{
+                container.innerHTML = '<span class="layer-empty">æš‚æ— å±‚çº§æ•°æ®</span>';
+                return;
+            }}
+            const html = layers.map(layer => {{
+                const agents = layer.agents || [];
+                const agentHtml = agents.length
+                    ? agents.map(a => `<span class="layer-agent-chip">${{a.display_name || a.agent_id}}</span>`).join('')
+                    : '<span class="layer-empty">ï¼ˆç©ºï¼‰</span>';
+                return `
+                    <div class="layer-card">
+                        <div class="layer-title">${{layer.label}}</div>
+                        <div class="layer-agents">${{agentHtml}}</div>
+                    </div>
+                `;
+            }}).join('');
+            container.innerHTML = html;
+        }}
+
         function renderSingleWorldNegotiations(negotiations) {{
             const container = document.getElementById('singleWorldNegContainer');
             const countSpan = document.getElementById('singleWorldNegCount');
@@ -2297,23 +3027,36 @@ def generate_html_report(data: VisualizerData) -> str:
                 
                 // 构建出价历史
                 let offersHtml = '';
+                let buyer = null;
+                let seller = null;
                 if (neg.events && neg.events.length > 0) {{
                     for (const event of neg.events) {{
                         const data = event.data || {{}};
                         const offer = data.offer || data.agreement || {{}};
                         const eventType = event.event;
                         const fromAgent = event.from_agent || 'unknown';
+                        if (!buyer) {{
+                            buyer = data.buyer || (data.agreement ? data.agreement.buyer : null) || buyer;
+                        }}
+                        if (!seller) {{
+                            seller = data.seller || (data.agreement ? data.agreement.seller : null) || seller;
+                        }}
                         
                         let eventLabel = eventType;
                         let eventColor = '#666';
                         if (eventType === 'offer_made') {{ eventLabel = '→ 发出报价'; eventColor = '#007bff'; }}
                         else if (eventType === 'offer_received') {{ eventLabel = '← 收到报价'; eventColor = '#28a745'; }}
+                        else if (eventType === 'accept') {{ eventLabel = '✓ 接受'; eventColor = '#28a745'; }}
+                        else if (eventType === 'reject') {{ eventLabel = '✗ 拒绝'; eventColor = '#dc3545'; }}
                         else if (eventType === 'success') {{ eventLabel = '✓ 达成协议'; eventColor = '#28a745'; }}
                         else if (eventType === 'failure') {{ eventLabel = '✗ 协商失败'; eventColor = '#dc3545'; }}
                         else if (eventType === 'started') {{ eventLabel = '● 开始协商'; eventColor = '#17a2b8'; }}
+                        if (data.reason) {{
+                            eventLabel += ` (${{data.reason}})`;
+                        }}
                         
-                        const offerText = offer.quantity !== undefined ? 
-                            `Q=${{offer.quantity}}, P=${{offer.unit_price || offer.price || 'N/A'}}, D=${{offer.delivery_day || offer.time || 'N/A'}}` :
+                        const offerText = offer.quantity !== undefined ?
+                            `Q=${{offer.quantity ?? 'N/A'}}, P=${{offer.unit_price ?? offer.price ?? 'N/A'}}, D=${{offer.delivery_day ?? offer.time ?? 'N/A'}}` :
                             '';
                         
                         offersHtml += `<div class="neg-round">
@@ -2338,6 +3081,9 @@ def generate_html_report(data: VisualizerData) -> str:
                     </div>
                     <div class="neg-detail-body" id="sw-neg-body-${{i}}">
                         <h4 style="margin-bottom: 10px; color: #333;">📝 交互记录</h4>
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 8px;">
+                            买方: ${{buyer || 'N/A'}} | 卖方: ${{seller || 'N/A'}}
+                        </div>
                         <div style="background: #f8f9fa; padding: 10px; border-radius: 6px;">
                             ${{offersHtml || '<p style="color: #999;">无详细记录</p>'}}
                         </div>
@@ -2434,6 +3180,8 @@ def generate_html_report(data: VisualizerData) -> str:
         // 初始化
         updateTimeSeriesChart();
         initSingleWorldMode();
+        initDailyWorlds();
+        initDailyDetailSelectors();
     </script>
 </body>
 </html>
@@ -2731,25 +3479,59 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/daily_status/'):
             agent_type = urllib.parse.unquote(path.split('/')[-1].split('?')[0])
             tournament_id = query.get('tournament', [None])[0]
-            
+
             # 从 query 中提取 path 参数（兼容旧模式）
             if not tournament_id:
                 path_param = query.get('path', [None])[0]
                 if path_param:
                     data = VisualizerData(urllib.parse.unquote(path_param))
                     data.load_all()
-                    daily_status = data.get_daily_status(agent_type)
+                    world_id = query.get('world', [None])[0]
+                    daily_status = data.get_daily_status(agent_type, world_id=world_id)
                     self._send_json(daily_status)
                     return
-            
+
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
                 if data:
-                    daily_status = data.get_daily_status(agent_type)
+                    world_id = query.get('world', [None])[0]
+                    daily_status = data.get_daily_status(agent_type, world_id=world_id)
                     self._send_json(daily_status)
                     return
-            
+
             self._send_json([])
+            return
+
+        # API: 单日详情 /api/daily_detail?agent_id=...&day=...&tournament={id}
+        if path == '/api/daily_detail':
+            agent_id = query.get('agent_id', [None])[0]
+            day_param = query.get('day', [0])[0]
+            world_id = query.get('world', [None])[0]
+            tournament_id = query.get('tournament', [None])[0]
+            path_param = query.get('path', [None])[0]
+
+            if not agent_id:
+                self._send_json({})
+                return
+
+            try:
+                day_val = int(day_param)
+            except Exception:
+                day_val = 0
+
+            data = None
+            if tournament_id:
+                data = self._load_tournament_data(tournament_id)
+            elif path_param:
+                data = VisualizerData(urllib.parse.unquote(path_param))
+                data.load_all()
+
+            if data:
+                detail = data.get_daily_detail(agent_id, day_val, world_id=world_id)
+                self._send_json(detail)
+                return
+
+            self._send_json({})
             return
         
         # API: 时间序列 /api/time_series/{agent_type}?tournament={id} 或 ?path={path}

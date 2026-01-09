@@ -28,10 +28,29 @@ SCML Tournament History Manager
 import os
 import json
 import shutil
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import csv
+
+
+def _infer_track_from_params(params: Dict[str, Any]) -> str:
+    if params.get("oneshot_world") is True:
+        return "oneshot"
+    if params.get("std_world") is True:
+        return "std"
+
+    for key in ("world_generator_name", "score_calculator_name"):
+        name = str(params.get(key, "") or "").lower()
+        if "oneshot" in name:
+            return "oneshot"
+
+    for name in list(params.get("competitors", [])) + list(params.get("non_competitors", [])):
+        if "oneshot" in str(name).lower():
+            return "oneshot"
+
+    return "std"
 
 
 def get_history_dir() -> Path:
@@ -49,24 +68,29 @@ def get_history_dir() -> Path:
 
 
 def generate_tournament_id(negmas_name: str, track: str) -> str:
-    """从 negmas tournament 名称生成简洁的 ID
+    """?negmas tournament ??????? ID
     
     Args:
-        negmas_name: 如 "20251128H130949613919Kqg-stage-0001"
-        track: "oneshot" 或 "std"
+        negmas_name: ? "20251128H130949613919Kqg-stage-0001"
+        track: "oneshot" ? "std"
     
     Returns:
-        如 "20251128_130949_oneshot"
+        ? "20251128_130949_oneshot"
     """
     try:
-        # 提取日期时间部分
-        date_part = negmas_name[:8]  # 20251128
-        time_part = negmas_name[9:15]  # 130949
-        return f"{date_part}_{time_part}_{track}"
-    except:
-        # 如果解析失败，使用时间戳
-        return datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{track}"
-
+        # ????????????? *_20260109_164212 ? 20260109H164212?
+        match = re.search(r"(20\d{6})[_H-]?(\d{6})", str(negmas_name))
+        if match:
+            return f"{match.group(1)}_{match.group(2)}_{track}"
+        # ????????????????
+        if len(negmas_name) >= 15 and str(negmas_name)[:8].isdigit():
+            date_part = str(negmas_name)[:8]
+            time_part = str(negmas_name)[9:15]
+            return f"{date_part}_{time_part}_{track}"
+    except Exception:
+        pass
+    # ????????????
+    return datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{track}"
 
 def import_tournament(
     negmas_dir: str,
@@ -100,7 +124,7 @@ def import_tournament(
         params = json.load(f)
     
     # 确定赛道类型
-    track = "oneshot" if params.get("oneshot_world") else "std"
+    track = _infer_track_from_params(params)
     
     # 生成目录 ID
     tournament_id = generate_tournament_id(params.get("name", "unknown"), track)
@@ -198,7 +222,7 @@ def create_tournament_info(target_dir: Path, params: Dict, source_dir: str) -> D
         "imported_at": datetime.now().isoformat(),
         
         # 比赛类型
-        "track": "oneshot" if params.get("oneshot_world") else "std",
+        "track": _infer_track_from_params(params),
         
         # 比赛设置
         "settings": {
@@ -249,14 +273,13 @@ def _extract_short_name(full_name: str) -> str:
 
 def _extract_timestamp_from_id(tournament_id: str) -> str:
     """从 tournament ID 提取时间戳"""
-    # ID 格式: 20251128_130949_oneshot
+    # 常见格式: 20251128_130949_oneshot / 20251128H130949xxxx
     try:
-        parts = tournament_id.split("_")
-        if len(parts) >= 2:
-            date_part = parts[0]  # 20251128
-            time_part = parts[1]  # 130949
+        match = re.search(r"(20\d{6})[_H-]?(\d{6})", tournament_id)
+        if match:
+            date_part, time_part = match.group(1), match.group(2)
             return f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
-    except:
+    except Exception:
         pass
     return ""
 
@@ -284,6 +307,14 @@ def list_tournaments(history_dir: Optional[str] = None) -> List[Dict]:
                 with open(info_file, 'r', encoding='utf-8') as f:
                     info = json.load(f)
                 info["path"] = str(item)
+                params_file = item / "params.json"
+                if params_file.exists():
+                    try:
+                        with open(params_file, 'r', encoding='utf-8') as pf:
+                            params = json.load(pf)
+                        info["track"] = _infer_track_from_params(params)
+                    except Exception:
+                        pass
                 tournaments.append(info)
             except:
                 continue
@@ -452,7 +483,7 @@ def scan_and_import_all(
         try:
             with open(params_file, 'r', encoding='utf-8') as f:
                 params = json.load(f)
-            track = "oneshot" if params.get("oneshot_world") else "std"
+            track = _infer_track_from_params(params)
             tournament_id = generate_tournament_id(params.get("name", "unknown"), track)
             
             if tournament_id in existing_ids:
