@@ -41,11 +41,7 @@ from scml.oneshot import SCML2024OneShotWorld
 from scml.utils import anac2024_oneshot
 
 # LitaAgent 系列
-from litaagent_std.litaagent_y import LitaAgentY
-from litaagent_std.litaagent_yr import LitaAgentYR
-from litaagent_std.litaagent_cir import LitaAgentCIR
-from litaagent_std.litaagent_n import LitaAgentN
-from litaagent_std.litaagent_p import LitaAgentP
+from litaagent_os.agent import LitaAgentOS
 
 # Tracker 系统
 from litaagent_std.tracker_mixin import inject_tracker_to_agents
@@ -56,33 +52,47 @@ try:
     from scml_agents import get_agents
     TOP_AGENTS_2025 = get_agents(2025, as_class=True, top_only=True, track='oneshot')
     print(f"✓ 加载 2025 OneShot Top Agents: {[a.__name__ for a in TOP_AGENTS_2025]}")
+    
+    # 找到 RChan 用于追踪
+    RCHAN_AGENT = None
+    for agent in TOP_AGENTS_2025:
+        if 'RChan' in agent.__name__:
+            RCHAN_AGENT = agent
+            print(f"✓ 找到 RChan Agent: {agent.__name__}")
+            break
 except Exception as e:
     print(f"⚠️ 无法加载 2025 Top Agents: {e}")
     TOP_AGENTS_2025 = []
+    RCHAN_AGENT = None
 
 
 # 比赛配置
 TOURNAMENT_CONFIG = {
     "name": "SCML 2025 OneShot 完整比赛",
     "track": "oneshot",
-    "n_configs": 20,           # 配置数 (Official-like size)
+    "n_configs": 10,           # 配置数
     "n_runs_per_world": 2,     # 每配置运行次数
-    "n_steps": (50, 200),      # 每场步数 (OneShot 官方随机范围)
+    "n_steps": 50,             # 固定 50 天 (便于分析)
 }
 
 
 def get_all_agents():
     """获取所有参赛 Agent"""
-    # LitaAgents
-    lita_agents = [LitaAgentY, LitaAgentYR, LitaAgentCIR, LitaAgentN, LitaAgentP]
+    # LitaAgents + RChan (都需要追踪)
+    agents_to_track = [LitaAgentOS]
+    if RCHAN_AGENT is not None:
+        agents_to_track.append(RCHAN_AGENT)
     
     # 注入 Tracker
-    tracked_agents = inject_tracker_to_agents(lita_agents)
+    tracked_agents = inject_tracker_to_agents(agents_to_track)
     
-    # 组合 LitaAgents + 2025 Top Agents
-    all_agents = tracked_agents + list(TOP_AGENTS_2025)
+    # 其他 Top Agents (不追踪)
+    other_top_agents = [a for a in TOP_AGENTS_2025 if a != RCHAN_AGENT]
     
-    return all_agents, [a.__name__ for a in lita_agents]
+    # 组合所有 Agents
+    all_agents = tracked_agents + other_top_agents
+    
+    return all_agents, [a.__name__ for a in agents_to_track]
 
 
 def save_tournament_results(output_dir: str, results, config: dict):

@@ -19,6 +19,7 @@ Usage:
 """
 
 import os
+import math
 import json
 import csv
 import argparse
@@ -102,12 +103,15 @@ class VisualizerData:
         self._tracker_data: Dict[str, Dict] = {}  # agent_id -> tracker export data
         self._tracker_summary: Dict = {}
         self._world_dir_cache: Dict[str, Optional[Path]] = {}
+        self._loaded = False
         
         # 自动加载数据
         self.load_all()
     
     def load_all(self):
         """加载所有 negmas 数据文件"""
+        if self._loaded:
+            return
         self._load_params()
         self._load_total_scores()
         self._load_winners()
@@ -115,6 +119,7 @@ class VisualizerData:
         self._load_score_stats()
         self._load_scores()
         self._load_tracker_data()
+        self._loaded = True
     
     def _load_csv(self, filename: str) -> List[Dict]:
         """加载 CSV 文件"""
@@ -280,6 +285,47 @@ class VisualizerData:
                 result["seller"] = normalized.get("seller")
         return result
     
+    def _extract_entry_day(self, entry: Dict) -> int:
+        day = entry.get("day", 0)
+        data = entry.get("data") or {}
+        if isinstance(data, dict):
+            agreement = data.get("agreement")
+            if isinstance(agreement, dict):
+                for key in ("delivery_day", "time"):
+                    if key in agreement:
+                        try:
+                            return int(agreement.get(key))
+                        except Exception:
+                            pass
+            if "delivery_day" in data:
+                try:
+                    return int(data.get("delivery_day"))
+                except Exception:
+                    pass
+            if "time" in data:
+                try:
+                    return int(data.get("time"))
+                except Exception:
+                    pass
+            offer = data.get("offer")
+            if isinstance(offer, dict) and "delivery_day" in offer:
+                try:
+                    return int(offer.get("delivery_day"))
+                except Exception:
+                    pass
+        try:
+            return int(day)
+        except Exception:
+            return 0
+
+    def _extract_entry_mechanism_id(self, entry: Dict) -> Optional[str]:
+        data = entry.get("data") or {}
+        if isinstance(data, dict):
+            for key in ("mechanism_id", "negotiation_id", "neg_id"):
+                if key in data:
+                    return str(data.get(key))
+        return None
+
     def get_tracker_time_series(self, agent_type: str) -> Dict[str, List]:
         """获取某个 Agent 类型的时间序列数据（汇总）"""
         # 按天汇总所有同类型 agent 的数据
@@ -306,54 +352,73 @@ class VisualizerData:
         
         return result
     
-    def get_negotiation_details(self, agent_type: str, limit: int = 100) -> List[Dict]:
-        """获取协商详情（按协商分组）"""
-        # 获取所有协商相关条目
+    def get_negotiation_details(self, agent_type: str, limit: int = 100, world_id: Optional[str] = None) -> List[Dict]:
+        """?????????????"""
+        # ??????????
         entries = self.get_tracker_entries_by_type(agent_type, category="negotiation", limit=10000)
-        
-        # 按 partner + day 分组
+
+        # ??????????ID?????? partner+day?
         negotiations = {}
+        last_mech = {}
         for e in entries:
             partner = e.get("data", {}).get("partner", "unknown")
-            day = e.get("day", 0)
+            day = self._extract_entry_day(e)
             agent_id = e.get("agent_id")
             agent_world = None
             if agent_id in self._tracker_data:
                 agent_world = self._tracker_data[agent_id].get("world_id")
-            world_id = e.get("world_id") or agent_world or "unknown"
-            key = f"{agent_id}_{partner}_{day}_{world_id}"
-            
+            entry_world = e.get("world_id") or agent_world or "unknown"
+            if world_id and entry_world != world_id:
+                continue
+            mech_id = self._extract_entry_mechanism_id(e)
+            if not mech_id:
+                mech_id = last_mech.get((agent_id, partner, entry_world, day))
+            if mech_id:
+                last_mech[(agent_id, partner, entry_world, day)] = mech_id
+            key = f"{agent_id}_{partner}_{mech_id}_{entry_world}" if mech_id else f"{agent_id}_{partner}_{day}_{entry_world}"
+
             if key not in negotiations:
                 negotiations[key] = {
                     "agent_id": agent_id,
                     "partner": partner,
                     "day": day,
-                    "world": world_id,
+                    "world": entry_world,
                     "events": [],
                     "result": "ongoing",
                 }
-            
+            else:
+                if day != 0 and negotiations[key].get("day", 0) == 0:
+                    negotiations[key]["day"] = day
+
             normalized = self._normalize_negotiation_data(e.get("data", {}))
             negotiations[key]["events"].append({
                 "event": e.get("event"),
                 "data": normalized,
                 "timestamp": e.get("timestamp"),
             })
-            
-            # 确定结果
+
+            # ????
             if e.get("event") == "success":
                 negotiations[key]["result"] = "success"
             elif e.get("event") == "failure":
                 negotiations[key]["result"] = "failure"
-        
-        # 转换为列表并排序
+
+        # ????????
         result = list(negotiations.values())
         result.sort(key=lambda n: (n["day"], n["agent_id"], n["partner"]))
         return result[:limit]
-    
+
     def get_daily_status(self, agent_type: str, world_id: Optional[str] = None) -> List[Dict]:
         """获取每日状态（默认取每个 agent/day 的最新记录）"""
-        entries = self.get_tracker_entries_by_type(agent_type, limit=10000)
+        entries = []
+        for agent_id, data in self._tracker_data.items():
+            if _extract_short_name(data.get("agent_type", "")) != agent_type:
+                continue
+            for entry in data.get("entries", []):
+                if entry.get("category") != "custom" or entry.get("event") != "daily_status":
+                    continue
+                entry["agent_id"] = agent_id
+                entries.append(entry)
         latest = {}
         for e in entries:
             if e.get("category") == "custom" and e.get("event") == "daily_status":
@@ -397,6 +462,154 @@ class VisualizerData:
 
         daily_status.sort(key=lambda s: (s.get("day", 0), s.get("agent_id", "")))
         return daily_status
+
+    def _infer_agent_level(self, agent_id: str, entries: List[Dict]) -> Optional[int]:
+        for e in entries:
+            if e.get("event") == "agent_initialized":
+                lvl = e.get("data", {}).get("level")
+                if isinstance(lvl, int):
+                    return lvl
+        base = agent_id.split("#")[0]
+        if "@" in base:
+            try:
+                return int(base.split("@")[-1])
+            except Exception:
+                return None
+        return None
+
+    def _is_los_agent(self, agent_type: str, agent_id: str) -> bool:
+        at = str(agent_type).lower()
+        aid = str(agent_id).lower()
+        if "litaagentos" in at or "litaagent_os" in at:
+            return True
+        if "los@" in aid or aid.startswith("los"):
+            return True
+        return False
+
+    def get_probe_vs_postprobe_stats(self, mode: str = "auto", probe_days: int = 10) -> Dict[str, Any]:
+        """按 Agent 类型统计 probe/post-probe 表现差异。"""
+        def _new_stats() -> Dict[str, float]:
+            return {
+                "shortfall": 0,
+                "exact": 0,
+                "overfull": 0,
+                "shortfall_qty": 0,
+                "overfill": 0,
+                "need": 0,
+                "penalty_cost": 0.0,
+                "disposal_cost": 0.0,
+            }
+
+        stats: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {}
+
+        for agent_id, data in self._tracker_data.items():
+            agent_type = _extract_short_name(data.get("agent_type", "Unknown"))
+            entries = data.get("entries", [])
+            level = self._infer_agent_level(agent_id, entries)
+            if level is None:
+                continue
+
+            role = "SELLER" if level == 0 else "BUYER"
+            is_los = self._is_los_agent(agent_type, agent_id)
+
+            signed_by_day: Dict[int, int] = {}
+            for e in entries:
+                if e.get("category") != "contract" or e.get("event") != "signed":
+                    continue
+                d = e.get("data", {})
+                day = d.get("delivery_day")
+                if day is None:
+                    continue
+                try:
+                    day = int(day)
+                except Exception:
+                    continue
+                q = int(d.get("quantity", 0) or 0)
+                signed_by_day[day] = signed_by_day.get(day, 0) + q
+
+            demand_by_day: Dict[int, int] = {}
+            cost_by_day: Dict[int, tuple[float, float]] = {}
+            for e in entries:
+                if e.get("category") != "custom" or e.get("event") != "daily_status":
+                    continue
+                d = e.get("data", {}) or {}
+                day = e.get("day")
+                if not isinstance(day, int):
+                    day = d.get("current_step")
+                try:
+                    day = int(day)
+                except Exception:
+                    continue
+                demand = d.get("exo_input_qty", 0) if level == 0 else d.get("exo_output_qty", 0)
+                if demand is None:
+                    continue
+                demand = int(demand)
+                demand_by_day[day] = demand
+                cost_by_day[day] = (
+                    float(d.get("shortfall_penalty", 0.0) or 0.0),
+                    float(d.get("disposal_cost", 0.0) or 0.0),
+                )
+
+            if not demand_by_day:
+                continue
+
+            total_days = max(demand_by_day.keys()) + 1
+            min_probe = max(1, int(probe_days))
+            base_probe = max(min_probe, int(math.ceil(total_days * 0.1)))
+            probe_len = min(base_probe, total_days)
+
+            for day, need in demand_by_day.items():
+                if need <= 0:
+                    continue
+                signed_qty = signed_by_day.get(day, 0)
+
+                phase = "all"
+                if mode != "none" and (mode == "all" or (mode == "auto" and is_los)):
+                    phase = "probe" if day < probe_len else "post"
+
+                stats.setdefault(agent_type, {}).setdefault(role, {}).setdefault(phase, _new_stats())
+                s = stats[agent_type][role][phase]
+                s["need"] += need
+                shortfall_penalty_rate, disposal_cost_rate = cost_by_day.get(day, (0.0, 0.0))
+                if signed_qty < need:
+                    s["shortfall"] += 1
+                    sf_qty = need - signed_qty
+                    s["shortfall_qty"] += sf_qty
+                    s["penalty_cost"] += sf_qty * shortfall_penalty_rate
+                elif signed_qty == need:
+                    s["exact"] += 1
+                else:
+                    s["overfull"] += 1
+                    of_qty = signed_qty - need
+                    s["overfill"] += of_qty
+                    s["disposal_cost"] += of_qty * disposal_cost_rate
+
+        rows: List[Dict[str, Any]] = []
+        for agent_type in sorted(stats.keys()):
+            for role in sorted(stats[agent_type].keys()):
+                for phase in sorted(stats[agent_type][role].keys()):
+                    s = stats[agent_type][role][phase]
+                    days_total = s["shortfall"] + s["exact"] + s["overfull"]
+                    if days_total == 0:
+                        continue
+                    rows.append({
+                        "agent_type": agent_type,
+                        "role": role,
+                        "phase": phase,
+                        "days": days_total,
+                        "shortfall": s["shortfall"],
+                        "exact": s["exact"],
+                        "overfull": s["overfull"],
+                        "shortfall_rate": s["shortfall"] / days_total,
+                        "exact_rate": s["exact"] / days_total,
+                        "overfull_rate": s["overfull"] / days_total,
+                        "shortfall_need_ratio": (s["shortfall_qty"] / s["need"]) if s["need"] else 0.0,
+                        "overfill_need_ratio": (s["overfill"] / s["need"]) if s["need"] else 0.0,
+                        "penalty_cost": s["penalty_cost"],
+                        "disposal_cost": s["disposal_cost"],
+                    })
+
+        return {"rows": rows, "mode": mode, "probe_days": probe_days}
 
     def get_daily_detail(self, agent_id: str, day: int, world_id: Optional[str] = None) -> Dict:
         """获取单个 Agent 在某一天的详细视图"""
@@ -817,32 +1030,42 @@ class VisualizerData:
         }
     
     def get_single_world_negotiations(self, world_id: str) -> List[Dict]:
-        """获取单个 World 的所有协商详情
-        
+        """???? World ???????
+
         Args:
             world_id: World ID
-            
+
         Returns:
-            协商列表，包含所有参与者的出价记录
+            ?????????????????
         """
         negotiations = {}
-        
+        last_mech = {}
+
         for agent_id, data in self._tracker_data.items():
             if data.get("world_id") != world_id:
                 continue
-            
+
             agent_type = _extract_short_name(data.get("agent_type", "Unknown"))
-            
+
             for entry in data.get("entries", []):
                 if entry.get("category") != "negotiation":
                     continue
-                
+
                 partner = entry.get("data", {}).get("partner", "unknown")
-                day = entry.get("day", 0)
-                
-                # 创建双向 key（确保同一协商只记录一次）
-                key = tuple(sorted([agent_id, partner])) + (day,)
-                
+                day = self._extract_entry_day(entry)
+                mech_id = self._extract_entry_mechanism_id(entry)
+                if not mech_id:
+                    mech_id = last_mech.get((agent_id, partner, day))
+                if mech_id:
+                    last_mech[(agent_id, partner, day)] = mech_id
+
+                # ???? key?????????????
+                key = tuple(sorted([agent_id, partner]))
+                if mech_id:
+                    key = key + (mech_id,)
+                else:
+                    key = key + (day,)
+
                 if key not in negotiations:
                     negotiations[key] = {
                         "participants": list(sorted([agent_id, partner])),
@@ -850,7 +1073,10 @@ class VisualizerData:
                         "events": [],
                         "result": "ongoing",
                     }
-                
+                else:
+                    if day != 0 and negotiations[key].get("day", 0) == 0:
+                        negotiations[key]["day"] = day
+
                 normalized = self._normalize_negotiation_data(entry.get("data", {}))
                 negotiations[key]["events"].append({
                     "from_agent": agent_id,
@@ -859,20 +1085,20 @@ class VisualizerData:
                     "data": normalized,
                     "timestamp": entry.get("timestamp"),
                 })
-                
-                # 确定结果
+
+                # ????
                 if entry.get("event") == "success":
                     negotiations[key]["result"] = "success"
                 elif entry.get("event") == "failure":
                     negotiations[key]["result"] = "failure"
-        
-        # 转换为列表并按天排序
+
+        # ??????????
         result = list(negotiations.values())
-        
-        # 对每个协商的 events 按时间戳排序
+
+        # ?????? events ??????
         for neg in result:
             neg["events"].sort(key=lambda e: e.get("timestamp", ""))
-        
+
         result.sort(key=lambda n: (n["day"], str(n["participants"])))
         return result
 
@@ -886,10 +1112,19 @@ class VisualizerData:
             except (ValueError, TypeError):
                 pass
         
-        # 提取冠军名称
+        # 提取冠军名称（优先 mean）
         winner_name = "N/A"
         winner_score = 0.0
-        if self._winners:
+        if self._score_stats:
+            try:
+                rows = list(self._score_stats)
+                rows.sort(key=lambda r: float(r.get("mean", 0) or 0), reverse=True)
+                if rows:
+                    winner_name = _extract_short_name(rows[0].get("agent_type", "N/A"))
+                    winner_score = float(rows[0].get("mean", 0) or 0)
+            except (ValueError, TypeError):
+                pass
+        elif self._winners:
             winner_name = _extract_short_name(self._winners[0].get("agent_type", "N/A"))
             try:
                 winner_score = float(self._winners[0].get("score", 0))
@@ -922,43 +1157,52 @@ class VisualizerData:
     def get_rankings(self) -> List[Dict]:
         """获取排名数据（合并 total_scores 和 score_stats）"""
         rankings = []
-        
-        # 从 total_scores 构建基础排名
+
+        # 优先使用 score_stats 的 mean 排名
+        if self._score_stats:
+            rows = list(self._score_stats)
+            rows.sort(key=lambda r: float(r.get("mean", 0) or 0), reverse=True)
+            for i, row in enumerate(rows):
+                agent_type = _extract_short_name(row.get("agent_type", "Unknown"))
+                try:
+                    mean = float(row.get("mean", 0) or 0)
+                    std = float(row.get("std", 0) or 0)
+                    min_v = float(row.get("min", 0) or 0)
+                    max_v = float(row.get("max", 0) or 0)
+                    count = int(float(row.get("count", 0) or 0))
+                except (ValueError, TypeError):
+                    mean, std, min_v, max_v, count = 0.0, 0.0, 0.0, 0.0, 0
+                rankings.append({
+                    "rank": i + 1,
+                    "agent_type": agent_type,
+                    "score": mean,
+                    "mean": mean,
+                    "std": std,
+                    "min": min_v,
+                    "max": max_v,
+                    "count": count,
+                })
+            return rankings
+
+        # 回退 total_scores
         for i, row in enumerate(self._total_scores):
             agent_type = _extract_short_name(row.get("agent_type", "Unknown"))
             try:
                 score = float(row.get("score", 0))
             except (ValueError, TypeError):
                 score = 0.0
-            
+
             rankings.append({
                 "rank": i + 1,
                 "agent_type": agent_type,
                 "score": score,
-                "mean": score,  # 默认使用 total score 作为 mean
+                "mean": score,
                 "std": 0.0,
                 "min": score,
                 "max": score,
                 "count": 0,
             })
-        
-        # 从 score_stats 补充统计数据
-        stats_by_type = {}
-        for row in self._score_stats:
-            agent_type = _extract_short_name(row.get("agent_type", ""))
-            stats_by_type[agent_type] = row
-        
-        for r in rankings:
-            stats = stats_by_type.get(r["agent_type"], {})
-            try:
-                r["mean"] = float(stats.get("mean", r["mean"]))
-                r["std"] = float(stats.get("std", 0))
-                r["min"] = float(stats.get("min", r["min"]))
-                r["max"] = float(stats.get("max", r["max"]))
-                r["count"] = int(float(stats.get("count", 0)))
-            except (ValueError, TypeError):
-                pass
-        
+
         return rankings
     
     def get_score_distribution(self, agent_type: str) -> List[float]:
@@ -1657,6 +1901,12 @@ def generate_html_report(data: VisualizerData) -> str:
                     </select>
                 </div>
                 <div>
+                    <label>World:</label>
+                    <select id="negWorldFilter" onchange="loadNegotiationDetails()">
+                        <option value="">?? World</option>
+                    </select>
+                </div>
+                <div>
                     <label>时间范围:</label>
                     <input type="number" id="negDayFrom" placeholder="起始 Day" min="0" style="width: 80px; padding: 8px;">
                     <span>-</span>
@@ -1703,6 +1953,27 @@ def generate_html_report(data: VisualizerData) -> str:
             </div>
             <div class="chart-container" style="margin-top: 20px;">
                 <canvas id="dailyChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Probe vs Post-probe -->
+        <div class="card">
+            <h2>🧪 Probe / Post-probe 分析</h2>
+            <div class="controls">
+                <select id="probeModeSelect" onchange="loadProbeVsPostprobe()">
+                    <option value="auto">仅 LitaAgentOS 分阶段</option>
+                    <option value="none">不分阶段</option>
+                    <option value="all">所有 Agent 分阶段</option>
+                </select>
+                <input type="number" id="probeDaysInput" value="10" min="1" step="1"
+                       style="margin-left: 10px; width: 90px; padding: 6px;">
+                <span style="color: #666;">probe_days</span>
+                <button onclick="loadProbeVsPostprobe()" style="padding: 8px 15px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; margin-left: 10px;">
+                    计算
+                </button>
+            </div>
+            <div id="probeVsPostprobeContainer" style="max-height: 500px; overflow-y: auto;">
+                <p style="color: #666;">点击“计算”生成统计结果</p>
             </div>
         </div>
 
@@ -1819,7 +2090,8 @@ def generate_html_report(data: VisualizerData) -> str:
         function apiUrl(endpoint) {{
             // 如果有 tournament path，添加为查询参数
             if (tournamentPath) {{
-                return `${{endpoint}}?path=${{tournamentPath}}`;
+                const sep = endpoint.includes('?') ? '&' : '?';
+                return `${{endpoint}}${{sep}}path=${{tournamentPath}}`;
             }}
             return endpoint;
         }}
@@ -2160,6 +2432,8 @@ def generate_html_report(data: VisualizerData) -> str:
         
         async function loadNegotiationDetails() {{
             const agentType = document.getElementById('negotiationAgentSelect').value;
+            const worldId = document.getElementById('negWorldFilter').value;
+            const worldParam = worldId ? `&world_id=${{encodeURIComponent(worldId)}}` : '';
             const container = document.getElementById('negotiationContainer');
             const countSpan = document.getElementById('negotiationCount');
             
@@ -2173,7 +2447,7 @@ def generate_html_report(data: VisualizerData) -> str:
             container.innerHTML = '<p style="color: #666;">加载中...</p>';
             
             try {{
-                const response = await fetch(apiUrl(`/api/negotiations/${{encodeURIComponent(agentType)}}`));
+                const response = await fetch(apiUrl(`/api/negotiations/${{encodeURIComponent(agentType)}}`) + worldParam);
                 allNegotiations = await response.json();
                 
                 // 填充对手筛选下拉框
@@ -2191,6 +2465,30 @@ def generate_html_report(data: VisualizerData) -> str:
             }}
         }}
         
+        async function initNegotiationWorlds() {{
+            const select = document.getElementById('negWorldFilter');
+            if (!select) return;
+            try {{
+                let worlds = trackerWorlds;
+                if (!worlds || worlds.length === 0) {{
+                    const resp = await fetch(apiUrl('/api/tracker_worlds'));
+                    worlds = await resp.json();
+                    trackerWorlds = worlds;
+                }}
+                select.innerHTML = '<option value="">?? World</option>';
+                for (const world of worlds) {{
+                    const agentCount = world.agent_count || (world.agents ? world.agents.length : 0);
+                    const worldId = world.world_id || 'unknown';
+                    const label = worldId === 'unknown'
+                        ? `[???] ${{agentCount}} ?Agent`
+                        : `${{worldId.substring(0, 40)}}... (${{agentCount}} ?Agent)`;
+                    select.innerHTML += `<option value="${{worldId}}">${{label}}</option>`;
+                }}
+            }} catch (error) {{
+                console.error('?? World ????:', error);
+            }}
+        }}
+
         function applyNegotiationFilters() {{
             const dayFrom = parseInt(document.getElementById('negDayFrom').value) || 0;
             const dayTo = parseInt(document.getElementById('negDayTo').value) || 999;
@@ -2555,6 +2853,64 @@ def generate_html_report(data: VisualizerData) -> str:
                         }}
                     }}
                 }});
+            }} catch (error) {{
+                container.innerHTML = `<p style="color: #dc3545;">加载失败: ${{error.message}}</p>`;
+            }}
+        }}
+
+        async function loadProbeVsPostprobe() {{
+            const mode = document.getElementById('probeModeSelect')?.value || 'auto';
+            const probeDays = parseInt(document.getElementById('probeDaysInput')?.value) || 10;
+            const container = document.getElementById('probeVsPostprobeContainer');
+            if (!container) return;
+
+            container.innerHTML = '<p style="color: #666;">加载中...</p>';
+            try {{
+                const resp = await fetch(apiUrl(`/api/probe_postprobe`) + `&mode=${{encodeURIComponent(mode)}}&probe_days=${{probeDays}}`);
+                const data = await resp.json();
+                const rows = data.rows || [];
+                if (rows.length === 0) {{
+                    container.innerHTML = '<p style="color: #666;">暂无可用数据（需要 Tracker 日志）</p>';
+                    return;
+                }}
+
+                const pct = (v) => `${{(v * 100).toFixed(1)}}%`;
+                let html = `
+                <div style="overflow-x: auto;">
+                <table style="width:100%; font-size: 0.8em; white-space: nowrap;">
+                <thead><tr>
+                    <th>Agent</th>
+                    <th>角色</th>
+                    <th>阶段</th>
+                    <th>天数</th>
+                    <th>Shortfall</th>
+                    <th>Exact</th>
+                    <th>Overfull</th>
+                    <th>Shortfall/Need</th>
+                    <th>Overfill/Need</th>
+                    <th>Penalty Cost</th>
+                    <th>Disposal Cost</th>
+                </tr></thead><tbody>`;
+
+                for (const r of rows) {{
+                    const phaseLabel = r.phase === 'probe' ? 'Probe' : (r.phase === 'post' ? 'Post' : 'All');
+                    html += `<tr>
+                        <td>${{r.agent_type}}</td>
+                        <td>${{r.role}}</td>
+                        <td>${{phaseLabel}}</td>
+                        <td>${{r.days}}</td>
+                        <td>${{r.shortfall}} (${{pct(r.shortfall_rate)}})</td>
+                        <td>${{r.exact}} (${{pct(r.exact_rate)}})</td>
+                        <td>${{r.overfull}} (${{pct(r.overfull_rate)}})</td>
+                        <td>${{pct(r.shortfall_need_ratio)}}</td>
+                        <td>${{pct(r.overfill_need_ratio)}}</td>
+                        <td>${{r.penalty_cost.toFixed(2)}}</td>
+                        <td>${{r.disposal_cost.toFixed(2)}}</td>
+                    </tr>`;
+                }}
+
+                html += '</tbody></table></div>';
+                container.innerHTML = html;
             }} catch (error) {{
                 container.innerHTML = `<p style="color: #dc3545;">加载失败: ${{error.message}}</p>`;
             }}
@@ -3181,7 +3537,9 @@ let singleWorldData = null;
         updateTimeSeriesChart();
         initSingleWorldMode();
         initDailyWorlds();
+        loadProbeVsPostprobe();
         initDailyDetailSelectors();
+        initNegotiationWorlds();
     </script>
 </body>
 </html>
@@ -3248,6 +3606,7 @@ def generate_tournament_list_html(tournaments: List[Dict]) -> str:
         track_class = "oneshot" if track == "ONESHOT" else "std"
         
         winner = results.get("winner", "N/A") or "N/A"
+        display_winner = _extract_short_name(str(winner))
         winner_score = results.get("winner_score", 0) or 0
         n_completed = results.get("n_completed", 0) or 0
         duration = results.get("total_duration_seconds", 0) or 0
@@ -3262,7 +3621,7 @@ def generate_tournament_list_html(tournaments: List[Dict]) -> str:
             <td><span class="track-badge {track_class}">{track}</span></td>
             <td>{n_competitors}</td>
             <td>{n_completed}</td>
-            <td><strong>{winner}</strong></td>
+            <td><strong>{display_winner}</strong></td>
             <td>{winner_score:.4f}</td>
             <td>{duration:.1f}s</td>
         </tr>
@@ -3403,6 +3762,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
     # 当前加载的比赛数据
     current_data: VisualizerData = None
     current_tournament_id: str = None
+    current_data_key: str = None
     
     def _parse_path(self):
         """解析 URL 路径，提取 tournament_id"""
@@ -3411,16 +3771,36 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         return path, query
     
-    def _load_tournament_data(self, tournament_id: str) -> Optional[VisualizerData]:
-        """加载指定比赛的数据"""
+    def _load_tournament_data(self, tournament_id: str, force_reload: bool = False) -> Optional[VisualizerData]:
+        """??????????????"""
+        if tournament_id and not force_reload:
+            key = f"id:{tournament_id}"
+            if self.current_data is not None and self.current_data_key == key:
+                return self.current_data
         tournament = history.get_tournament(tournament_id)
         if not tournament:
             return None
-        
+
         data = VisualizerData(tournament["path"])
         data.load_all()
+        self.current_data = data
+        self.current_tournament_id = tournament_id
+        self.current_data_key = f"id:{tournament_id}"
         return data
-    
+
+    def _load_path_data(self, path_value: str, force_reload: bool = False) -> Optional[VisualizerData]:
+        """????????????"""
+        if path_value and not force_reload:
+            key = f"path:{path_value}"
+            if self.current_data is not None and self.current_data_key == key:
+                return self.current_data
+        data = VisualizerData(path_value)
+        data.load_all()
+        self.current_data = data
+        self.current_tournament_id = None
+        self.current_data_key = f"path:{path_value}"
+        return data
+
     def do_GET(self):
         path, query = self._parse_path()
         
@@ -3454,21 +3834,22 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/negotiations/'):
             agent_type = urllib.parse.unquote(path.split('/')[-1].split('?')[0])
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             
             # 从 query 中提取 path 参数（兼容旧模式）
             if not tournament_id:
                 path_param = query.get('path', [None])[0]
                 if path_param:
-                    data = VisualizerData(urllib.parse.unquote(path_param))
+                    data = self._load_path_data(urllib.parse.unquote(path_param))
                     data.load_all()
-                    negotiations = data.get_negotiation_details(agent_type)
+                    negotiations = data.get_negotiation_details(agent_type, world_id=world_id)
                     self._send_json(negotiations)
                     return
             
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
                 if data:
-                    negotiations = data.get_negotiation_details(agent_type)
+                    negotiations = data.get_negotiation_details(agent_type, world_id=world_id)
                     self._send_json(negotiations)
                     return
             
@@ -3479,12 +3860,13 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/daily_status/'):
             agent_type = urllib.parse.unquote(path.split('/')[-1].split('?')[0])
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
 
             # 从 query 中提取 path 参数（兼容旧模式）
             if not tournament_id:
                 path_param = query.get('path', [None])[0]
                 if path_param:
-                    data = VisualizerData(urllib.parse.unquote(path_param))
+                    data = self._load_path_data(urllib.parse.unquote(path_param))
                     data.load_all()
                     world_id = query.get('world', [None])[0]
                     daily_status = data.get_daily_status(agent_type, world_id=world_id)
@@ -3502,12 +3884,41 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
             self._send_json([])
             return
 
+        # API: probe vs post-probe /api/probe_postprobe?mode=auto|all|none&probe_days=10&tournament={id}
+        if path == '/api/probe_postprobe':
+            tournament_id = query.get('tournament', [None])[0]
+            mode = query.get('mode', ['auto'])[0]
+            probe_days_param = query.get('probe_days', ['10'])[0]
+            path_param = query.get('path', [None])[0]
+            try:
+                probe_days = int(probe_days_param)
+            except Exception:
+                probe_days = 10
+
+            if tournament_id:
+                data = self._load_tournament_data(tournament_id)
+                if data:
+                    result = data.get_probe_vs_postprobe_stats(mode=mode, probe_days=probe_days)
+                    self._send_json(result)
+                    return
+            elif path_param:
+                data = self._load_path_data(urllib.parse.unquote(path_param))
+                if data:
+                    data.load_all()
+                    result = data.get_probe_vs_postprobe_stats(mode=mode, probe_days=probe_days)
+                    self._send_json(result)
+                    return
+
+            self._send_json({"rows": [], "mode": mode, "probe_days": probe_days})
+            return
+
         # API: 单日详情 /api/daily_detail?agent_id=...&day=...&tournament={id}
         if path == '/api/daily_detail':
             agent_id = query.get('agent_id', [None])[0]
             day_param = query.get('day', [0])[0]
             world_id = query.get('world', [None])[0]
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
 
             if not agent_id:
@@ -3523,7 +3934,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
 
             if data:
@@ -3538,13 +3949,14 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         if path.startswith('/api/time_series/'):
             agent_type = urllib.parse.unquote(path.split('/')[-1].split('?')[0])
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             
             data = None
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3558,13 +3970,14 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: World 列表 /api/worlds?tournament={id} 或 /api/worlds?path={path}
         if path == '/api/worlds':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             
             data = None
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3577,13 +3990,14 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: Config 列表（按配置分组） /api/configs?tournament={id} 或 /api/configs?path={path}
         if path == '/api/configs':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             
             data = None
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3596,6 +4010,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: 指定 World 的分数 /api/world_scores?tournament={id}&world={world_name}
         if path == '/api/world_scores':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             world_name = query.get('world', [None])[0]
             
@@ -3603,7 +4018,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3624,13 +4039,14 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: 从 Tracker 获取 World 列表（用于单 World 模式）
         if path == '/api/tracker_worlds':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             
             data = None
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3643,13 +4059,14 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: Agent 实例列表
         if path == '/api/agent_instances':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             
             data = None
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3662,6 +4079,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: 单个 Agent 实例数据
         if path == '/api/single_agent':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             agent_id = query.get('agent_id', [None])[0]
             
@@ -3673,7 +4091,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3686,6 +4104,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: 单个 World 数据
         if path == '/api/single_world':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             world_id = query.get('world_id', [None])[0]
             
@@ -3697,7 +4116,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:
@@ -3710,6 +4129,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
         # API: 单个 World 的协商详情
         if path == '/api/single_world_negotiations':
             tournament_id = query.get('tournament', [None])[0]
+            world_id = query.get('world_id', [None])[0] or query.get('world', [None])[0]
             path_param = query.get('path', [None])[0]
             world_id = query.get('world_id', [None])[0]
             
@@ -3721,7 +4141,7 @@ class VisualizerHandler(SimpleHTTPRequestHandler):
             if tournament_id:
                 data = self._load_tournament_data(tournament_id)
             elif path_param:
-                data = VisualizerData(urllib.parse.unquote(path_param))
+                data = self._load_path_data(urllib.parse.unquote(path_param))
                 data.load_all()
             
             if data:

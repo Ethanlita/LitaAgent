@@ -103,3 +103,6 @@ tournament_history/
 
 # 论文模板
 kuisthesis/
+
+# zip
+*.zip
