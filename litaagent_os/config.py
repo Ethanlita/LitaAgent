@@ -117,6 +117,26 @@ class LitaOSConfig:
     overordering_ensure_plus_one: bool = True
     
     # =========================================================================
+    # Conditional Overordering (2026-01-13 Reviewer P1-1 建议)
+    # =========================================================================
+    # 问题背景:
+    #   无条件的 +1 overordering 在某些市场条件下可能亩损
+    #   例如: shortfall_unit < buy_price + disposal_unit 时
+    #          超买的成本超过了短缺的惩罚
+    # 
+    # 解决方案:
+    #   只有当 shortfall_unit > buy_price + disposal_unit + margin 时才 +1
+    #   否则 target = need (不超买)
+    # 
+    # 公式: 
+    #   if shortfall_unit > buy_price + disposal_unit + margin:
+    #       target = need + 1
+    #   else:
+    #       target = need
+    conditional_overordering_enabled: bool = True  # P1-1: 启用条件性 overordering
+    conditional_overordering_margin: float = 0.1  # 安全边际 (比例)
+    
+    # =========================================================================
     # BUYER First Proposal Penalty-Aware 策略
     # =========================================================================
     # 问题背景 (2026-01-10 分析):
@@ -142,11 +162,32 @@ class LitaOSConfig:
     #   - 但很多对手"小单愿接，大单完全不接"
     #   - 结果: 给对手报了 q=10 但对方完全不接
     # 
-    # 解决方案:
-    #   1. post-probe 的 q 不超过 probe 阶段太多 (max_q_delta)
-    #   2. 增加多样性约束: 至少给前 M 个 partner 都发一单
-    post_probe_max_q_delta: int = 4  # post-probe q 最多比 q_candidate 多 4
+    # 解决方案 (2026-01-13 Reviewer P0-1 更新):
+    #   1. post-probe 从 "1/p放量" 改为 "名义量控制+小颗粒分配"
+    #   2. 使用 remaining_nominal -= q 而非 remaining_eff -= q * p_eff
+    #   3. 限制 q 到 {1, 2, 3} (post_probe_max_q)
+    #   4. p_eff 只用于 partner 排序，不用于数量放大
+    post_probe_max_q_delta: int = 4  # 已废弃，保留为向后兼容
     post_probe_min_partners: int = 3  # 至少给前 M 个 partner 发单 (多样性约束)
+    
+    # post_probe_max_q: post-probe 每个 partner 最大发送 q
+    # 
+    # 设计决策 (2026-01-13 Reviewer P0-1):
+    #   - probe 阶段主要打 q=1~2 的小单
+    #   - post-probe 不应该外推大单 (对方可能小单愿接、大单不接)
+    #   - 限制 q ∈ {1, 2, 3}，避免用小单画像外推大单
+    #   - 配合名义量控制，确保 sum(q) ≈ target
+    post_probe_max_q: int = 3  # post-probe 每个 partner 最大 q
+    
+    # post_probe_use_nominal_allocation: 是否使用名义量分配 (新逻辑)
+    # True: remaining_nominal -= q (每次扣减名义 q)
+    # False: remaining_eff -= q * p_eff (老逻辑，用期望值放量)
+    post_probe_use_nominal_allocation: bool = True  # P0-1: 使用名义量控制
+    
+    # post_probe_dynamic_min_partners: 是否动态计算 min_partners
+    # True: min_partners = min(n_partners, max(4, ceil(target/2)))
+    # False: 使用静态的 post_probe_min_partners
+    post_probe_dynamic_min_partners: bool = True  # P1-2: 动态计算 min_partners
 
     # =========================================================================
     # BUYER 接单硬上限 (2026-01-11 Reviewer 建议)
@@ -207,14 +248,18 @@ class LitaOSConfig:
     #   offer_budget = ceil(need * offer_budget_mult) + offer_budget_abs
     #   发出的 offer 总 q 超过 budget 后，后面的 partner 直接 None
     # 
-    # 示例 (offer_budget_mult=1.2, offer_budget_abs=2):
-    #   need=8 → budget = ceil(8*1.2) + 2 = 12
-    #   这样即使对手都接受，最多签 12 单（更保守）
-    #
-    # 2026-01-12 Reviewer P0: 从 1.6 降到 1.2，大幅收紧预算
+    # 2026-01-13 Reviewer P0-2: 进一步收紧
+    #   旧公式: budget = ceil(need*1.2) + 2 → 允许 overfill 最多 +4
+    #   新公式: budget = target_nominal + 1 → 允许 overfill 最多 +1
+    #   使用新配置项 buyer_offer_budget_use_target_plus_one
     buyer_offer_budget_enabled: bool = True
-    buyer_offer_budget_mult: float = 1.2  # BUYER 发出 offer 总量预算乘数 (1.6 → 1.2)
-    buyer_offer_budget_abs: int = 2  # BUYER 发出 offer 总量预算加数
+    buyer_offer_budget_mult: float = 1.2  # 已废弃 (如果 use_target_plus_one=True)
+    buyer_offer_budget_abs: int = 2  # 已废弃 (如果 use_target_plus_one=True)
+    
+    # buyer_offer_budget_use_target_plus_one: 使用更严格的 budget 公式
+    # True: budget = target_nominal + 1 (最多超 1 单)
+    # False: budget = ceil(need * mult) + abs (老公式)
+    buyer_offer_budget_use_target_plus_one: bool = True  # P0-2: 收紧 budget
 
     # =========================================================================
     # Breach 概率禁用 (2026-01-12 Reviewer P0 建议)

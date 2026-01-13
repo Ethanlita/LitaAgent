@@ -152,10 +152,41 @@ class LitaAgentOS(OneShotSyncAgent):
         # 方案 A: 初始化当天的 BUYER offer budget (2026-01-12)
         # =========================================================================
         # 在 first_proposals 时计算一次，后续 counter_all 共享
+        # 
+        # 2026-01-13 P0-2: 收紧 budget
+        # 旧公式: budget = ceil(need*1.2) + 2 → 允许 overfill 最多 +4
+        # 新公式: budget = target_nominal + 1 → 允许 overfill 最多 +1
         import math
         buyer_need = self._need_remaining("BUYER")
         if buyer_need > 0 and self.cfg.buyer_offer_budget_enabled:
-            self._offer_budget_total["BUYER"] = math.ceil(buyer_need * self.cfg.buyer_offer_budget_mult) + self.cfg.buyer_offer_budget_abs
+            if self.cfg.buyer_offer_budget_use_target_plus_one:
+                # P0-2 新公式: budget = target + 1
+                # 计算 target (需要考虑 conditional overordering)
+                should_overorder = False
+                if self.cfg.conditional_overordering_enabled:
+                    issues = self._issues_for_role("BUYER")
+                    p_min, _ = self._price_bounds(issues)
+                    spot_in = self._trading_price("BUYER")
+                    spot_out = self._trading_price("SELLER")
+                    shortfall_unit = (self.awi.current_shortfall_penalty or 0.0) * self._penalty_scale(False, spot_out)
+                    disposal_unit = (self.awi.current_disposal_cost or 0.0) * self._penalty_scale(True, spot_in)
+                    buy_price_est = spot_in if spot_in else p_min
+                    threshold = buy_price_est + disposal_unit + disposal_unit * self.cfg.conditional_overordering_margin
+                    should_overorder = shortfall_unit > threshold
+                else:
+                    should_overorder = True
+                
+                if should_overorder and self.cfg.overordering_ensure_plus_one:
+                    target_nominal = buyer_need + max(1, math.ceil(buyer_need * self.cfg.buyer_overordering_ratio))
+                elif should_overorder:
+                    target_nominal = int(buyer_need * (1.0 + self.cfg.buyer_overordering_ratio))
+                else:
+                    target_nominal = buyer_need
+                
+                self._offer_budget_total["BUYER"] = target_nominal + 1
+            else:
+                # 旧公式
+                self._offer_budget_total["BUYER"] = math.ceil(buyer_need * self.cfg.buyer_offer_budget_mult) + self.cfg.buyer_offer_budget_abs
         else:
             self._offer_budget_total["BUYER"] = float("inf")
         self._offer_budget_used["BUYER"] = 0.0
@@ -251,10 +282,34 @@ class LitaAgentOS(OneShotSyncAgent):
                     fulfill = self._breach_provider.get_fulfill_prob(pid) if self._breach_provider else None
                     fulfill = fulfill if fulfill is not None else 1.0
                 accepted_q_eff += q * fulfill
-            need_remaining_eff = max(0.0, float(self._need_remaining(role)) - accepted_q_eff)
+            
+            # =========================================================================
+            # P2: Unify need 口径 (2026-01-13 Reviewer 建议)
+            # =========================================================================
+            # 问题: counter_all 的 need_remaining 没有扣除 committed 和 pending
+            #       导致给 _propose_for_role 传的 need 偏大，仍然会超发 offer
+            # 
+            # 解决方案:
+            #   need_remaining_raw = awi.needed_xxx - accepted_q_eff (刚接受的)
+            #   need_live = need_remaining_raw - committed (之前已签约的)
+            #   need_remaining = need_live - pending_expected (还在等回复的)
+            # =========================================================================
+            need_remaining_raw = max(0.0, float(self._need_remaining(role)) - accepted_q_eff)
+            
+            # 扣除已签约的 (committed book)
+            committed = self._get_committed_qty(role)
+            need_live = max(0.0, need_remaining_raw - committed)
+            
+            # 扣除 pending exposure
+            pending_worst, pending_expected = self._get_pending_exposure(role)
+            if role == "BUYER":
+                need_adj = max(0.0, need_live - pending_expected)
+            else:  # SELLER 更保守
+                need_adj = max(0.0, need_live - pending_worst)
+            
             # P0-修复2: 使用 ceil 而非 int，避免截断导致的结构性 shortfall
             # 例如: need_remaining_eff=0.8 → int=0 导致 END，ceil=1 继续谈判
-            need_remaining = max(0, math.ceil(need_remaining_eff - 1e-9))  # -eps 避免浮点误差
+            need_remaining = max(0, math.ceil(need_adj - 1e-9))  # -eps 避免浮点误差
             remaining_partners = [pid for pid in role_partners if pid not in subset]
             for pid in role_partners:
                 offer = offers_now[pid]
@@ -270,7 +325,8 @@ class LitaAgentOS(OneShotSyncAgent):
                 continue
             # --- 1.2: Reachability constraint ---
             # 检查是否还有可能完成目标
-            if need_remaining_eff <= 0:
+            # P2: 使用 need_adj 而非 need_remaining_eff
+            if need_adj <= 0:
                 for pid in remaining_partners:
                     responses[pid] = SAOResponse(ResponseType.END_NEGOTIATION, None)
                     self._record_end(pid, states.get(pid), speaker="ME")
@@ -768,14 +824,29 @@ class LitaAgentOS(OneShotSyncAgent):
         if role == "BUYER":
             # BUYER: 允许超量采购，因为 disposal penalty 远低于 shortfall penalty
             # 
-            # 2026-01-10 修复: floor 截断问题
-            # 原实现: target = int(need * (1 + ratio)) 导致小需求时 overordering 无效
-            # 修复: target = need + max(1, ceil(need * ratio))
-            if self.cfg.overordering_ensure_plus_one and need_remaining > 0:
+            # 2026-01-13 P1-1: Conditional Overordering
+            # 只有当 shortfall_unit > buy_price + disposal_unit + margin 时才 +1
+            # 否则超买的成本可能超过短缺的惩罚
+            should_overorder = False
+            if self.cfg.conditional_overordering_enabled:
+                spot_in = self._trading_price("BUYER")
+                spot_out = self._trading_price("SELLER")
+                shortfall_unit = (self.awi.current_shortfall_penalty or 0.0) * self._penalty_scale(False, spot_out)
+                disposal_unit = (self.awi.current_disposal_cost or 0.0) * self._penalty_scale(True, spot_in)
+                # 使用 trading_price 作为 buy_price 估计
+                buy_price_est = spot_in if spot_in else p_min
+                threshold = buy_price_est + disposal_unit + disposal_unit * self.cfg.conditional_overordering_margin
+                should_overorder = shortfall_unit > threshold
+            else:
+                should_overorder = True  # 不启用条件判断时默认超买
+            
+            if should_overorder and self.cfg.overordering_ensure_plus_one and need_remaining > 0:
                 overorder_amount = max(1, math.ceil(need_remaining * self.cfg.buyer_overordering_ratio))
                 target = need_remaining + overorder_amount
-            else:
+            elif should_overorder:
                 target = int(need_remaining * (1.0 + self.cfg.buyer_overordering_ratio))
+            else:
+                target = need_remaining  # 不超买
             
             # 2026-01-11: BUYER 硬上限约束 (用于 counter offer)
             # 确保 counter 的 q 不超过 cap
@@ -919,95 +990,143 @@ class LitaAgentOS(OneShotSyncAgent):
                 offers[pid] = offer
                 remaining_nominal -= q
         else:
-            # === Post-probe 阶段：期望值方法 ===
+            # === Post-probe 阶段 ===
             # 
-            # 2026-01-10 改进: 防止小单画像外推大单
+            # 2026-01-13 P0-1: 从 "1/p放量" 改为 "名义量控制 + 小颗粒分配"
             # 
-            # 问题背景 (Reviewer 反馈):
-            #   - probe 阶段主要打 q=1~2 的小单
-            #   - post-probe 用小单的 p_eff 外推大单 (如 q=10)
-            #   - 但很多对手"小单愿接，大单完全不接"
-            #   - 结果: 给对手报了 q=10 但对方完全不接
+            # 问题背景 (Reviewer 分析):
+            #   - 原逻辑: q = remaining_eff / p_eff (期望值放量)
+            #   - 当 p_eff=0.3, target=8 时: 给每个 partner 发 q=8/0.3≈27
+            #   - 如果多个 partner 同时接受 → 严重 overfill
+            #   - 即使加了 cap，也只是把 27 限到 6，sum 仍然很大
             # 
             # 解决方案:
-            #   1. post-probe 的 q 不超过 q_candidate + max_q_delta
-            #   2. 增加多样性约束: 至少给前 M 个 partner 都发一单
+            #   1. 使用名义量分配: remaining_nominal -= q (而非 -= q*p_eff)
+            #   2. 限制 q 到小颗粒: q ∈ {1, 2, 3} (post_probe_max_q)
+            #   3. p_eff 只用于 partner 排序（优先给高概率 partner）
+            #   4. 动态 min_partners: min(n, max(4, ceil(target/2)))
             # =========================================================================
-            remaining_eff = float(target)
             
-            # 多样性约束: 至少给前 M 个 partner 发单
-            min_partners = min(self.cfg.post_probe_min_partners, len(partner_info))
-            partners_assigned = 0
+            # P1-2: 动态计算 min_partners
+            if self.cfg.post_probe_dynamic_min_partners:
+                min_partners = min(len(partner_info), max(4, math.ceil(target / 2)))
+            else:
+                min_partners = min(self.cfg.post_probe_min_partners, len(partner_info))
             
-            for pid, context, p_eff_cand, _, fulfill in partner_info:
-                # 2026-01-12 P0-2: offer budget 检查
-                # 每次迭代重新计算剩余额度
-                budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
-                if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
-                    offers[pid] = None
-                    continue
+            # P0-1: 使用名义量分配
+            if self.cfg.post_probe_use_nominal_allocation:
+                # 新逻辑: 名义量控制 + 小颗粒分配
+                remaining_nominal = float(target)
+                q_per_partner = max(1, math.ceil(target / max(1, min_partners)))
+                # 限制 q 到 post_probe_max_q
+                q_per_partner = min(q_per_partner, self.cfg.post_probe_max_q)
                 
-                if remaining_eff <= 0 and partners_assigned >= min_partners:
-                    offers[pid] = None
-                    continue
+                partners_assigned = 0
+                for pid, context, p_eff_cand, _, fulfill in partner_info:
+                    # offer budget 检查
+                    budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
+                    if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
+                        offers[pid] = None
+                        continue
+                    
+                    if remaining_nominal <= 0 and partners_assigned >= min_partners:
+                        offers[pid] = None
+                        continue
+                    
+                    # 小颗粒分配: q ∈ {1, 2, 3}
+                    q = min(self.cfg.post_probe_max_q, max(1, min(q_per_partner, int(round(remaining_nominal)))))
+                    
+                    # BUYER 硬上限约束
+                    if role == "BUYER":
+                        q = min(q, buyer_cap)
+                        if self.cfg.buyer_offer_budget_enabled:
+                            q = min(q, int(budget_remaining))
+                        q = max(1, q)
+                    
+                    # 多样性约束: 前 M 个 partner 至少发 1 单
+                    if partners_assigned < min_partners and remaining_nominal <= 0:
+                        q = 1
+                    
+                    # Panic 模式下可以稍微放大 (但仍受 max_q 限制)
+                    if panic_active and remaining_nominal > 0:
+                        q = min(self.cfg.post_probe_max_q, max(q, 2))
+                    
+                    partners_assigned += 1
+                    # 更新全局预算
+                    if hasattr(self, '_offer_budget_used'):
+                        self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + q
+                    
+                    # 获取该 partner 的 state
+                    partner_state = states.get(pid) if states else None
+                    price = self._counter_price_for_partner(
+                        role, pid, base_price, p_min, p_max, opp_offers,
+                        state=partner_state, panic_active=panic_active
+                    )
+                    offer = (q, t_value, price)
+                    offers[pid] = offer
+                    # 名义量扣减 (不乘 p_eff)
+                    remaining_nominal -= q
+            else:
+                # 旧逻辑: 期望值方法 (1/p放量)，保留为向后兼容
+                remaining_eff = float(target)
+                partners_assigned = 0
                 
-                # 使用期望值计算 q
-                q_raw = int(round(remaining_eff / max(p_eff_cand, 1e-6)))
-                
-                # 限制 q 外推: 不超过 q_candidate + max_q_delta
-                # 防止用小单画像外推大单
-                q_max_allowed = min(q_max, self.cfg.q_candidate + self.cfg.post_probe_max_q_delta)
-                
-                # 2026-01-11: BUYER 硬上限约束
-                # counter offer 的 q 也不能超过 buyer_cap
-                if role == "BUYER":
-                    q_max_allowed = min(q_max_allowed, buyer_cap)
-                    # 还要确保不超过剩余 budget
-                    if self.cfg.buyer_offer_budget_enabled:
-                        q_max_allowed = min(q_max_allowed, budget_remaining)
-                
-                q = min(q_max_allowed, max(1, q_raw))
-                
-                # 多样性约束: 前 M 个 partner 至少发 1 单
-                if partners_assigned < min_partners and remaining_eff <= 0:
-                    q = 1  # 保底发 1 单
-                
-                # Panic 模式下直接用较大 q (但仍受 q_max_allowed 限制)
-                if panic_active:
-                    q = min(q_max_allowed, max(1, need_remaining))
-                
-                partners_assigned += 1
-                # 2026-01-12 方案 A: 更新全局预算
-                if hasattr(self, '_offer_budget_used'):
-                    self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + q
-                
-                # 获取该 partner 的 state（用于计算谈判内 round_rel）
-                partner_state = states.get(pid) if states else None
-                price = self._counter_price_for_partner(
-                    role, pid, base_price, p_min, p_max, opp_offers,
-                    state=partner_state, panic_active=panic_active
-                )
-                offer = (q, t_value, price)
-                of = build_offer_features(offer, q_max, p_min, p_max)
-                
-                # 重新计算 p_eff
-                mu = self._accept_model.predict_accept_mu(context, of, [])
-                strength = self._accept_model.predict_accept_strength(context, of, [])
-                lcb_sign = self._bou.lcb(
-                    pid=pid,
-                    role=role,
-                    round_bucket=context.round_bucket,
-                    p_bin=of.p_bin,
-                    q=of.q,
-                    mu=mu,
-                    strength=strength,
-                    delta=self.cfg.lcb_delta_accept,
-                )
-                lcb_sign = lcb_sign if lcb_sign is not None else mu
-                p_eff_actual = lcb_sign * fulfill
-                
-                offers[pid] = offer
-                remaining_eff -= of.q * p_eff_actual
+                for pid, context, p_eff_cand, _, fulfill in partner_info:
+                    budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
+                    if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
+                        offers[pid] = None
+                        continue
+                    
+                    if remaining_eff <= 0 and partners_assigned >= min_partners:
+                        offers[pid] = None
+                        continue
+                    
+                    # 旧公式: q = remaining / p_eff
+                    q_raw = int(round(remaining_eff / max(p_eff_cand, 1e-6)))
+                    q_max_allowed = min(q_max, self.cfg.q_candidate + self.cfg.post_probe_max_q_delta)
+                    
+                    if role == "BUYER":
+                        q_max_allowed = min(q_max_allowed, buyer_cap)
+                        if self.cfg.buyer_offer_budget_enabled:
+                            q_max_allowed = min(q_max_allowed, budget_remaining)
+                    
+                    q = min(q_max_allowed, max(1, q_raw))
+                    
+                    if partners_assigned < min_partners and remaining_eff <= 0:
+                        q = 1
+                    
+                    if panic_active:
+                        q = min(q_max_allowed, max(1, need_remaining))
+                    
+                    partners_assigned += 1
+                    if hasattr(self, '_offer_budget_used'):
+                        self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + q
+                    
+                    partner_state = states.get(pid) if states else None
+                    price = self._counter_price_for_partner(
+                        role, pid, base_price, p_min, p_max, opp_offers,
+                        state=partner_state, panic_active=panic_active
+                    )
+                    offer = (q, t_value, price)
+                    of = build_offer_features(offer, q_max, p_min, p_max)
+                    
+                    mu = self._accept_model.predict_accept_mu(context, of, [])
+                    strength = self._accept_model.predict_accept_strength(context, of, [])
+                    lcb_sign = self._bou.lcb(
+                        pid=pid,
+                        role=role,
+                        round_bucket=context.round_bucket,
+                        p_bin=of.p_bin,
+                        q=of.q,
+                        mu=mu,
+                        strength=strength,
+                        delta=self.cfg.lcb_delta_accept,
+                    )
+                    lcb_sign = lcb_sign if lcb_sign is not None else mu
+                    p_eff_actual = lcb_sign * fulfill
+                    
+                    offers[pid] = offer
+                    remaining_eff -= of.q * p_eff_actual
 
         for pid in partners:
             if pid not in offers:
