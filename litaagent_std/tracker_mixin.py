@@ -1458,6 +1458,9 @@ def setup_tracker_for_tournament(log_dir: str, enabled: bool = True):
     tracker_dir = os.path.join(log_dir, "tracker_logs")
     os.makedirs(tracker_dir, exist_ok=True)
     
+    # 设置环境变量，子进程会继承这个值
+    os.environ['SCML_TRACKER_LOG_DIR'] = tracker_dir
+    
     TrackerConfig.configure(
         log_dir=tracker_dir,
         enabled=enabled,

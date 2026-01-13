@@ -217,3 +217,53 @@ results = anac2024_oneshot(
 | `counter_all()` | `offer_received`, `offer_made` (还价), `accept`, `reject` |
 | `on_negotiation_success()` | `signed`, `success` |
 | `on_negotiation_failure()` | `failure` |
+
+---
+
+## Tracker 日志分析工具
+
+### `scripts/analyze_shortfall.py` - 每日平衡分析
+
+分析 LOS（LitaAgentOS）BUYER/SELLER 每日供需平衡情况，检测 shortfall、exact、overfull 的天数分布。
+
+**用途**：
+- 诊断 BUYER 或 SELLER 过度购买/销售的问题
+- 比较不同版本 Agent 的表现
+
+**用法**：
+```bash
+# 自动发现最近2场 oneshot 比赛并分析
+python scripts/analyze_shortfall.py
+
+# 分析指定比赛
+python scripts/analyze_shortfall.py results/20260110_212745_oneshot
+
+# 比较两场比赛
+python scripts/analyze_shortfall.py results/20260110_191341_oneshot results/20260110_212745_oneshot
+```
+
+**输出示例**：
+```
+================================================================================
+📊 [20260110_212745_oneshot]
+================================================================================
+
+📦 SELLER (Level 0): 205 days
+  ❌ Shortfall (sold < supply):   31 days ( 15.1%)
+  ✅ Exact (sold == supply):     141 days ( 68.8%)
+  ⚠️ Overfull (sold > supply):   33 days ( 16.1%)
+
+🛒 BUYER (Level 1): 215 days
+  ❌ Shortfall (bought < demand): 11 days (  5.1%)
+  ✅ Exact (bought == demand):     9 days (  4.2%)
+  ⚠️ Overfull (bought > demand): 195 days ( 90.7%)  ⚠️ 过度购买！
+```
+
+**关键指标解读**：
+- **Shortfall**: 协商获得的量 < 外生需求量（供应不足）
+- **Exact**: 协商获得的量 == 外生需求量（完美匹配）
+- **Overfull**: 协商获得的量 > 外生需求量（过度采购/销售）
+
+**典型问题诊断**：
+- BUYER Overfull 过高 → 过度购买，可能导致库存积压和成本损失
+- SELLER Shortfall 过高 → 销售不足，可能导致外生供应浪费

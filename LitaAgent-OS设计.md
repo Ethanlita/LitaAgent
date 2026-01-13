@@ -682,10 +682,20 @@ p^{\text{eff}}_i(o) = \mathrm{LCB}(p^{\text{sign}}_i(o)) \cdot \mathrm{LCB}(p^{\
 你们最需要的是：**在高置信下满足 need**。用 LCB 的有效交付量做约束：
 
 [
-\sum_i \tilde q_i(o_i) \ge \text{need}\cdot (1+\text{buffer}(t))
+\sum_i \tilde q_i(o_i) \ge \text{need} \cdot (1 + \text{overordering\_ratio})
 ]
 
-buffer(t) 固定定义：t=round_rel，buffer(t)=b_min+(b_max-b_min)*t^gamma；默认 b_min=0.05、b_max=0.35、gamma=2。
+**2026-01-10 更新：移除 buffer 机制，改用 buyer_overordering_ratio**
+
+罚款分析结论（RChan 启发）：
+- Shortfall penalty 约为 Disposal cost 的 **10 倍**（货币量纲）
+- 因此 BUYER 应容忍超量采购，SELLER 应保守
+
+新策略：
+- BUYER: `target = need_remaining * (1.0 + buyer_overordering_ratio)`，默认 10%
+- SELLER: `target = need_remaining`（不超量）
+
+原 buffer(t) 已移除（与 overordering 功能重复）。
 
 #### 实现要点（与代码一致）
 
