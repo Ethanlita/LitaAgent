@@ -63,7 +63,7 @@ class LitaOSConfig:
     # =========================================================================
     
     # BUYER probe 配置
-    buyer_probe_steps_ratio: float = 1.0  # BUYER probe 阶段占总步数的比例 (10%)
+    buyer_probe_steps_ratio: float = 0.1  # BUYER probe 阶段占总步数的比例 (10%)
     buyer_probe_steps_min: int = 10  # BUYER 最少 probe 天数
     
     # SELLER probe 配置
