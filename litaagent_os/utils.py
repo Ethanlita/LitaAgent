@@ -73,12 +73,31 @@ def q_bucket_coarse(q: int) -> Optional[int]:
 
 
 def price_marginal_gain(price: float, trading_price: Optional[float], is_seller: bool) -> float:
+    """计算价格的边际收益（已弃用，保留向后兼容）。"""
     if trading_price is None or trading_price <= 0:
         return price if is_seller else -price
     denom = max(1e-6, trading_price)
     if is_seller:
         return (price - trading_price) / denom
     return (trading_price - price) / denom
+
+
+def compute_true_profit(price: float, exo_price: float, is_seller: bool) -> float:
+    """
+    计算真实利润（相对于外生合同价格）。
+    
+    对于 OneShot:
+    - 卖家 (Level 0): 外生采购原材料，谈判销售产品
+      利润 = 销售价格 - 外生采购价格
+    - 买家 (Level 1): 谈判采购原材料，外生销售产品
+      利润 = 外生销售价格 - 采购价格
+    """
+    if is_seller:
+        # 卖家: 利润 = 卖价 - 外生采购成本
+        return price - exo_price
+    else:
+        # 买家: 利润 = 外生销售收入 - 买价
+        return exo_price - price
 
 
 def match_price(p1: float, p2: float, eps: float = 1e-6) -> bool:

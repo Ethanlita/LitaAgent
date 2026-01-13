@@ -91,3 +91,26 @@ class BOUEstimator:
         if state is None:
             return None
         return float(beta_dist.ppf(delta, state.alpha, state.beta))
+
+    def posterior_mean(
+        self,
+        pid: str,
+        role: str,
+        round_bucket: int,
+        p_bin: int,
+        q: int,
+        mu: float,
+        strength: float,
+    ) -> Optional[float]:
+        """
+        获取 BOU 后验分布的均值: alpha / (alpha + beta)
+        
+        用于 Exposure Book 的 pending_expected 计算。
+        """
+        state = self.get_state(pid, role, round_bucket, p_bin, q, mu, strength)
+        if state is None:
+            return None
+        total = state.alpha + state.beta
+        if total <= 0:
+            return mu  # 回退到先验
+        return state.alpha / total
