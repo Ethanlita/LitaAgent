@@ -188,6 +188,24 @@ class LitaOSConfig:
     # True: min_partners = min(n_partners, max(4, ceil(target/2)))
     # False: 使用静态的 post_probe_min_partners
     post_probe_dynamic_min_partners: bool = True  # P1-2: 动态计算 min_partners
+    
+    # =========================================================================
+    # Post-probe "先铺开再加码" 策略 (2026-01-14 Reviewer P1-1 建议)
+    # =========================================================================
+    # 问题背景:
+    #   按 BOU 排序后，把 q 集中给前几个高概率 partner
+    #   预算很快用完，后面的 partner 没 offer
+    #   一旦前面有 1 个没成，就出现 -1/-2/-3 shortfall
+    # 
+    # 解决方案 ("先铺开再加码"):
+    #   第一轮: 每个 partner 先发 q=1 (铺开覆盖面)
+    #   第二轮: 给高概率 partner 加码 (利用剩余 budget)
+    # 
+    # 参数:
+    #   post_probe_spread_first: 是否启用先铺开策略
+    #   post_probe_spread_base_q: 第一轮每个 partner 的基础 q
+    post_probe_spread_first: bool = True  # P1-1: 启用先铺开再加码
+    post_probe_spread_base_q: int = 1  # 第一轮基础 q
 
     # =========================================================================
     # BUYER 接单硬上限 (2026-01-11 Reviewer 建议)

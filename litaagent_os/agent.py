@@ -1030,57 +1030,136 @@ class LitaAgentOS(OneShotSyncAgent):
             
             # P0-1: 使用名义量分配
             if self.cfg.post_probe_use_nominal_allocation:
-                # 新逻辑: 名义量控制 + 小颗粒分配
-                remaining_nominal = float(target)
-                q_per_partner = max(1, math.ceil(target / max(1, min_partners)))
-                # 限制 q 到 post_probe_max_q
-                q_per_partner = min(q_per_partner, self.cfg.post_probe_max_q)
+                # =========================================================================
+                # P1-1 (2026-01-14): "先铺开再加码" 策略
+                # =========================================================================
+                # 问题: 按 BOU 排序后把 q 集中给前几个 partner，budget 很快用完
+                #       后面的 partner 没 offer，一旦前面有 1 个没成就 shortfall
+                # 
+                # 解决: 两轮分配
+                #   第一轮: 每个 partner 先发 q=base_q (铺开覆盖面)
+                #   第二轮: 给高概率 partner 加码 (利用剩余 budget)
+                # =========================================================================
                 
-                partners_assigned = 0
-                for pid, context, p_eff_cand, _, fulfill in partner_info:
-                    # offer budget 检查
-                    budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
-                    if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
-                        offers[pid] = None
-                        continue
+                remaining_nominal = float(target)
+                base_q = self.cfg.post_probe_spread_base_q if self.cfg.post_probe_spread_first else self.cfg.post_probe_max_q
+                
+                if self.cfg.post_probe_spread_first:
+                    # === 第一轮: 铺开 (每个 partner 发 base_q) ===
+                    first_round_offers: dict[str, tuple[int, float]] = {}  # pid -> (q, price)
                     
-                    if remaining_nominal <= 0 and partners_assigned >= min_partners:
-                        offers[pid] = None
-                        continue
-                    
-                    # 小颗粒分配: q ∈ {1, 2, 3}
-                    q = min(self.cfg.post_probe_max_q, max(1, min(q_per_partner, int(round(remaining_nominal)))))
-                    
-                    # BUYER 硬上限约束
-                    if role == "BUYER":
-                        q = min(q, buyer_cap)
-                        if self.cfg.buyer_offer_budget_enabled:
-                            q = min(q, int(budget_remaining))
+                    for pid, context, p_eff_cand, _, fulfill in partner_info:
+                        # offer budget 检查
+                        budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
+                        if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
+                            continue
+                        
+                        if remaining_nominal <= 0:
+                            continue
+                        
+                        q = min(base_q, int(round(remaining_nominal)))
                         q = max(1, q)
+                        
+                        # BUYER 硬上限约束
+                        if role == "BUYER":
+                            q = min(q, buyer_cap)
+                            if self.cfg.buyer_offer_budget_enabled:
+                                q = min(q, int(budget_remaining))
+                            q = max(1, q)
+                        
+                        # 更新全局预算
+                        if hasattr(self, '_offer_budget_used'):
+                            self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + q
+                        
+                        partner_state = states.get(pid) if states else None
+                        price = self._counter_price_for_partner(
+                            role, pid, base_price, p_min, p_max, opp_offers,
+                            state=partner_state, panic_active=panic_active
+                        )
+                        first_round_offers[pid] = (q, price)
+                        remaining_nominal -= q
                     
-                    # 多样性约束: 前 M 个 partner 至少发 1 单
-                    if partners_assigned < min_partners and remaining_nominal <= 0:
-                        q = 1
+                    # === 第二轮: 加码 (给高概率 partner 追加) ===
+                    # 按 p_eff 排序，优先给高概率的加码
+                    if remaining_nominal > 0:
+                        for pid, context, p_eff_cand, _, fulfill in partner_info:
+                            if pid not in first_round_offers:
+                                continue
+                            
+                            budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
+                            if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
+                                break
+                            
+                            if remaining_nominal <= 0:
+                                break
+                            
+                            current_q, current_price = first_round_offers[pid]
+                            # 最多加到 post_probe_max_q
+                            max_add = self.cfg.post_probe_max_q - current_q
+                            add_q = min(max_add, int(round(remaining_nominal)))
+                            
+                            if role == "BUYER":
+                                add_q = min(add_q, buyer_cap - current_q)
+                                if self.cfg.buyer_offer_budget_enabled:
+                                    add_q = min(add_q, int(budget_remaining))
+                            
+                            add_q = max(0, add_q)
+                            
+                            if add_q > 0:
+                                first_round_offers[pid] = (current_q + add_q, current_price)
+                                remaining_nominal -= add_q
+                                if hasattr(self, '_offer_budget_used'):
+                                    self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + add_q
                     
-                    # Panic 模式下可以稍微放大 (但仍受 max_q 限制)
-                    if panic_active and remaining_nominal > 0:
-                        q = min(self.cfg.post_probe_max_q, max(q, 2))
+                    # 构建最终 offers
+                    for pid, _, _, _, _ in partner_info:
+                        if pid in first_round_offers:
+                            q, price = first_round_offers[pid]
+                            offers[pid] = (q, t_value, price)
+                        else:
+                            offers[pid] = None
+                else:
+                    # 原逻辑 (不启用 spread_first)
+                    q_per_partner = max(1, math.ceil(target / max(1, min_partners)))
+                    q_per_partner = min(q_per_partner, self.cfg.post_probe_max_q)
                     
-                    partners_assigned += 1
-                    # 更新全局预算
-                    if hasattr(self, '_offer_budget_used'):
-                        self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + q
-                    
-                    # 获取该 partner 的 state
-                    partner_state = states.get(pid) if states else None
-                    price = self._counter_price_for_partner(
-                        role, pid, base_price, p_min, p_max, opp_offers,
-                        state=partner_state, panic_active=panic_active
-                    )
-                    offer = (q, t_value, price)
-                    offers[pid] = offer
-                    # 名义量扣减 (不乘 p_eff)
-                    remaining_nominal -= q
+                    partners_assigned = 0
+                    for pid, context, p_eff_cand, _, fulfill in partner_info:
+                        budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
+                        if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
+                            offers[pid] = None
+                            continue
+                        
+                        if remaining_nominal <= 0 and partners_assigned >= min_partners:
+                            offers[pid] = None
+                            continue
+                        
+                        q = min(self.cfg.post_probe_max_q, max(1, min(q_per_partner, int(round(remaining_nominal)))))
+                        
+                        if role == "BUYER":
+                            q = min(q, buyer_cap)
+                            if self.cfg.buyer_offer_budget_enabled:
+                                q = min(q, int(budget_remaining))
+                            q = max(1, q)
+                        
+                        if partners_assigned < min_partners and remaining_nominal <= 0:
+                            q = 1
+                        
+                        if panic_active and remaining_nominal > 0:
+                            q = min(self.cfg.post_probe_max_q, max(q, 2))
+                        
+                        partners_assigned += 1
+                        if hasattr(self, '_offer_budget_used'):
+                            self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + q
+                        
+                        partner_state = states.get(pid) if states else None
+                        price = self._counter_price_for_partner(
+                            role, pid, base_price, p_min, p_max, opp_offers,
+                            state=partner_state, panic_active=panic_active
+                        )
+                        offer = (q, t_value, price)
+                        offers[pid] = offer
+                        remaining_nominal -= q
             else:
                 # 旧逻辑: 期望值方法 (1/p放量)，保留为向后兼容
                 remaining_eff = float(target)
