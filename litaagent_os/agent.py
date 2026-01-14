@@ -183,7 +183,11 @@ class LitaAgentOS(OneShotSyncAgent):
                 else:
                     target_nominal = buyer_need
                 
-                self._offer_budget_total["BUYER"] = target_nominal + 1
+                # P0-1 (2026-01-14): 放宽 offer_budget
+                # 问题: target+1 太紧，导致 27% 的谈判没收到 offer，shortfall 上升
+                # 解决: 改为 ceil(target * budget_mult) + 1
+                # 例如 target=8 → budget = ceil(8*1.25)+1 = 11
+                self._offer_budget_total["BUYER"] = math.ceil(target_nominal * self.cfg.buyer_offer_budget_mult_v2) + 1
             else:
                 # 旧公式
                 self._offer_budget_total["BUYER"] = math.ceil(buyer_need * self.cfg.buyer_offer_budget_mult) + self.cfg.buyer_offer_budget_abs
@@ -324,9 +328,20 @@ class LitaAgentOS(OneShotSyncAgent):
             if not remaining_partners:
                 continue
             # --- 1.2: Reachability constraint ---
-            # 检查是否还有可能完成目标
-            # P2: 使用 need_adj 而非 need_remaining_eff
-            if need_adj <= 0:
+            # P0-2 (2026-01-14): 不直接 END，改为继续发 counter
+            # 问题: need_adj<=0 时直接 END 会丢失成交机会，导致 shortfall
+            # 解决: 即使 need_adj<=0，也继续发送最小 q 的 counter offer
+            #       只有当 committed + pending_worst >= need + slack 时才 END
+            use_end_threshold_worst = self.cfg.use_end_threshold_worst
+            if use_end_threshold_worst:
+                # 使用更保守的 pending_worst 判断是否 END
+                end_slack = self.cfg.end_threshold_slack
+                should_end = (committed + pending_worst >= need_remaining_raw + end_slack)
+            else:
+                # 旧逻辑: need_adj <= 0 就 END
+                should_end = (need_adj <= 0)
+            
+            if should_end:
                 for pid in remaining_partners:
                     responses[pid] = SAOResponse(ResponseType.END_NEGOTIATION, None)
                     self._record_end(pid, states.get(pid), speaker="ME")

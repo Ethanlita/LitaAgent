@@ -260,6 +260,24 @@ class LitaOSConfig:
     # True: budget = target_nominal + 1 (最多超 1 单)
     # False: budget = ceil(need * mult) + abs (老公式)
     buyer_offer_budget_use_target_plus_one: bool = True  # P0-2: 收紧 budget
+    
+    # buyer_offer_budget_mult_v2: 新的 budget 乘数 (2026-01-14)
+    # 问题: target+1 太紧，导致 27% 的谈判没发 offer，shortfall 上升
+    # 解决: budget = ceil(target * mult_v2) + 1
+    # 例如: target=8, mult_v2=1.25 → budget = ceil(10)+1 = 11
+    buyer_offer_budget_mult_v2: float = 1.25  # P0-1: 放宽 budget
+    
+    # =========================================================================
+    # END 判断阈值 (2026-01-14 Reviewer P0-2 建议)
+    # =========================================================================
+    # 问题: 用 pending_expected 判断 END 太乐观，pending 没成交就 shortfall
+    # 解决: END 用 pending_worst (更保守)，accept/subset 用 pending_expected
+    # 
+    # use_end_threshold_worst:
+    #   True: 只有 committed + pending_worst >= need + slack 才 END
+    #   False: 旧逻辑 (need_adj <= 0 就 END)
+    use_end_threshold_worst: bool = True  # P0-2: 使用 worst 判断 END
+    end_threshold_slack: float = 1.0  # END 时的 slack (允许超 1 单位)
 
     # =========================================================================
     # Breach 概率禁用 (2026-01-12 Reviewer P0 建议)
