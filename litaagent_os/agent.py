@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import heapq
 import json
 import math
 import os
@@ -269,6 +270,18 @@ class LitaAgentOS(OneShotSyncAgent):
                 self._update_bou_on_reject(pid, state)
                 self._awaiting_response[pid] = False
 
+        # =========================================================================
+        # P0-fix: Committed Book 只在本轮 counter_all 内部使用
+        # =========================================================================
+        # 问题: AWI 的 needed_supplies/sales 会在 on_negotiation_success 时立即更新
+        #       如果 committed_qty 跨轮持久化，会导致双重扣减
+        #       (AWI 已经扣了签约量，我们又扣了 committed，导致过早停止发 offer)
+        # 
+        # 解决: committed_this_round 只记录本轮 counter_all 内的接受量
+        #       下一轮调用时重置为 0
+        # =========================================================================
+        committed_this_round: dict[str, float] = {"BUYER": 0.0, "SELLER": 0.0}
+        
         # 分角色做子集选择
         for role, role_partners in self._split_by_role(list(offers_now.keys())).items():
             if not role_partners:
@@ -300,8 +313,9 @@ class LitaAgentOS(OneShotSyncAgent):
             # =========================================================================
             need_remaining_raw = max(0.0, float(self._need_remaining(role)) - accepted_q_eff)
             
-            # 扣除已签约的 (committed book)
-            committed = self._get_committed_qty(role)
+            # P0-fix: 只扣除本轮 counter_all 内的接受量
+            # 注意: AWI.needed_* 已经反映了之前签约的量，不需要再扣 _committed_qty
+            committed = committed_this_round.get(role, 0.0)
             need_live = max(0.0, need_remaining_raw - committed)
             
             # 扣除 pending exposure
@@ -322,9 +336,8 @@ class LitaAgentOS(OneShotSyncAgent):
                     self._record_accept(pid, offer, states.get(pid), speaker="ME")
                     self._accepted_by_me[pid] = True
                     self._awaiting_response[pid] = False
-                    # P0: Committed Book - 立即更新已签约数量
-                    if hasattr(self, '_committed_qty'):
-                        self._committed_qty[role] = self._committed_qty.get(role, 0.0) + offer[QUANTITY]
+                    # P0-fix: 更新本轮的临时 committed (不持久化)
+                    committed_this_round[role] = committed_this_round.get(role, 0.0) + offer[QUANTITY]
             if not remaining_partners:
                 continue
             # --- 1.2: Reachability constraint ---
@@ -438,12 +451,12 @@ class LitaAgentOS(OneShotSyncAgent):
         q = agreement[QUANTITY]
         
         if self._accepted_by_me.pop(pid, False):
-            # 我方接受对方 offer，已经在 counter_all 中更新了 committed_qty
+            # 我方接受对方 offer，已经在 counter_all 中处理了
+            # P0-fix: 不再更新持久化的 committed_qty (AWI 已实时反映)
             return
         
-        # 对方接受我方 offer，需要更新 committed_qty
-        if hasattr(self, '_committed_qty'):
-            self._committed_qty[role] = self._committed_qty.get(role, 0.0) + q
+        # 对方接受我方 offer
+        # P0-fix: 不再更新持久化的 committed_qty (AWI 已实时反映)
         
         self._record_accept(pid, agreement, None, speaker="OPP")
         # 更新对方接受我方报价
@@ -663,12 +676,12 @@ class LitaAgentOS(OneShotSyncAgent):
 
     def _get_committed_qty(self, role: str) -> float:
         """
-        获取当天已签约的数量。
+        [已废弃] 获取当天已签约的数量。
         
-        P0: Committed Book - 用于数量控制闭环
+        P0-fix: 此方法已废弃，因为 AWI 的 needed_* 已实时反映签约
+        committed_qty 现在只在 counter_all 内部使用临时变量
         """
-        if hasattr(self, '_committed_qty'):
-            return self._committed_qty.get(role, 0.0)
+        # 返回 0，因为 AWI 已经反映了签约
         return 0.0
 
     def _get_pending_exposure(self, role: str) -> tuple[float, float]:
@@ -1079,37 +1092,72 @@ class LitaAgentOS(OneShotSyncAgent):
                         first_round_offers[pid] = (q, price)
                         remaining_nominal -= q
                     
-                    # === 第二轮: 加码 (给高概率 partner 追加) ===
-                    # 按 p_eff 排序，优先给高概率的加码
+                    # === 第二轮: 加码 (Water-filling 水漫灌算法) ===
+                    # 每次给边际接受概率最高的 partner 加 1 单位
+                    # 这样可以考虑边际递减效应: q 越大，接受概率越低
                     if remaining_nominal > 0:
-                        for pid, context, p_eff_cand, _, fulfill in partner_info:
-                            if pid not in first_round_offers:
-                                continue
-                            
+                        # 构建 partner 信息字典用于快速查询
+                        partner_ctx: dict[str, tuple[Any, float, int]] = {}  # pid -> (context, fulfill, price)
+                        for pid, context, _, _, fulfill in partner_info:
+                            if pid in first_round_offers:
+                                _, price = first_round_offers[pid]
+                                # 获取 p_bin (使用当前 q=1 的 offer 特征)
+                                offer_feat = build_offer_features((1, t_value, price), q_max, p_min, p_max)
+                                partner_ctx[pid] = (context, fulfill, offer_feat.p_bin)
+                        
+                        def get_marginal_p(pid: str, next_q: int) -> float:
+                            """获取 partner 在 q=next_q 时的边际接受概率"""
+                            if pid not in partner_ctx:
+                                return 0.0
+                            ctx, fulfill, p_bin = partner_ctx[pid]
+                            # 使用 BOU 查询 q=next_q 的接受概率
+                            mu = self._accept_model.predict_accept_mu(ctx, build_offer_features((next_q, t_value, first_round_offers[pid][1]), q_max, p_min, p_max), [])
+                            strength = self._accept_model.predict_accept_strength(ctx, build_offer_features((next_q, t_value, first_round_offers[pid][1]), q_max, p_min, p_max), [])
+                            lcb = self._bou.lcb(
+                                pid=pid, role=role, round_bucket=ctx.round_bucket, p_bin=p_bin,
+                                q=next_q, mu=mu, strength=strength, delta=self.cfg.lcb_delta_accept
+                            )
+                            lcb = lcb if lcb is not None else mu
+                            return lcb * fulfill
+                        
+                        # 初始化最大堆 (Python heapq 是最小堆，所以用负值)
+                        # 堆元素: (-marginal_p, pid)
+                        heap: list[tuple[float, str]] = []
+                        for pid in first_round_offers:
+                            current_q = first_round_offers[pid][0]
+                            if current_q < self.cfg.post_probe_max_q:
+                                if role == "BUYER" and current_q >= buyer_cap:
+                                    continue
+                                marginal_p = get_marginal_p(pid, current_q + 1)
+                                heapq.heappush(heap, (-marginal_p, pid))
+                        
+                        # Water-filling: 每次取边际概率最高的 partner 加 1 单位
+                        while remaining_nominal > 0 and heap:
                             budget_remaining = self._offer_budget_total.get(role, float("inf")) - self._offer_budget_used.get(role, 0.0)
                             if role == "BUYER" and self.cfg.buyer_offer_budget_enabled and budget_remaining <= 0:
                                 break
                             
-                            if remaining_nominal <= 0:
-                                break
-                            
+                            neg_p, pid = heapq.heappop(heap)
                             current_q, current_price = first_round_offers[pid]
-                            # 最多加到 post_probe_max_q
-                            max_add = self.cfg.post_probe_max_q - current_q
-                            add_q = min(max_add, int(round(remaining_nominal)))
                             
-                            if role == "BUYER":
-                                add_q = min(add_q, buyer_cap - current_q)
-                                if self.cfg.buyer_offer_budget_enabled:
-                                    add_q = min(add_q, int(budget_remaining))
+                            # 检查是否还能加
+                            if current_q >= self.cfg.post_probe_max_q:
+                                continue
+                            if role == "BUYER" and current_q >= buyer_cap:
+                                continue
                             
-                            add_q = max(0, add_q)
+                            # 加 1 单位
+                            first_round_offers[pid] = (current_q + 1, current_price)
+                            remaining_nominal -= 1
+                            if hasattr(self, '_offer_budget_used'):
+                                self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + 1
                             
-                            if add_q > 0:
-                                first_round_offers[pid] = (current_q + add_q, current_price)
-                                remaining_nominal -= add_q
-                                if hasattr(self, '_offer_budget_used'):
-                                    self._offer_budget_used[role] = self._offer_budget_used.get(role, 0.0) + add_q
+                            # 重新计算该 partner 的下一个边际概率并放回堆
+                            new_q = current_q + 1
+                            if new_q < self.cfg.post_probe_max_q:
+                                if not (role == "BUYER" and new_q >= buyer_cap):
+                                    new_marginal_p = get_marginal_p(pid, new_q + 1)
+                                    heapq.heappush(heap, (-new_marginal_p, pid))
                     
                     # 构建最终 offers
                     for pid, _, _, _, _ in partner_info:
