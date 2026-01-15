@@ -1,4 +1,4 @@
-﻿最后更新：2026-01-09 22:59
+﻿最后更新：2026-01-14 13:41
 # LitaAgent-OS 详细实施方案
 
 本方案基于《LitaAgent-OS设计》文档，将 D-NB (Neural-Bayesian Opponent Model + Heuristic Planner) 的设计转化为可执行的工程实施步骤。
@@ -283,6 +283,13 @@
         2.  生成可能的接受子集 (Subset)。
         3.  对每个子集评分：$\text{Score}(S) = \text{Utility} - \text{ShortfallPenalty} - \text{RiskPenalty}$（其中 `ShortfallPenalty/DisposalCost = penalty_unit * qty`，`penalty_unit = 系数 * penalty_multiplier`）。
         4.  选择分数最高的子集 Accept，其余 Reject（带 counter_offer）。
+        5.  接受子集后更新剩余需求（与实现一致）：
+            - accepted_q_eff = Σ(q × fulfill)（禁用 breach 时 fulfill=1）
+            - need_remaining_raw = max(0, need - accepted_q_eff)
+            - committed 为当天已签约累计量（counter_all 接受 + on_negotiation_success 对方接受我方报价）
+            - need_live = max(0, need_remaining_raw - committed)
+            - BUYER: need_adj = max(0, need_live - pending_expected)；SELLER: need_adj = max(0, need_live - pending_worst)
+            - need_remaining = ceil(need_adj - 1e-9)；need_adj<=0 则 END，其余必须 REJECT+counter_offer
 
 4.  **实现 Probe (探测) 机制**
     *   对于 $\alpha + \beta$ 小于阈值 (新对手) 的情况，强制限制 $q$ 为极小值 (1或2)，进行低风险探测。

@@ -1,4 +1,4 @@
-﻿最后更新：2026-01-09 22:59
+﻿最后更新：2026-01-14 13:41
 **D‑NB（Neural‑Bayesian Opponent Model + Heuristic Planner）具体实施方案**
 
 * 设计总览（模块/数据流/职责）
@@ -741,7 +741,15 @@ p^{\text{eff}}_i(o) = \mathrm{LCB}(p^{\text{sign}}_i(o)) \cdot \mathrm{LCB}(p^{\
 
 4. 选分数最高的子集，接受其 offers，其余拒绝（带 counter_offer）
 
-5. 接受子集后先更新剩余需求：`need' = max(0, need - sum(q_accept))`；若 `need'=0`，对其余对手直接 END；否则用 `need'` 重新生成 counter_offer，**必须返回 `REJECT + counter_offer`，禁止 `REJECT + None`**（否则会被视为 END）。
+5. 接受子集后更新剩余需求（与实现对齐）：
+   * `accepted_q_eff = Σ(q × fulfill)`（若禁用 breach 概率，则 `fulfill=1`）
+   * `committed` 为当天已签约累计量（包含：counter_all 中我方接受对方报价；对方接受我方报价在 `on_negotiation_success` 中累计；已用标记避免双计）
+   * `need_remaining_raw = max(0, need - accepted_q_eff)`
+   * `need_live = max(0, need_remaining_raw - committed)`
+   * `pending_expected/pending_worst` 来自未回复的已发报价
+   * BUYER：`need_adj = max(0, need_live - pending_expected)`；SELLER：`need_adj = max(0, need_live - pending_worst)`
+   * `need_remaining = ceil(need_adj - 1e-9)`
+   若 `need_adj <= 0` 则对其余对手直接 END；否则用 `need_remaining` 重新生成 counter_offer，**必须返回 `REJECT + counter_offer`，禁止 `REJECT + None`**（否则会被视为 END）。
 6. 本轮 `round_rel` 取 `states` 的 `relative_time`（缺失时取最小值或 0），不要用仿真日进度。
 
 > 这一步就是把 “违约概率” 真正用在决策里：不是只过滤对手，而是决定**接受组合**。

@@ -1,5 +1,5 @@
 ---
-title: "Design and Implementation of Hierarchical Reinforcement Learning Agent for Complex Dynamic Supply Chain Management: A Case Study on SCML 2025"
+title: "Design and Implementation of Agents for Complex Dynamic Supply Chain Management"
 author: "Lita Tang"
 date: "2025/12/30"
 geometry:
